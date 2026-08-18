@@ -14,13 +14,25 @@ struct ContentView: View {
     @State private var livePreview = true
     @State private var smartCorrection = true
     @State private var llmPolish = true
+    @State private var autoFormat = true
+    @State private var contextAware = true
+    @State private var voiceEdit = true
     @State private var enabledLanguageIDs: [String] = []
+
+    // 翻译设置
+    @State private var translationEnabled = false
+    @State private var translationTargetID = "en-US"
+
+    // 使用统计
+    @State private var usageStats: UsageTracker.UsageStats?
 
     // 词典管理
     @State private var dictionaryEntries: [(String, String)] = []
     @State private var showAddEntry = false
     @State private var newSpeech = ""
     @State private var newReplacement = ""
+    @State private var showBatchImport = false
+    @State private var batchImportText = ""
 
     private let sharedDefaults = UserDefaults(suiteName: "group.com.voiceinput.shared")
 
@@ -36,7 +48,7 @@ struct ContentView: View {
                             .foregroundColor(.blue)
                         Text("语音输入键盘")
                             .font(.title2.bold())
-                        Text("离线语音转文字 · 中英混输 · AI润色 · 自我纠正 · 去口水词")
+                        Text("离线语音转文字 · 翻译 · 格式化 · 语音编辑 · 场景感知 · 20语言")
                             .font(.caption)
                             .foregroundColor(.secondary)
                             .multilineTextAlignment(.center)
@@ -107,6 +119,53 @@ struct ContentView: View {
                             description: "说话时实时显示识别结果",
                             isOn: $livePreview
                         )
+
+                        Divider().padding(.vertical, 2)
+
+                        ToggleRow(
+                            title: "智能自动格式化",
+                            description: "检测口语中的「第一」「首先」等,自动转为编号列表",
+                            isOn: $autoFormat
+                        )
+
+                        ToggleRow(
+                            title: "场景感知",
+                            description: "根据输入框类型(邮件/网址/社交)自动调整输出风格",
+                            isOn: $contextAware
+                        )
+
+                        ToggleRow(
+                            title: "语音编辑",
+                            description: "选中文字后说话,可替换/追加/删除选中内容",
+                            isOn: $voiceEdit
+                        )
+                    }
+                    .padding()
+                    .background(Color(.systemGray6))
+                    .cornerRadius(16)
+
+                    // 翻译设置
+                    VStack(alignment: .leading, spacing: 14) {
+                        Text("实时翻译").font(.headline)
+
+                        ToggleRow(
+                            title: "翻译模式",
+                            description: "说话后自动翻译为目标语言(iOS 26+ 设备端 LLM)",
+                            isOn: $translationEnabled
+                        )
+
+                        if translationEnabled {
+                            Divider().padding(.vertical, 2)
+
+                            Text("翻译目标语言").font(.caption.bold()).foregroundColor(.secondary)
+
+                            Picker("目标语言", selection: $translationTargetID) {
+                                ForEach(LanguageManager.allLanguages, id: \.id) { lang in
+                                    Text("\(lang.flag) \(lang.name)").tag(lang.id)
+                                }
+                            }
+                            .pickerStyle(.menu)
+                        }
                     }
                     .padding()
                     .background(Color(.systemGray6))
@@ -148,6 +207,11 @@ struct ContentView: View {
                         HStack {
                             Text("个人词典").font(.headline)
                             Spacer()
+                            Button(action: { showBatchImport = true }) {
+                                Image(systemName: "doc.on.clipboard")
+                                    .foregroundColor(.orange)
+                                    .font(.title3)
+                            }
                             Button(action: { showAddEntry = true }) {
                                 Image(systemName: "plus.circle.fill")
                                     .foregroundColor(.blue)
@@ -187,16 +251,66 @@ struct ContentView: View {
                     .background(Color(.systemGray6))
                     .cornerRadius(16)
 
+                    // 使用统计
+                    if let stats = usageStats {
+                        VStack(alignment: .leading, spacing: 14) {
+                            HStack {
+                                Text("使用统计").font(.headline)
+                                Spacer()
+                                Button(role: .destructive) {
+                                    UsageTracker.shared.resetAll()
+                                    loadUsageStats()
+                                } label: {
+                                    Text("重置").font(.caption2)
+                                }
+                            }
+
+                            HStack(spacing: 20) {
+                                StatBlock(title: "总字数", value: "\(stats.totalChars)")
+                                StatBlock(title: "会话数", value: "\(stats.totalSessions)")
+                                StatBlock(title: "连续天数", value: "\(stats.currentStreak)")
+                            }
+
+                            if !stats.languageDistribution.isEmpty {
+                                Text("语言分布").font(.caption.bold()).foregroundColor(.secondary)
+                                ForEach(stats.languageDistribution, id: \.name) { lang in
+                                    HStack {
+                                        Text("\(lang.flag) \(lang.name)").font(.caption)
+                                        Spacer()
+                                        Text("\(lang.count) 次").font(.caption.bold())
+                                    }
+                                }
+                            }
+
+                            if !stats.featureUsage.isEmpty {
+                                Text("功能使用").font(.caption.bold()).foregroundColor(.secondary)
+                                ForEach(stats.featureUsage, id: \.feature) { feature in
+                                    HStack {
+                                        Text(UsageTracker.featureDisplayName(feature.feature)).font(.caption)
+                                        Spacer()
+                                        Text("\(feature.count) 次").font(.caption.bold())
+                                    }
+                                }
+                            }
+                        }
+                        .padding()
+                        .background(Color(.systemGray6))
+                        .cornerRadius(16)
+                    }
+
                     // 使用说明
                     VStack(alignment: .leading, spacing: 12) {
                         Text("使用方法").font(.headline)
 
                         InstructionRow(text: "在 UU远程(或其他任何 App)中点击输入框")
                         InstructionRow(text: "键盘弹出后,切换到「语音输入」键盘")
-                        InstructionRow(text: "点击中间的大麦克风按钮")
-                        InstructionRow(text: "开始说话,文字会实时显示")
+                        InstructionRow(text: "点击中间的大麦克风按钮开始说话")
                         InstructionRow(text: "说完后再次点击按钮,AI 自动处理后插入")
                         InstructionRow(text: "说错了可以说「不对,应该是...」自动纠正")
+                        InstructionRow(text: "说「第一」「第二」等会自动转为编号列表")
+                        InstructionRow(text: "选中文字后说话,可替换或追加内容(语音编辑)")
+                        InstructionRow(text: "点击翻译按钮开启实时翻译模式")
+                        InstructionRow(text: "点击耳朵按钮开启耳语模式(安静环境)")
                         InstructionRow(text: "底部符号栏可快速插入标点和表情")
                     }
                     .padding()
@@ -208,9 +322,10 @@ struct ContentView: View {
                         Text("隐私说明").font(.headline).foregroundColor(.green)
 
                         Text("• 所有语音识别在设备本地完成,不上传任何数据")
-                        Text("• LLM 润色使用 Apple 设备端模型,零网络传输")
-                        Text("• 不收集任何用户信息")
-                        Text("• 无网络连接也可正常工作(除 LLM 润色需 iOS 26+)")
+                        Text("• LLM 润色和翻译使用 Apple 设备端模型,零网络传输")
+                        Text("• 使用统计仅存储在本地,不上传任何信息")
+                        Text("• 不收集任何用户信息,无账号,无追踪")
+                        Text("• 无网络连接也可正常工作(除 LLM/翻译需 iOS 26+)")
                         Text("• 键盘仅在您点击麦克风时才使用麦克风")
                     }
                     .padding()
@@ -225,6 +340,8 @@ struct ContentView: View {
                 loadSettings()
                 loadDictionary()
                 loadLanguages()
+                loadTranslationSettings()
+                loadUsageStats()
                 checkStatus()
             }
             .onChange(of: autoPunctuation) { v in saveSetting("autoPunctuation", v) }
@@ -232,11 +349,26 @@ struct ContentView: View {
             .onChange(of: livePreview) { v in saveSetting("livePreview", v) }
             .onChange(of: smartCorrection) { v in saveSetting("smartCorrection", v) }
             .onChange(of: llmPolish) { v in saveSetting("llmPolish", v) }
+            .onChange(of: autoFormat) { v in saveSetting("autoFormat", v) }
+            .onChange(of: contextAware) { v in saveSetting("contextAware", v) }
+            .onChange(of: voiceEdit) { v in saveSetting("voiceEdit", v) }
+            .onChange(of: translationEnabled) { v in
+                TranslationManager.shared.setTranslationEnabled(v)
+            }
+            .onChange(of: translationTargetID) { v in
+                TranslationManager.shared.targetLanguageID = v
+            }
             .sheet(isPresented: $showAddEntry) {
                 AddDictionaryEntrySheet(
                     newSpeech: $newSpeech,
                     newReplacement: $newReplacement,
                     onSave: addEntry
+                )
+            }
+            .sheet(isPresented: $showBatchImport) {
+                BatchImportSheet(
+                    importText: $batchImportText,
+                    onSave: batchImportEntries
                 )
             }
         }
@@ -251,10 +383,26 @@ struct ContentView: View {
         livePreview = sharedDefaults?.object(forKey: "livePreview") as? Bool ?? true
         smartCorrection = sharedDefaults?.object(forKey: "smartCorrection") as? Bool ?? true
         llmPolish = sharedDefaults?.object(forKey: "llmPolish") as? Bool ?? true
+        autoFormat = sharedDefaults?.object(forKey: "autoFormat") as? Bool ?? true
+        contextAware = sharedDefaults?.object(forKey: "contextAware") as? Bool ?? true
+        voiceEdit = sharedDefaults?.object(forKey: "voiceEdit") as? Bool ?? true
     }
 
     private func saveSetting(_ key: String, _ value: Bool) {
         sharedDefaults?.set(value, forKey: key)
+    }
+
+    // MARK: - 翻译设置
+
+    private func loadTranslationSettings() {
+        translationEnabled = TranslationManager.shared.translationEnabled
+        translationTargetID = TranslationManager.shared.targetLanguageID
+    }
+
+    // MARK: - 使用统计
+
+    private func loadUsageStats() {
+        usageStats = UsageTracker.shared.stats
     }
 
     // MARK: - 词典
@@ -291,6 +439,37 @@ struct ContentView: View {
         dict.removeValue(forKey: key)
         sharedDefaults?.set(dict, forKey: "personalDictionary")
         loadDictionary()
+    }
+
+    private func batchImportEntries() {
+        // 解析批量导入文本: 每行一个条目,格式 "识别词,替换词" 或 "识别词:替换词"
+        let lines = batchImportText.components(separatedBy: .newlines)
+        var dict = sharedDefaults?.dictionary(forKey: "personalDictionary") as? [String: String] ?? [:]
+        var imported = 0
+
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard !trimmed.isEmpty else { continue }
+
+            // 尝试用逗号或冒号分割
+            let parts = trimmed.components(separatedBy: CharacterSet(charactersIn: ",，:："))
+            if parts.count >= 2 {
+                let speech = parts[0].trimmingCharacters(in: .whitespaces)
+                let replacement = parts[1].trimmingCharacters(in: .whitespaces)
+                if !speech.isEmpty && !replacement.isEmpty {
+                    dict[speech] = replacement
+                    imported += 1
+                }
+            }
+        }
+
+        if imported > 0 {
+            sharedDefaults?.set(dict, forKey: "personalDictionary")
+            loadDictionary()
+        }
+
+        batchImportText = ""
+        showBatchImport = false
     }
 
     // MARK: - 状态检查
@@ -430,5 +609,70 @@ struct InstructionRow: View {
             Text(text)
                 .font(.subheadline)
         }
+    }
+}
+
+// MARK: - 批量导入 Sheet
+
+struct BatchImportSheet: View {
+    @Binding var importText: String
+    let onSave: () -> Void
+    @Environment(\.dismiss) var dismiss
+
+    var body: some View {
+        NavigationView {
+            Form {
+                Section("批量导入词典") {
+                    Text("每行一个条目,格式: 识别词,替换词\n例如:\n小名,小明\n老王,王经理")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+
+                Section("粘贴内容") {
+                    TextEditor(text: $importText)
+                        .frame(minHeight: 200)
+                }
+
+                Section {
+                    Button("从剪贴板粘贴") {
+                        if let clipboard = UIPasteboard.general.string {
+                            importText = clipboard
+                        }
+                    }
+                    .foregroundColor(.blue)
+
+                    Button("导入", action: onSave)
+                        .disabled(importText.isEmpty)
+                }
+            }
+            .navigationTitle("批量导入")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { dismiss() }
+                }
+            }
+        }
+    }
+}
+
+// MARK: - 统计卡片
+
+struct StatBlock: View {
+    let title: String
+    let value: String
+
+    var body: some View {
+        VStack(spacing: 4) {
+            Text(value)
+                .font(.title2.bold())
+                .foregroundColor(.blue)
+            Text(title)
+                .font(.caption2)
+                .foregroundColor(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 8)
+        .background(Color(.systemGray5))
+        .cornerRadius(12)
     }
 }

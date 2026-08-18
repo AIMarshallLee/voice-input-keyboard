@@ -5,13 +5,46 @@ import NaturalLanguage
 import FoundationModels
 #endif
 
+/// 输入场景类型
+enum InputContext: Int {
+    case general = 0    // 普通文本
+    case email = 1      // 邮箱输入
+    case url = 2        // URL 输入
+    case phone = 3      // 电话号码
+    case number = 4     // 纯数字
+    case social = 5     // 社交媒体/短文本
+
+    /// 从 UIKeyboardType 转换
+    static func from(keyboardType: Int) -> InputContext {
+        switch keyboardType {
+        case 7: return .email    // .emailAddress
+        case 3: return .url       // .URL
+        case 5: return .phone      // .phonePad
+        case 4: return .number    // .numberPad
+        case 9: return .social     // .twitter
+        default: return .general
+        }
+    }
+
+    var displayName: String {
+        switch self {
+        case .general: return "通用"
+        case .email: return "邮件"
+        case .url: return "网址"
+        case .phone: return "电话"
+        case .number: return "数字"
+        case .social: return "社交"
+        }
+    }
+}
+
 /// 文字后处理器 - 核心 AI 层
 ///
-/// 双模式架构:
-/// - iOS 26+: 使用 Apple Foundation Models 设备端 LLM 做智能润色
-/// - iOS 16+: 使用增强规则引擎(自我纠正检测+口水词过滤+自动标点)
+/// 全功能架构:
+/// - iOS 26+: LLM 智能润色 + 翻译 + 格式化 + 语音编辑
+/// - iOS 16+: 规则引擎(自我纠正+口水词+标点+格式化+翻译回退)
 ///
-/// 对标 Typeless 的 AI 后处理层,但完全离线、完全免费
+/// 全面对标并超越 Typeless,完全离线、完全免费
 class TextProcessor {
 
     // MARK: - 单例
@@ -36,6 +69,15 @@ class TextProcessor {
     }
     var livePreviewEnabled: Bool {
         sharedDefaults?.object(forKey: "livePreview") as? Bool ?? true
+    }
+    var autoFormatEnabled: Bool {
+        sharedDefaults?.object(forKey: "autoFormat") as? Bool ?? true
+    }
+    var contextAwareEnabled: Bool {
+        sharedDefaults?.object(forKey: "contextAware") as? Bool ?? true
+    }
+    var voiceEditEnabled: Bool {
+        sharedDefaults?.object(forKey: "voiceEdit") as? Bool ?? true
     }
 
     // MARK: - 口水词
@@ -96,40 +138,177 @@ class TextProcessor {
     }
 
     /// 完整异步处理(停止录音时调用,含 LLM)
-    func process(_ rawText: String) async -> String {
+    /// - Parameters:
+    ///   - rawText: 原始识别文本
+    ///   - selectedText: 用户选中的文本(如有,进入语音编辑模式)
+    ///   - keyboardType: 当前输入框类型(用于场景感知)
+    func process(_ rawText: String, selectedText: String? = nil, keyboardType: Int = 0) async -> String {
         guard !rawText.isEmpty else { return rawText }
 
         var result = rawText
+        let context = InputContext.from(keyboardType: keyboardType)
+        var featuresUsed: Set<String> = []
+        var isVoiceEdit = false
 
-        // 1. 个人词典替换 (最优先)
-        result = applyPersonalDictionary(to: result)
-
-        // 2. 自我纠正检测
-        if smartCorrectionEnabled {
-            result = detectSelfCorrection(in: result)
+        // 0. 语音编辑: 如果有选中文本,进入编辑模式
+        if voiceEditEnabled, let selected = selectedText, !selected.isEmpty {
+            isVoiceEdit = true
+            featuresUsed.insert("voiceEdit")
+            result = await processVoiceEdit(spoken: result, selectedText: selected, context: context)
         }
 
-        // 3. 口水词过滤
-        if fillerWordRemovalEnabled {
-            result = removeFillerWords(from: result)
-        }
+        if !isVoiceEdit {
+            // 1. 个人词典替换 (最优先)
+            result = applyPersonalDictionary(to: result)
 
-        // 4. 尝试 LLM 润色 (iOS 26+)
-        if llmPolishEnabled {
-            #if canImport(FoundationModels)
-            if #available(iOS 26, *) {
-                result = await llmPolish(result) ?? result
+            // 2. 自我纠正检测
+            if smartCorrectionEnabled {
+                result = detectSelfCorrection(in: result)
+                featuresUsed.insert("smartCorrection")
             }
-            #endif
+
+            // 3. 口水词过滤
+            if fillerWordRemovalEnabled {
+                result = removeFillerWords(from: result)
+                featuresUsed.insert("fillerRemoval")
+            }
+
+            // 4. 尝试 LLM 润色 (iOS 26+, 场景感知)
+            if llmPolishEnabled {
+                #if canImport(FoundationModels)
+                if #available(iOS 26, *) {
+                    if let polished = await llmPolish(result, context: context) {
+                        result = polished
+                        featuresUsed.insert("llmPolish")
+                    }
+                }
+                #endif
+            }
         }
 
-        // 5. 自动标点
-        if autoPunctuationEnabled {
-            result = addAutoPunctuation(to: result)
+        // 5. 翻译 (如果启用)
+        if TranslationManager.shared.translationEnabled {
+            let sourceLang = LanguageManager.shared.currentLanguageID
+            if let translated = await TranslationManager.shared.translate(result, from: sourceLang) {
+                result = translated
+                featuresUsed.insert("translation")
+            }
         }
+
+        // 6. 自动格式化 (列表检测)
+        if autoFormatEnabled && !isVoiceEdit {
+            let formatted = SmartFormatter.shared.formatIfList(result)
+            if formatted != result {
+                result = formatted
+                featuresUsed.insert("autoFormat")
+            } else {
+                // 没有格式化为列表,则添加标点
+                if autoPunctuationEnabled {
+                    result = addAutoPunctuation(to: result)
+                    featuresUsed.insert("autoPunctuation")
+                }
+            }
+        } else if autoPunctuationEnabled && !isVoiceEdit {
+            // 7. 自动标点
+            result = addAutoPunctuation(to: result)
+            featuresUsed.insert("autoPunctuation")
+        }
+
+        // 记录使用统计
+        UsageTracker.shared.recordSession(
+            charCount: result.count,
+            language: LanguageManager.shared.currentLanguageID,
+            featuresUsed: featuresUsed
+        )
 
         return result
     }
+
+    // MARK: - 语音编辑
+
+    /// 语音编辑: 根据用户说的内容,修改选中的文本
+    ///
+    /// 模式:
+    /// 1. "替换为XXX" / "改成XXX" → 直接替换为 XXX
+    /// 2. "删掉" / "删除" → 返回空字符串(删除选中文本)
+    /// 3. "在后面加XXX" / "加上XXX" → 选中文本 + XXX
+    /// 4. 无明确指令 → LLM 智能合并(iOS 26+) 或直接替换
+    func processVoiceEdit(spoken: String, selectedText: String, context: InputContext) async -> String {
+        let trimmed = spoken.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // 模式1: 明确替换指令
+        let replacePatterns = ["替换为", "替换成", "改成", "改为", "换成", "改成", "replace with", "change to"]
+        for pattern in replacePatterns {
+            if let range = trimmed.range(of: pattern, options: .caseInsensitive) {
+                let replacement = String(trimmed[range.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+                if !replacement.isEmpty {
+                    return replacement
+                }
+            }
+        }
+
+        // 模式2: 删除指令
+        let deletePatterns = ["删掉", "删除", "去掉", "移除", "delete", "remove"]
+        for pattern in deletePatterns {
+            if trimmed.lowercased() == pattern || trimmed.lowercased().contains(pattern + "这个") || trimmed.lowercased().contains(pattern + "它") {
+                return "" // 空字符串表示删除
+            }
+        }
+
+        // 模式3: 追加指令
+        let appendPatterns = ["在后面加", "在后面加上", "后面加", "加上", "追加", "append", "add after"]
+        for pattern in appendPatterns {
+            if let range = trimmed.range(of: pattern, options: .caseInsensitive) {
+                let addition = String(trimmed[range.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+                if !addition.isEmpty {
+                    return selectedText + addition
+                }
+            }
+        }
+
+        // 模式4: LLM 智能合并 (iOS 26+)
+        #if canImport(FoundationModels)
+        if #available(iOS 26, *) {
+            if let merged = await llmVoiceEdit(spoken: trimmed, selectedText: selectedText, context: context) {
+                return merged
+            }
+        }
+        #endif
+
+        // 模式5: 回退 - 直接替换选中文本
+        return trimmed
+    }
+
+    // MARK: - LLM 语音编辑 (iOS 26+)
+
+    #if canImport(FoundationModels)
+    @available(iOS 26, *)
+    private func llmVoiceEdit(spoken: String, selectedText: String, context: InputContext) async -> String? {
+        guard SystemLanguageModel.default.isAvailable else { return nil }
+
+        let instructions = """
+        You are a voice editing assistant. The user has selected some text and is speaking to edit it.
+        Selected text: "\(selectedText)"
+        Spoken instruction: "\(spoken)"
+
+        Apply the user's spoken instruction to the selected text and return the result.
+        Rules:
+        1. If the user is correcting or replacing, return the new version
+        2. If the user is adding to the text, return the combined result
+        3. If the user wants to delete, return an empty string
+        4. Return ONLY the final text, no explanations
+        5. Keep the same language as the selected text
+        """
+
+        do {
+            let session = LanguageModelSession(instructions: instructions)
+            let response = try await session.respond(to: spoken)
+            return response.content
+        } catch {
+            return nil
+        }
+    }
+    #endif
 
     // MARK: - 自我纠正检测
 
@@ -247,15 +426,34 @@ class TextProcessor {
         return result
     }
 
-    // MARK: - LLM 润色 (iOS 26+)
+    // MARK: - LLM 润色 (iOS 26+, 场景感知)
 
     #if canImport(FoundationModels)
     @available(iOS 26, *)
-    private func llmPolish(_ text: String) async -> String? {
+    private func llmPolish(_ text: String, context: InputContext = .general) async -> String? {
         guard SystemLanguageModel.default.isAvailable else { return nil }
 
         let lang = LanguageManager.shared.currentLanguage
         let langName = lang.name
+
+        // 场景感知: 根据输入框类型调整润色策略
+        var contextInstruction = ""
+        if contextAwareEnabled {
+            switch context {
+            case .email:
+                contextInstruction = "The user is typing in an email field. Format as a proper email address if applicable (no spaces, lowercase)."
+            case .url:
+                contextInstruction = "The user is typing a URL. Remove spaces, use proper URL format."
+            case .phone:
+                contextInstruction = "The user is typing a phone number. Keep only digits and + symbol."
+            case .number:
+                contextInstruction = "The user is typing numbers. Keep only numeric characters."
+            case .social:
+                contextInstruction = "The user is typing on a social media platform. Keep it concise and casual."
+            case .general:
+                contextInstruction = ""
+            }
+        }
 
         let instructions = """
         You are a voice-to-text cleanup assistant. The input language is \(langName).
@@ -267,6 +465,7 @@ class TextProcessor {
         5. Return ONLY the cleaned text, no explanations
         6. Do NOT reformat: no lists, no paragraphs, keep it as one continuous text
         7. Do NOT auto-correct grammar unless it's clearly a recognition error
+        \(contextInstruction.isEmpty ? "" : "8. \(contextInstruction)")
         """
 
         do {

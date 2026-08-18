@@ -2,24 +2,34 @@ import UIKit
 import AVFoundation
 import Speech
 
-/// 语音输入键盘 - 完整版
-/// 对标 Typeless,核心优势:
+/// 语音输入键盘 - 全功能版
+/// 全面对标并超越 Typeless:
 /// 1. 中英混输(本地识别天然支持)
 /// 2. 完全离线(on-device 识别)
 /// 3. 完全免费
 /// 4. 零网络传输(隐私优先)
 /// 5. 无会话时间限制
-/// 6. 不自作主张改格式
-/// 7. 实时转写显示
-/// 8. 自动去口水词
-/// 9. 自动标点
-/// 10. 符号快捷栏
+/// 6. 实时转写显示
+/// 7. 自动去口水词
+/// 8. 自动标点
+/// 9. 符号快捷栏
+/// 10. 智能自我纠正 (7种模式)
+/// 11. LLM 润色 (iOS 26+, 设备端)
+/// 12. 智能自动格式化 (列表/步骤检测)
+/// 13. 实时翻译模式 (iOS 26+)
+/// 14. 场景感知 (邮件/URL/社交自动调整)
+/// 15. 语音编辑 (选中文字说话即可修改)
+/// 16. 耳语模式 (安静环境增强)
+/// 17. 使用统计追踪
+/// 18. 20 语言支持
 class KeyboardViewController: UIInputViewController {
 
     // MARK: - UI 元素
     private let micButton = UIButton(type: .system)
     private let globeButton = UIButton(type: .system)
     private let langButton = UIButton(type: .system)
+    private let translateButton = UIButton(type: .system)
+    private let whisperButton = UIButton(type: .system)
     private let deleteButton = UIButton(type: .system)
     private let spaceButton = UIButton(type: .system)
     private let returnButton = UIButton(type: .system)
@@ -39,6 +49,10 @@ class KeyboardViewController: UIInputViewController {
     private var recognizedText = ""
     private var hasInsertedText = false
 
+    // MARK: - 模式状态
+    private var isWhisperMode = false
+    private var selectedTextBeforeRecording: String?
+
     // MARK: - 快捷符号
     private let symbols = ["，", "。", "！", "？", "、", "：", "；", "\u{201C}", "\u{201D}", "（", "）", "…", "—", "～", "😊", "👍", "✅"]
 
@@ -48,6 +62,13 @@ class KeyboardViewController: UIInputViewController {
         super.viewDidLoad()
         setupUI()
         setupSpeech()
+    }
+
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        // 同步设置(用户可能在宿主 App 中修改了设置)
+        updateTranslateButton()
+        updateLangButton()
     }
 
     override func viewDidDisappear(_ animated: Bool) {
@@ -135,6 +156,28 @@ class KeyboardViewController: UIInputViewController {
         langButton.heightAnchor.constraint(equalToConstant: 36).isActive = true
         updateLangButton()
 
+        // 翻译按钮
+        translateButton.setImage(UIImage(systemName: "translate"), for: .normal)
+        translateButton.tintColor = textColor
+        translateButton.backgroundColor = buttonColor
+        translateButton.layer.cornerRadius = 8
+        translateButton.translatesAutoresizingMaskIntoConstraints = false
+        translateButton.addTarget(self, action: #selector(translateToggled), for: .touchUpInside)
+        translateButton.widthAnchor.constraint(equalToConstant: 40).isActive = true
+        translateButton.heightAnchor.constraint(equalToConstant: 36).isActive = true
+        updateTranslateButton()
+
+        // 耳语模式按钮
+        whisperButton.setImage(UIImage(systemName: "ear"), for: .normal)
+        whisperButton.tintColor = textColor
+        whisperButton.backgroundColor = buttonColor
+        whisperButton.layer.cornerRadius = 8
+        whisperButton.translatesAutoresizingMaskIntoConstraints = false
+        whisperButton.addTarget(self, action: #selector(whisperToggled), for: .touchUpInside)
+        whisperButton.widthAnchor.constraint(equalToConstant: 40).isActive = true
+        whisperButton.heightAnchor.constraint(equalToConstant: 36).isActive = true
+        updateWhisperButton()
+
         // 空格
         spaceButton.setTitle("空格", for: .normal)
         spaceButton.setTitleColor(textColor, for: .normal)
@@ -168,7 +211,7 @@ class KeyboardViewController: UIInputViewController {
         returnButton.heightAnchor.constraint(equalToConstant: 36).isActive = true
 
         // 底部工具栏
-        let bottomBar = UIStackView(arrangedSubviews: [globeButton, langButton, spaceButton, deleteButton, returnButton])
+        let bottomBar = UIStackView(arrangedSubviews: [globeButton, langButton, translateButton, whisperButton, spaceButton, deleteButton, returnButton])
         bottomBar.axis = .horizontal
         bottomBar.spacing = 6
         bottomBar.alignment = .fill
@@ -241,10 +284,72 @@ class KeyboardViewController: UIInputViewController {
         if isRecording {
             stopRecording()
         }
+
+        // 如果翻译模式开启,切换的是翻译目标语言
+        if TranslationManager.shared.translationEnabled {
+            let newTarget = TranslationManager.shared.cycleTargetLanguage()
+            liveTextLabel.text = "翻译目标: \(newTarget.flag) \(newTarget.name)"
+            return
+        }
+
         let newLang = LanguageManager.shared.cycleToNextLanguage()
         speechRecognizer = LanguageManager.shared.createSpeechRecognizer()
         updateLangButton()
         liveTextLabel.text = "语言切换至: \(newLang.flag) \(newLang.name)"
+    }
+
+    // MARK: - 翻译模式
+
+    private func updateTranslateButton() {
+        let isOn = TranslationManager.shared.translationEnabled
+        translateButton.tintColor = isOn ? .white : nil
+        translateButton.backgroundColor = isOn ? UIColor.systemOrange : (traitCollection.userInterfaceStyle == .dark ? UIColor(white: 0.18, alpha: 1) : UIColor.white)
+
+        if isOn {
+            let target = TranslationManager.shared.targetLanguageID
+            let config = LanguageManager.allLanguages.first { $0.id == target }
+            let flag = config?.flag ?? ""
+            translateButton.setTitle(flag, for: .normal)
+            translateButton.setImage(nil, for: .normal)
+            translateButton.titleLabel?.font = UIFont.systemFont(ofSize: 16)
+        } else {
+            translateButton.setTitle(nil, for: .normal)
+            translateButton.setImage(UIImage(systemName: "translate"), for: .normal)
+        }
+    }
+
+    @objc private func translateToggled() {
+        if isRecording { stopRecording() }
+
+        let newState = !TranslationManager.shared.translationEnabled
+        TranslationManager.shared.setTranslationEnabled(newState)
+        updateTranslateButton()
+
+        if newState {
+            let target = LanguageManager.allLanguages.first { $0.id == TranslationManager.shared.targetLanguageID }
+            liveTextLabel.text = "翻译模式开启: 说话后自动翻译为\(target?.name ?? "目标语言")"
+        } else {
+            liveTextLabel.text = "翻译模式关闭"
+        }
+    }
+
+    // MARK: - 耳语模式
+
+    private func updateWhisperButton() {
+        let isDark = traitCollection.userInterfaceStyle == .dark
+        whisperButton.tintColor = isWhisperMode ? .white : nil
+        whisperButton.backgroundColor = isWhisperMode ? UIColor.systemPurple : (isDark ? UIColor(white: 0.18, alpha: 1) : UIColor.white)
+    }
+
+    @objc private func whisperToggled() {
+        isWhisperMode.toggle()
+        updateWhisperButton()
+
+        if isWhisperMode {
+            liveTextLabel.text = "耳语模式开启: 适合安静环境"
+        } else {
+            liveTextLabel.text = "耳语模式关闭"
+        }
     }
 
     // MARK: - 按钮事件
@@ -299,6 +404,18 @@ class KeyboardViewController: UIInputViewController {
             return
         }
 
+        // 语音编辑: 录音前捕获选中的文本
+        selectedTextBeforeRecording = textDocumentProxy.selectedText
+
+        // 如果有选中文本,提示语音编辑模式
+        if let selected = selectedTextBeforeRecording, !selected.isEmpty, TextProcessor.shared.voiceEditEnabled {
+            let preview = selected.prefix(15)
+            liveTextLabel.text = "编辑模式: 「\(preview)…」说话即可修改"
+        } else if TranslationManager.shared.translationEnabled {
+            let target = LanguageManager.allLanguages.first { $0.id == TranslationManager.shared.targetLanguageID }
+            liveTextLabel.text = "翻译模式: 说\(LanguageManager.shared.currentLanguage.name) → 输出\(target?.name ?? "")"
+        }
+
         SFSpeechRecognizer.requestAuthorization { [weak self] status in
             DispatchQueue.main.async {
                 guard let self = self else { return }
@@ -317,7 +434,13 @@ class KeyboardViewController: UIInputViewController {
 
         do {
             let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.record, mode: .measurement, options: .duckOthers)
+
+            // 耳语模式: 使用 voiceChat 增强语音捕获
+            if isWhisperMode {
+                try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.duckOthers, .allowBluetooth])
+            } else {
+                try session.setCategory(.record, mode: .measurement, options: .duckOthers)
+            }
             try session.setActive(true, options: .notifyOthersOnDeactivation)
 
             recognitionRequest = SFSpeechAudioBufferRecognitionRequest()
@@ -416,17 +539,40 @@ class KeyboardViewController: UIInputViewController {
         // 显示处理中状态
         liveTextLabel.text = "正在处理…"
 
-        // 异步处理:自我纠正+口水词+LLM润色+自动标点
+        // 获取上下文:选中文本(语音编辑)和键盘类型(场景感知)
+        let selectedText = selectedTextBeforeRecording
+        let kbType = textDocumentProxy.keyboardType.rawValue
+
+        // 异步处理:语音编辑+自我纠正+口水词+LLM润色+翻译+自动格式化+自动标点
         Task { [weak self] in
             guard let self = self else { return }
-            let processed = await TextProcessor.shared.process(rawText)
+            let processed = await TextProcessor.shared.process(
+                rawText,
+                selectedText: selectedText,
+                keyboardType: kbType
+            )
 
             await MainActor.run {
-                if !processed.isEmpty && !self.hasInsertedText {
-                    self.textDocumentProxy.insertText(processed)
-                    self.hasInsertedText = true
-                    let preview = processed.prefix(30)
-                    self.liveTextLabel.text = "已输入 ✓  \(preview)\(processed.count > 30 ? "…" : "")"
+                if !self.hasInsertedText {
+                    // 语音编辑模式: 先删除选中的文本
+                    if let selected = selectedText, !selected.isEmpty,
+                       TextProcessor.shared.voiceEditEnabled {
+                        // deleteBackward 一次会删除整个选区
+                        self.textDocumentProxy.deleteBackward()
+                    }
+
+                    if !processed.isEmpty {
+                        self.textDocumentProxy.insertText(processed)
+                        self.hasInsertedText = true
+                        let preview = processed.prefix(30)
+                        self.liveTextLabel.text = "已输入 ✓  \(preview)\(processed.count > 30 ? "…" : "")"
+                    } else if selectedText != nil {
+                        // 空结果 = 语音编辑删除指令
+                        self.hasInsertedText = true
+                        self.liveTextLabel.text = "已删除选中文字 ✓"
+                    } else {
+                        self.liveTextLabel.text = "未识别到语音,请重试"
+                    }
                 } else {
                     self.liveTextLabel.text = "未识别到语音,请重试"
                 }
@@ -440,6 +586,7 @@ class KeyboardViewController: UIInputViewController {
     private func cleanup() {
         recognitionRequest = nil
         recognitionTask = nil
+        selectedTextBeforeRecording = nil
     }
 
     // MARK: - 脉冲动画
