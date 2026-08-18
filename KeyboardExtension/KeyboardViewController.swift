@@ -409,7 +409,7 @@ class WaveformView: UIView {
 
     private func startAnim() {
         displayLink?.invalidate()
-        displayLink = CADisplayLink(target: self, action: #selector(updateWave))
+        displayLink = CADisplayLink(target: self, selector: #selector(updateWave))
         displayLink?.add(to: .main, forMode: .common)
     }
 
