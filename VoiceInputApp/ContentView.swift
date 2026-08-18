@@ -127,9 +127,9 @@ struct ContentView: View {
                 loadSettings()
                 checkStatus()
             }
-            .onChange(of: autoPunctuation) { _, v in saveSetting("autoPunctuation", v) }
-            .onChange(of: fillerWordRemoval) { _, v in saveSetting("fillerWordRemoval", v) }
-            .onChange(of: livePreview) { _, v in saveSetting("livePreview", v) }
+            .onChange(of: autoPunctuation) { v in saveSetting("autoPunctuation", v) }
+            .onChange(of: fillerWordRemoval) { v in saveSetting("fillerWordRemoval", v) }
+            .onChange(of: livePreview) { v in saveSetting("livePreview", v) }
         }
         .navigationViewStyle(.stack)
     }
