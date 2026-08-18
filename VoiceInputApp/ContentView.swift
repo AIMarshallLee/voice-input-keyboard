@@ -2,7 +2,7 @@ import SwiftUI
 import Speech
 import AVFoundation
 
-/// 主 App:引导安装 + 设置 + 隐私说明
+/// 主 App:引导安装 + 设置 + 词典管理 + 隐私说明
 struct ContentView: View {
 
     @State private var speechAuthorized = false
@@ -12,6 +12,14 @@ struct ContentView: View {
     @State private var autoPunctuation = true
     @State private var fillerWordRemoval = true
     @State private var livePreview = true
+    @State private var smartCorrection = true
+    @State private var llmPolish = true
+
+    // 词典管理
+    @State private var dictionaryEntries: [(String, String)] = []
+    @State private var showAddEntry = false
+    @State private var newSpeech = ""
+    @State private var newReplacement = ""
 
     private let sharedDefaults = UserDefaults(suiteName: "group.com.voiceinput.shared")
 
@@ -27,7 +35,7 @@ struct ContentView: View {
                             .foregroundColor(.blue)
                         Text("语音输入键盘")
                             .font(.title2.bold())
-                        Text("离线语音转文字 · 中英混输 · 去口水词 · 自动标点")
+                        Text("离线语音转文字 · 中英混输 · AI润色 · 自我纠正 · 去口水词")
                             .font(.caption)
                             .foregroundColor(.secondary)
                             .multilineTextAlignment(.center)
@@ -67,7 +75,19 @@ struct ContentView: View {
 
                     // 输入设置
                     VStack(alignment: .leading, spacing: 14) {
-                        Text("输入设置").font(.headline)
+                        Text("AI 处理设置").font(.headline)
+
+                        ToggleRow(
+                            title: "智能自我纠正",
+                            description: "检测"不对,应该是X"等口语纠正,保留最终正确版本",
+                            isOn: $smartCorrection
+                        )
+
+                        ToggleRow(
+                            title: "LLM 文字润色",
+                            description: "iOS 26+ 使用设备端大模型润色,低版本自动跳过",
+                            isOn: $llmPolish
+                        )
 
                         ToggleRow(
                             title: "自动标点",
@@ -91,6 +111,50 @@ struct ContentView: View {
                     .background(Color(.systemGray6))
                     .cornerRadius(16)
 
+                    // 个人词典
+                    VStack(alignment: .leading, spacing: 14) {
+                        HStack {
+                            Text("个人词典").font(.headline)
+                            Spacer()
+                            Button(action: { showAddEntry = true }) {
+                                Image(systemName: "plus.circle.fill")
+                                    .foregroundColor(.blue)
+                                    .font(.title3)
+                            }
+                        }
+
+                        if dictionaryEntries.isEmpty {
+                            Text("暂无自定义词条。添加后,语音识别中的匹配词会自动替换为目标词。")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        } else {
+                            ForEach(dictionaryEntries.indices, id: \.self) { idx in
+                                let entry = dictionaryEntries[idx]
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("识别: \(entry.0)")
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                        Text("替换: \(entry.1)")
+                                            .font(.subheadline.bold())
+                                    }
+                                    Spacer()
+                                    Button(role: .destructive) {
+                                        deleteEntry(entry.0)
+                                    } label: {
+                                        Image(systemName: "trash")
+                                            .foregroundColor(.red)
+                                    }
+                                }
+                                .padding(.vertical, 4)
+                                Divider()
+                            }
+                        }
+                    }
+                    .padding()
+                    .background(Color(.systemGray6))
+                    .cornerRadius(16)
+
                     // 使用说明
                     VStack(alignment: .leading, spacing: 12) {
                         Text("使用方法").font(.headline)
@@ -99,7 +163,8 @@ struct ContentView: View {
                         InstructionRow(text: "键盘弹出后,切换到「语音输入」键盘")
                         InstructionRow(text: "点击中间的大麦克风按钮")
                         InstructionRow(text: "开始说话,文字会实时显示")
-                        InstructionRow(text: "说完后再次点击按钮,文字自动插入")
+                        InstructionRow(text: "说完后再次点击按钮,AI 自动处理后插入")
+                        InstructionRow(text: "说错了可以说"不对,应该是..."自动纠正")
                         InstructionRow(text: "底部符号栏可快速插入标点和表情")
                     }
                     .padding()
@@ -111,8 +176,9 @@ struct ContentView: View {
                         Text("隐私说明").font(.headline).foregroundColor(.green)
 
                         Text("• 所有语音识别在设备本地完成,不上传任何数据")
+                        Text("• LLM 润色使用 Apple 设备端模型,零网络传输")
                         Text("• 不收集任何用户信息")
-                        Text("• 无网络连接也可正常工作")
+                        Text("• 无网络连接也可正常工作(除 LLM 润色需 iOS 26+)")
                         Text("• 键盘仅在您点击麦克风时才使用麦克风")
                     }
                     .padding()
@@ -125,25 +191,62 @@ struct ContentView: View {
             .navigationTitle("语音输入键盘")
             .onAppear {
                 loadSettings()
+                loadDictionary()
                 checkStatus()
             }
             .onChange(of: autoPunctuation) { v in saveSetting("autoPunctuation", v) }
             .onChange(of: fillerWordRemoval) { v in saveSetting("fillerWordRemoval", v) }
             .onChange(of: livePreview) { v in saveSetting("livePreview", v) }
+            .onChange(of: smartCorrection) { v in saveSetting("smartCorrection", v) }
+            .onChange(of: llmPolish) { v in saveSetting("llmPolish", v) }
+            .sheet(isPresented: $showAddEntry) {
+                AddDictionaryEntrySheet(
+                    newSpeech: $newSpeech,
+                    newReplacement: $newReplacement,
+                    onSave: addEntry
+                )
+            }
         }
         .navigationViewStyle(.stack)
     }
 
-    // MARK: - 设置读写
+    // MARK: - 设置
 
     private func loadSettings() {
         autoPunctuation = sharedDefaults?.object(forKey: "autoPunctuation") as? Bool ?? true
         fillerWordRemoval = sharedDefaults?.object(forKey: "fillerWordRemoval") as? Bool ?? true
         livePreview = sharedDefaults?.object(forKey: "livePreview") as? Bool ?? true
+        smartCorrection = sharedDefaults?.object(forKey: "smartCorrection") as? Bool ?? true
+        llmPolish = sharedDefaults?.object(forKey: "llmPolish") as? Bool ?? true
     }
 
     private func saveSetting(_ key: String, _ value: Bool) {
         sharedDefaults?.set(value, forKey: key)
+    }
+
+    // MARK: - 词典
+
+    private func loadDictionary() {
+        let dict = sharedDefaults?.dictionary(forKey: "personalDictionary") as? [String: String] ?? [:]
+        dictionaryEntries = dict.map { ($0.key, $0.value) }.sorted { $0.0 < $1.0 }
+    }
+
+    private func addEntry() {
+        guard !newSpeech.isEmpty, !newReplacement.isEmpty else { return }
+        var dict = sharedDefaults?.dictionary(forKey: "personalDictionary") as? [String: String] ?? [:]
+        dict[newSpeech] = newReplacement
+        sharedDefaults?.set(dict, forKey: "personalDictionary")
+        newSpeech = ""
+        newReplacement = ""
+        loadDictionary()
+        showAddEntry = false
+    }
+
+    private func deleteEntry(_ key: String) {
+        var dict = sharedDefaults?.dictionary(forKey: "personalDictionary") as? [String: String] ?? [:]
+        dict.removeValue(forKey: key)
+        sharedDefaults?.set(dict, forKey: "personalDictionary")
+        loadDictionary()
     }
 
     // MARK: - 状态检查
@@ -173,6 +276,38 @@ struct ContentView: View {
         AVAudioSession.sharedInstance().requestRecordPermission { granted in
             DispatchQueue.main.async {
                 micAuthorized = granted
+            }
+        }
+    }
+}
+
+// MARK: - 添加词典条目 Sheet
+
+struct AddDictionaryEntrySheet: View {
+    @Binding var newSpeech: String
+    @Binding var newReplacement: String
+    let onSave: () -> Void
+    @Environment(\.dismiss) var dismiss
+
+    var body: some View {
+        NavigationView {
+            Form {
+                Section("识别到的词") {
+                    TextField("如:小名", text: $newSpeech)
+                }
+                Section("替换为") {
+                    TextField("如:小明", text: $newReplacement)
+                }
+                Section {
+                    Button("保存", action: onSave)
+                        .disabled(newSpeech.isEmpty || newReplacement.isEmpty)
+                }
+            }
+            .navigationTitle("添加词典")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { dismiss() }
+                }
             }
         }
     }

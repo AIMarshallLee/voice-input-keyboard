@@ -38,25 +38,6 @@ class KeyboardViewController: UIInputViewController {
     private var recognizedText = ""
     private var hasInsertedText = false
 
-    // MARK: - 设置 (通过 App Group 与宿主 App 共享)
-    private let sharedDefaults = UserDefaults(suiteName: "group.com.voiceinput.shared")
-    private var autoPunctuationEnabled: Bool {
-        sharedDefaults?.object(forKey: "autoPunctuation") as? Bool ?? true
-    }
-    private var fillerWordRemovalEnabled: Bool {
-        sharedDefaults?.object(forKey: "fillerWordRemoval") as? Bool ?? true
-    }
-    private var livePreviewEnabled: Bool {
-        sharedDefaults?.object(forKey: "livePreview") as? Bool ?? true
-    }
-
-    // MARK: - 口水词过滤
-    private let fillerWords: Set<String> = [
-        "嗯", "啊", "呃", "哦", "唉", "嘛", "呢", "哈",
-        "那个", "这个", "就是", "然后", "所以说", "对吧",
-        "怎么说呢", "说实话", "你知道吗", "其实吧"
-    ]
-
     // MARK: - 快捷符号
     private let symbols = ["，", "。", "！", "？", "、", "：", "；", "\u{201C}", "\u{201D}", "（", "）", "…", "—", "～", "😊", "👍", "✅"]
 
@@ -326,17 +307,16 @@ class KeyboardViewController: UIInputViewController {
 
                     if let result = result {
                         let rawText = result.bestTranscription.formattedString
-                        var cleanedText = rawText
-                        if self.fillerWordRemovalEnabled {
-                            cleanedText = self.removeFillerWords(from: cleanedText)
-                        }
-                        self.recognizedText = cleanedText
+                        // 实时预览:同步快速处理(不含 LLM,太慢)
+                        let preview = TextProcessor.shared.processSync(rawText)
+                        self.recognizedText = rawText
 
-                        if self.livePreviewEnabled {
-                            if cleanedText.isEmpty {
+                        let livePreview = TextProcessor.shared.livePreviewEnabled
+                        if livePreview {
+                            if preview.isEmpty {
                                 self.liveTextLabel.text = "正在聆听…"
                             } else {
-                                self.liveTextLabel.text = cleanedText
+                                self.liveTextLabel.text = preview
                             }
                         }
                     }
@@ -386,11 +366,6 @@ class KeyboardViewController: UIInputViewController {
 
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
 
-        var text = recognizedText
-        if autoPunctuationEnabled {
-            text = addAutoPunctuation(to: text)
-        }
-
         stopPulse()
         micButton.setTitle(nil, for: .normal)
         let config = UIImage.SymbolConfiguration(pointSize: 34, weight: .bold)
@@ -398,67 +373,39 @@ class KeyboardViewController: UIInputViewController {
         micButton.backgroundColor = UIColor.systemBlue
         waveformView.isHidden = true
 
-        if !text.isEmpty && !hasInsertedText {
-            textDocumentProxy.insertText(text)
-            hasInsertedText = true
-            let preview = text.prefix(30)
-            liveTextLabel.text = "已输入 ✓  \(preview)\(text.count > 30 ? "…" : "")"
-        } else if text.isEmpty {
+        let rawText = recognizedText
+
+        if rawText.isEmpty {
             liveTextLabel.text = "未识别到语音,请重试"
+            cleanup()
+            return
         }
 
-        cleanup()
-    }
-
-    // MARK: - 口水词过滤
-
-    private func removeFillerWords(from text: String) -> String {
-        var result = text
-        for word in fillerWords {
-            result = result.replacingOccurrences(of: word, with: "")
-        }
-        while result.contains("  ") {
-            result = result.replacingOccurrences(of: "  ", with: " ")
-        }
-        return result.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    // MARK: - 自动标点
-
-    private func addAutoPunctuation(to text: String) -> String {
-        guard !text.isEmpty else { return text }
-        var result = text
-
-        let punctuationSet: Set<Character> = ["。", "！", "？", "，", "、", "：", "；", ".", "!", "?", ","]
-        if let last = result.last, punctuationSet.contains(last) {
-            return result
+        if hasInsertedText {
+            cleanup()
+            return
         }
 
-        let questionEndings = ["吗", "呢", "吧", "嘛"]
-        let questionWords = ["怎么", "什么", "为什么", "哪里", "哪儿", "谁", "哪个", "哪些", "多少", "几", "是不是", "能不能", "可不可以", "难道"]
+        // 显示处理中状态
+        liveTextLabel.text = "正在处理…"
 
-        let lastChar = String(result.last ?? Character(" "))
+        // 异步处理:自我纠正+口水词+LLM润色+自动标点
+        Task { [weak self] in
+            guard let self = self else { return }
+            let processed = await TextProcessor.shared.process(rawText)
 
-        var isQuestion = false
-        if questionEndings.contains(lastChar) {
-            isQuestion = true
-        }
-        for word in questionWords {
-            if result.contains(word) {
-                isQuestion = true
-                break
+            await MainActor.run {
+                if !processed.isEmpty && !self.hasInsertedText {
+                    self.textDocumentProxy.insertText(processed)
+                    self.hasInsertedText = true
+                    let preview = processed.prefix(30)
+                    self.liveTextLabel.text = "已输入 ✓  \(preview)\(processed.count > 30 ? "…" : "")"
+                } else {
+                    self.liveTextLabel.text = "未识别到语音,请重试"
+                }
+                self.cleanup()
             }
         }
-
-        if isQuestion {
-            result += "？"
-        } else if lastChar == "的" || lastChar == "了" || lastChar == "着" {
-            result += "。"
-        } else {
-            result += "。"
-        }
-
-        return result
     }
 
     // MARK: - 清理
