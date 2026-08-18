@@ -1,0 +1,4 @@
+CFBundleDisplayName = "VoType";
+CFBundleName = "VoType";
+NSMicrophoneUsageDescription = "VoType needs microphone access for voice-to-text input";
+NSSpeechRecognitionUsageDescription = "VoType needs speech recognition to convert your voice to text";

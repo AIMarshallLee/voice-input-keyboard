@@ -133,12 +133,12 @@ jobs:
           echo "Found: $APP_PATH"
           mkdir -p Payload
           cp -r "$APP_PATH" Payload/
-          zip -r VoiceInputKeyboard.ipa Payload
-          ls -la VoiceInputKeyboard.ipa
+          zip -r VoType.ipa Payload
+          ls -la VoType.ipa
 
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
-          name: VoiceInputKeyboard-IPA
-          path: VoiceInputKeyboard.ipa
+          name: VoType-IPA
+          path: VoType.ipa
           retention-days: 30

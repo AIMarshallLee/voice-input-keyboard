@@ -46,9 +46,9 @@ struct ContentView: View {
                         Image(systemName: "mic.circle.fill")
                             .font(.system(size: 64))
                             .foregroundColor(.blue)
-                        Text("语音输入键盘")
+                        Text("VoType")
                             .font(.title2.bold())
-                        Text("离线语音转文字 · 翻译 · 格式化 · 语音编辑 · 场景感知 · 20语言")
+                        Text("声入 · 离线语音转文字 · 翻译 · 格式化 · 语音编辑 · 场景感知 · 20语言")
                             .font(.caption)
                             .foregroundColor(.secondary)
                             .multilineTextAlignment(.center)
@@ -335,7 +335,7 @@ struct ContentView: View {
                 }
                 .padding()
             }
-            .navigationTitle("语音输入键盘")
+            .navigationTitle("VoType")
             .onAppear {
                 loadSettings()
                 loadDictionary()

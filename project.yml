@@ -1,4 +1,4 @@
-name: VoiceInputKeyboard
+name: VoType
 options:
   bundleIdPrefix: com.voiceinput
   deploymentTarget:
@@ -19,12 +19,16 @@ targets:
     info:
       path: VoiceInputApp/Info.plist
       properties:
-        CFBundleDisplayName: 语音输入键盘
+        CFBundleDisplayName: VoType
+        CFBundleDevelopmentRegion: en
+        CFBundleLocalizations:
+          - en
+          - zh-Hans
         CFBundleShortVersionString: "1.0"
         CFBundleVersion: "1"
         LSRequiresIPhoneOS: true
-        NSMicrophoneUsageDescription: 需要使用麦克风来进行语音转文字输入
-        NSSpeechRecognitionUsageDescription: 需要语音识别权限将你说的话转换成文字
+        NSMicrophoneUsageDescription: VoType needs microphone access for voice-to-text input
+        NSSpeechRecognitionUsageDescription: VoType needs speech recognition to convert your voice to text
         UILaunchScreen:
           UIColorName: ""
         UISupportedInterfaceOrientations:
@@ -62,11 +66,15 @@ targets:
     info:
       path: KeyboardExtension/Info.plist
       properties:
-        CFBundleDisplayName: 语音输入
+        CFBundleDisplayName: VoType
+        CFBundleDevelopmentRegion: en
+        CFBundleLocalizations:
+          - en
+          - zh-Hans
         CFBundleShortVersionString: "1.0"
         CFBundleVersion: "1"
-        NSMicrophoneUsageDescription: 需要使用麦克风来进行语音转文字输入
-        NSSpeechRecognitionUsageDescription: 需要语音识别权限将你说的话转换成文字
+        NSMicrophoneUsageDescription: VoType needs microphone access for voice-to-text input
+        NSSpeechRecognitionUsageDescription: VoType needs speech recognition to convert your voice to text
         NSExtension:
           NSExtensionAttributes:
             IsASCIICapable: false

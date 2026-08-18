@@ -1,0 +1,4 @@
+CFBundleDisplayName = "声入";
+CFBundleName = "声入";
+NSMicrophoneUsageDescription = "声入需要使用麦克风进行语音转文字输入";
+NSSpeechRecognitionUsageDescription = "声入需要语音识别权限将你说的话转换成文字";
