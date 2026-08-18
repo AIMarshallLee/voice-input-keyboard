@@ -1,4 +1,19 @@
-.build/
-*.xcodeproj/xcuserdata/
+# Xcode
+*.xcodeproj
+*.xcworkspace
+build/
 DerivedData/
-*.xcodeproj/
+*.ipa
+*.dSYM
+
+# XcodeGen
+VoiceInputKeyboard.xcodeproj
+
+# Output
+ipa-output/
+
+# macOS
+.DS_Store
+
+# Swift Package Manager
+.swiftpm/
