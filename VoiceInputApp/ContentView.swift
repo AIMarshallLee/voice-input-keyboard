@@ -14,6 +14,7 @@ struct ContentView: View {
     @State private var livePreview = true
     @State private var smartCorrection = true
     @State private var llmPolish = true
+    @State private var enabledLanguageIDs: [String] = []
 
     // 词典管理
     @State private var dictionaryEntries: [(String, String)] = []
@@ -111,6 +112,37 @@ struct ContentView: View {
                     .background(Color(.systemGray6))
                     .cornerRadius(16)
 
+                    // 语言偏好
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("语言偏好").font(.headline)
+                        Text("选择您常用的语言,键盘上可快速切换。仅启用的语言会出现在切换列表中。")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+
+                        ForEach(LanguageManager.allLanguages, id: \.id) { lang in
+                            HStack {
+                                Text("\(lang.flag) \(lang.name)")
+                                    .font(.subheadline)
+                                Spacer()
+                                if enabledLanguageIDs.contains(lang.id) {
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .foregroundColor(.blue)
+                                } else {
+                                    Image(systemName: "circle")
+                                        .foregroundColor(.secondary)
+                                }
+                            }
+                            .padding(.vertical, 4)
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                toggleLanguage(lang.id)
+                            }
+                        }
+                    }
+                    .padding()
+                    .background(Color(.systemGray6))
+                    .cornerRadius(16)
+
                     // 个人词典
                     VStack(alignment: .leading, spacing: 14) {
                         HStack {
@@ -192,6 +224,7 @@ struct ContentView: View {
             .onAppear {
                 loadSettings()
                 loadDictionary()
+                loadLanguages()
                 checkStatus()
             }
             .onChange(of: autoPunctuation) { v in saveSetting("autoPunctuation", v) }
@@ -229,6 +262,17 @@ struct ContentView: View {
     private func loadDictionary() {
         let dict = sharedDefaults?.dictionary(forKey: "personalDictionary") as? [String: String] ?? [:]
         dictionaryEntries = dict.map { ($0.key, $0.value) }.sorted { $0.0 < $1.0 }
+    }
+
+    // MARK: - 语言偏好
+
+    private func loadLanguages() {
+        enabledLanguageIDs = LanguageManager.shared.enabledLanguageIDs
+    }
+
+    private func toggleLanguage(_ id: String) {
+        LanguageManager.shared.toggleLanguage(id)
+        enabledLanguageIDs = LanguageManager.shared.enabledLanguageIDs
     }
 
     private func addEntry() {

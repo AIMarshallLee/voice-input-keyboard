@@ -15,6 +15,7 @@ targets:
         excludes:
           - "Info.plist"
           - "VoiceInputApp.entitlements"
+      - path: Shared
     info:
       path: VoiceInputApp/Info.plist
       properties:
@@ -57,6 +58,7 @@ targets:
         excludes:
           - "Info.plist"
           - "KeyboardExtension.entitlements"
+      - path: Shared
     info:
       path: KeyboardExtension/Info.plist
       properties:

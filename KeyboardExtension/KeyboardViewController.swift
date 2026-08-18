@@ -19,6 +19,7 @@ class KeyboardViewController: UIInputViewController {
     // MARK: - UI 元素
     private let micButton = UIButton(type: .system)
     private let globeButton = UIButton(type: .system)
+    private let langButton = UIButton(type: .system)
     private let deleteButton = UIButton(type: .system)
     private let spaceButton = UIButton(type: .system)
     private let returnButton = UIButton(type: .system)
@@ -124,6 +125,16 @@ class KeyboardViewController: UIInputViewController {
         globeButton.widthAnchor.constraint(equalToConstant: 44).isActive = true
         globeButton.heightAnchor.constraint(equalToConstant: 36).isActive = true
 
+        // 语言切换按钮 (显示当前语言国旗)
+        langButton.tintColor = textColor
+        langButton.backgroundColor = buttonColor
+        langButton.layer.cornerRadius = 8
+        langButton.translatesAutoresizingMaskIntoConstraints = false
+        langButton.addTarget(self, action: #selector(langTapped), for: .touchUpInside)
+        langButton.widthAnchor.constraint(equalToConstant: 50).isActive = true
+        langButton.heightAnchor.constraint(equalToConstant: 36).isActive = true
+        updateLangButton()
+
         // 空格
         spaceButton.setTitle("空格", for: .normal)
         spaceButton.setTitleColor(textColor, for: .normal)
@@ -157,7 +168,7 @@ class KeyboardViewController: UIInputViewController {
         returnButton.heightAnchor.constraint(equalToConstant: 36).isActive = true
 
         // 底部工具栏
-        let bottomBar = UIStackView(arrangedSubviews: [globeButton, spaceButton, deleteButton, returnButton])
+        let bottomBar = UIStackView(arrangedSubviews: [globeButton, langButton, spaceButton, deleteButton, returnButton])
         bottomBar.axis = .horizontal
         bottomBar.spacing = 6
         bottomBar.alignment = .fill
@@ -214,10 +225,26 @@ class KeyboardViewController: UIInputViewController {
     // MARK: - 语音识别设置
 
     private func setupSpeech() {
-        speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: "zh-CN"))
-        if speechRecognizer == nil {
-            speechRecognizer = SFSpeechRecognizer()
+        speechRecognizer = LanguageManager.shared.createSpeechRecognizer()
+    }
+
+    // MARK: - 语言切换
+
+    private func updateLangButton() {
+        let lang = LanguageManager.shared.currentLanguage
+        let title = "\(lang.flag) \(lang.id.split(separator: "-").first ?? "")"
+        langButton.setTitle(title, for: .normal)
+        langButton.titleLabel?.font = UIFont.systemFont(ofSize: 13, weight: .medium)
+    }
+
+    @objc private func langTapped() {
+        if isRecording {
+            stopRecording()
         }
+        let newLang = LanguageManager.shared.cycleToNextLanguage()
+        speechRecognizer = LanguageManager.shared.createSpeechRecognizer()
+        updateLangButton()
+        liveTextLabel.text = "语言切换至: \(newLang.flag) \(newLang.name)"
     }
 
     // MARK: - 按钮事件

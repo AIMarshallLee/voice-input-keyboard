@@ -186,37 +186,48 @@ class TextProcessor {
         return result.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    // MARK: - 自动标点
+    // MARK: - 自动标点 (基于当前语言规则)
 
     func addAutoPunctuation(to text: String) -> String {
         guard !text.isEmpty else { return text }
         var result = text
 
-        let punctuationSet: Set<Character> = ["。", "！", "？", "，", "、", "：", "；", ".", "!", "?", ","]
+        let lang = LanguageManager.shared.currentLanguage
+        let rules = lang.punctuationRules
+
+        // 如果已有标点结尾,不重复添加
+        let punctuationSet: Set<Character> = Set("。！？，、：；.!?,;\(rules.sentenceEnd)\(rules.questionMark)\(rules.comma)")
         if let last = result.last, punctuationSet.contains(last) {
             return result
         }
 
-        let questionEndings = ["吗", "呢", "吧", "嘛"]
-        let questionWords = ["怎么", "什么", "为什么", "哪里", "哪儿", "谁", "哪个", "哪些", "多少", "几", "是不是", "能不能", "可不可以", "难道"]
-
-        let lastChar = String(result.last ?? Character(" "))
+        let lastChar = String(result.last ?? Character(" ")).lowercased()
 
         var isQuestion = false
-        if questionEndings.contains(lastChar) {
-            isQuestion = true
-        }
-        for word in questionWords {
-            if result.contains(word) {
+
+        // 检查问句结尾词
+        for ending in rules.questionEndings {
+            if lastChar.hasSuffix(ending.lowercased()) {
                 isQuestion = true
                 break
             }
         }
 
+        // 检查问句关键词
+        if !isQuestion {
+            let lowerResult = result.lowercased()
+            for word in rules.questionWords {
+                if lowerResult.contains(word.lowercased()) {
+                    isQuestion = true
+                    break
+                }
+            }
+        }
+
         if isQuestion {
-            result += "？"
+            result += rules.questionMark
         } else {
-            result += "。"
+            result += rules.sentenceEnd
         }
 
         return result
@@ -243,15 +254,19 @@ class TextProcessor {
     private func llmPolish(_ text: String) async -> String? {
         guard SystemLanguageModel.default.isAvailable else { return nil }
 
-        let instructions = """
-        你是语音输入的文字清理助手。请清理以下语音转文字的结果:
-        1. 移除多余的口水词(嗯、啊、那个等)
-        2. 修复明显的识别错误
-        3. 保持原意不变,不要添加或删除信息
-        4. 不要改变说话者的语气和风格
-        5. 只返回清理后的文字,不要解释
+        let lang = LanguageManager.shared.currentLanguage
+        let langName = lang.name
 
-        注意:不要自作主张改变格式,不要添加列表或分段,保持原始的一段文字。
+        let instructions = """
+        You are a voice-to-text cleanup assistant. The input language is \(langName).
+        Clean up the following speech-to-text result:
+        1. Remove filler words (um, uh, er, like, etc.)
+        2. Fix obvious recognition errors
+        3. Keep the original meaning, do not add or remove information
+        4. Do not change the speaker's tone or style
+        5. Return ONLY the cleaned text, no explanations
+        6. Do NOT reformat: no lists, no paragraphs, keep it as one continuous text
+        7. Do NOT auto-correct grammar unless it's clearly a recognition error
         """
 
         do {
