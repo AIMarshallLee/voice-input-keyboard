@@ -224,8 +224,7 @@ class KeyboardViewController: UIInputViewController {
             // 优先使用设备端识别(完全离线,不依赖网络)
             // 这是 Typeless 做不到的:它必须走云端
             if #available(iOS 13, *) {
-                let locale = Locale(identifier: "zh-CN")
-                req.requiresOnDeviceRecognition = speechRecognizer?.supportsOnDeviceRecognition(locale: locale) ?? false
+                req.requiresOnDeviceRecognition = speechRecognizer?.supportsOnDeviceRecognition ?? false
             }
 
             recognitionTask = speechRecognizer?.recognitionTask(with: req) { [weak self] result, error in
