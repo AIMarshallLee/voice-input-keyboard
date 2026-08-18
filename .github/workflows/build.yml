@@ -92,7 +92,7 @@ jobs:
         if: steps.check_secrets.outputs.has_signing == 'true'
         run: |
           xcodebuild \
-            -project VoiceInputKeyboard.xcodeproj \
+            -project VoType.xcodeproj \
             -scheme VoiceInputApp \
             -configuration Release \
             -sdk iphoneos \
@@ -109,7 +109,7 @@ jobs:
         if: steps.check_secrets.outputs.has_signing != 'true'
         run: |
           xcodebuild \
-            -project VoiceInputKeyboard.xcodeproj \
+            -project VoType.xcodeproj \
             -scheme VoiceInputApp \
             -configuration Release \
             -sdk iphoneos \

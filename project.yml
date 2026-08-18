@@ -15,6 +15,11 @@ targets:
         excludes:
           - "Info.plist"
           - "VoiceInputApp.entitlements"
+          - "*.lproj"
+      - path: VoiceInputApp/en.lproj
+        type: folder
+      - path: VoiceInputApp/zh-Hans.lproj
+        type: folder
       - path: Shared
     info:
       path: VoiceInputApp/Info.plist
@@ -62,6 +67,11 @@ targets:
         excludes:
           - "Info.plist"
           - "KeyboardExtension.entitlements"
+          - "*.lproj"
+      - path: KeyboardExtension/en.lproj
+        type: folder
+      - path: KeyboardExtension/zh-Hans.lproj
+        type: folder
       - path: Shared
     info:
       path: KeyboardExtension/Info.plist
