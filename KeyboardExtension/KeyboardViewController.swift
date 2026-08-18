@@ -541,7 +541,7 @@ class KeyboardViewController: UIInputViewController {
 
         // 获取上下文:选中文本(语音编辑)和键盘类型(场景感知)
         let selectedText = selectedTextBeforeRecording
-        let kbType = textDocumentProxy.keyboardType.rawValue
+        let kbType = textDocumentProxy.keyboardType?.rawValue ?? 0
 
         // 异步处理:语音编辑+自我纠正+口水词+LLM润色+翻译+自动格式化+自动标点
         Task { [weak self] in

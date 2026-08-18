@@ -141,7 +141,7 @@ class SmartFormatter {
         var items: [(index: Int, content: String)] = []
 
         // 按序数词分割文本
-        var remainingText = text
+        let remainingText = text
         var positions: [(start: Int, length: Int, ordinal: Int)] = []
 
         for (keyword, ordinal) in patterns {

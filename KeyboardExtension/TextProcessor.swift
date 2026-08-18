@@ -339,7 +339,7 @@ class TextProcessor {
             (try! NSRegularExpression(pattern: "那个叫什么[,，]?对[,，]?(.+?)"), "$1"),
         ]
 
-        for (pattern, replacement) in correctionPatterns {
+        for (pattern, _) in correctionPatterns {
             let range = NSRange(result.startIndex..., in: result)
             if let match = pattern.firstMatch(in: result, options: [], range: range),
                match.numberOfRanges >= 2,
