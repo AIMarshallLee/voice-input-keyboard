@@ -34,6 +34,9 @@ class TextProcessor {
     var llmPolishEnabled: Bool {
         sharedDefaults?.object(forKey: "llmPolish") as? Bool ?? true
     }
+    var livePreviewEnabled: Bool {
+        sharedDefaults?.object(forKey: "livePreview") as? Bool ?? true
+    }
 
     // MARK: - 口水词
 
