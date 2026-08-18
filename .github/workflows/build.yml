@@ -1,0 +1,48 @@
+name: Build IPA
+
+on:
+  workflow_dispatch:  # 手动触发
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode Project
+        run: xcodegen generate
+
+      - name: Build App (unsigned)
+        run: |
+          xcodebuild \
+            -project VoiceInputKeyboard.xcodeproj \
+            -scheme VoiceInputApp \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGN_ENTITLEMENTS="" \
+            DEVELOPMENT_TEAM="" \
+            -derivedDataPath ./build
+
+      - name: Package IPA
+        run: |
+          APP_PATH=$(find ./build -name "VoiceInputApp.app" -path "*/Release-iphoneos/*" | head -1)
+          echo "Found app at: $APP_PATH"
+          mkdir -p Payload
+          cp -r "$APP_PATH" Payload/
+          zip -r VoiceInputKeyboard.ipa Payload
+          echo "IPA packaged: $(ls -la VoiceInputKeyboard.ipa)"
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: VoiceInputKeyboard-IPA
+          path: VoiceInputKeyboard.ipa
+          retention-days: 30
