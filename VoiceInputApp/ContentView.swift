@@ -79,7 +79,7 @@ struct ContentView: View {
 
                         ToggleRow(
                             title: "智能自我纠正",
-                            description: "检测"不对,应该是X"等口语纠正,保留最终正确版本",
+                            description: "检测「不对,应该是X」等口语纠正,保留最终正确版本",
                             isOn: $smartCorrection
                         )
 
