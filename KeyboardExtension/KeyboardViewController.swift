@@ -263,7 +263,7 @@ class KeyboardViewController: UIInputViewController {
             inputNode.removeTap(onBus: 0)
             inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in
                 req.append(buffer)
-            })
+            }
 
             audioEngine.prepare()
             try audioEngine.start()
