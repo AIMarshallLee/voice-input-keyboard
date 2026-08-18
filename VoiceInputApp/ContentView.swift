@@ -164,7 +164,7 @@ struct ContentView: View {
                         InstructionRow(text: "点击中间的大麦克风按钮")
                         InstructionRow(text: "开始说话,文字会实时显示")
                         InstructionRow(text: "说完后再次点击按钮,AI 自动处理后插入")
-                        InstructionRow(text: "说错了可以说"不对,应该是..."自动纠正")
+                        InstructionRow(text: "说错了可以说「不对,应该是...」自动纠正")
                         InstructionRow(text: "底部符号栏可快速插入标点和表情")
                     }
                     .padding()
