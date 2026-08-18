@@ -2,28 +2,32 @@ import SwiftUI
 import Speech
 import AVFoundation
 
-/// 主 App 界面:引导用户安装键盘、授权权限、查看使用说明
+/// 主 App:引导安装 + 设置 + 隐私说明
 struct ContentView: View {
 
     @State private var speechAuthorized = false
     @State private var micAuthorized = false
     @State private var keyboardAdded = false
 
+    @State private var autoPunctuation = true
+    @State private var fillerWordRemoval = true
+    @State private var livePreview = true
+
+    private let sharedDefaults = UserDefaults(suiteName: "group.com.voiceinput.shared")
+
     var body: some View {
         NavigationView {
             ScrollView {
-                VStack(spacing: 24) {
+                VStack(spacing: 20) {
 
-                    // 标题区
+                    // 标题
                     VStack(spacing: 8) {
                         Image(systemName: "mic.circle.fill")
-                            .font(.system(size: 72))
+                            .font(.system(size: 64))
                             .foregroundColor(.blue)
-
                         Text("语音输入键盘")
                             .font(.title2.bold())
-
-                        Text("一键语音转文字,专为远程控制场景优化")
+                        Text("离线语音转文字 · 中英混输 · 去口水词 · 自动标点")
                             .font(.caption)
                             .foregroundColor(.secondary)
                             .multilineTextAlignment(.center)
@@ -32,6 +36,7 @@ struct ContentView: View {
 
                     // 安装步骤
                     VStack(alignment: .leading, spacing: 16) {
+                        Text("安装设置").font(.headline)
 
                         StepRow(
                             number: 1,
@@ -51,7 +56,7 @@ struct ContentView: View {
                         StepRow(
                             number: 3,
                             title: "授权语音识别",
-                            description: "点击下方按钮授权语音识别权限",
+                            description: "点击下方按钮授权语音识别和麦克风权限",
                             isDone: speechAuthorized,
                             action: requestSpeechPermission
                         )
@@ -60,34 +65,58 @@ struct ContentView: View {
                     .background(Color(.systemGray6))
                     .cornerRadius(16)
 
+                    // 输入设置
+                    VStack(alignment: .leading, spacing: 14) {
+                        Text("输入设置").font(.headline)
+
+                        ToggleRow(
+                            title: "自动标点",
+                            description: "识别结束后自动添加。！？等标点",
+                            isOn: $autoPunctuation
+                        )
+
+                        ToggleRow(
+                            title: "去口水词",
+                            description: "自动去除「嗯、啊、那个」等口水词",
+                            isOn: $fillerWordRemoval
+                        )
+
+                        ToggleRow(
+                            title: "实时预览",
+                            description: "说话时实时显示识别结果",
+                            isOn: $livePreview
+                        )
+                    }
+                    .padding()
+                    .background(Color(.systemGray6))
+                    .cornerRadius(16)
+
                     // 使用说明
                     VStack(alignment: .leading, spacing: 12) {
-                        Text("使用方法")
-                            .font(.headline)
+                        Text("使用方法").font(.headline)
 
                         InstructionRow(text: "在 UU远程(或其他任何 App)中点击输入框")
                         InstructionRow(text: "键盘弹出后,切换到「语音输入」键盘")
                         InstructionRow(text: "点击中间的大麦克风按钮")
                         InstructionRow(text: "开始说话,文字会实时显示")
                         InstructionRow(text: "说完后再次点击按钮,文字自动插入")
+                        InstructionRow(text: "底部符号栏可快速插入标点和表情")
                     }
                     .padding()
                     .background(Color(.systemGray6))
                     .cornerRadius(16)
 
-                    // 注意事项
+                    // 隐私说明
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("注意事项")
-                            .font(.headline)
-                            .foregroundColor(.orange)
+                        Text("隐私说明").font(.headline).foregroundColor(.green)
 
-                        Text("• 首次使用时,iOS 会弹窗请求麦克风和语音识别权限")
-                        Text("• 中文识别优先使用设备端模型,无需网络也可工作")
-                        Text("• 如识别不准确,可在系统设置中关闭再重新打开键盘")
-                        Text("• 本键盘不收集任何数据,所有识别在设备本地完成")
+                        Text("• 所有语音识别在设备本地完成,不上传任何数据")
+                        Text("• 不收集任何用户信息")
+                        Text("• 无网络连接也可正常工作")
+                        Text("• 键盘仅在您点击麦克风时才使用麦克风")
                     }
                     .padding()
-                    .background(Color.orange.opacity(0.08))
+                    .background(Color.green.opacity(0.08))
                     .cornerRadius(16)
                     .font(.caption)
                 }
@@ -95,12 +124,29 @@ struct ContentView: View {
             }
             .navigationTitle("语音输入键盘")
             .onAppear {
+                loadSettings()
                 checkStatus()
             }
+            .onChange(of: autoPunctuation) { _, v in saveSetting("autoPunctuation", v) }
+            .onChange(of: fillerWordRemoval) { _, v in saveSetting("fillerWordRemoval", v) }
+            .onChange(of: livePreview) { _, v in saveSetting("livePreview", v) }
         }
+        .navigationViewStyle(.stack)
     }
 
-    // MARK: - 检查状态
+    // MARK: - 设置读写
+
+    private func loadSettings() {
+        autoPunctuation = sharedDefaults?.object(forKey: "autoPunctuation") as? Bool ?? true
+        fillerWordRemoval = sharedDefaults?.object(forKey: "fillerWordRemoval") as? Bool ?? true
+        livePreview = sharedDefaults?.object(forKey: "livePreview") as? Bool ?? true
+    }
+
+    private func saveSetting(_ key: String, _ value: Bool) {
+        sharedDefaults?.set(value, forKey: key)
+    }
+
+    // MARK: - 状态检查
 
     private func checkStatus() {
         let speechStatus = SFSpeechRecognizer.authorizationStatus()
@@ -108,9 +154,6 @@ struct ContentView: View {
 
         let micStatus = AVAudioSession.sharedInstance().recordPermission
         micAuthorized = (micStatus == .granted)
-
-        // 检查键盘是否已安装
-        // (iOS 不提供直接检查方式,这里始终显示未完成,用户手动确认)
     }
 
     // MARK: - 操作
@@ -127,8 +170,6 @@ struct ContentView: View {
                 speechAuthorized = (status == .authorized)
             }
         }
-
-        // 同时请求麦克风权限
         AVAudioSession.sharedInstance().requestRecordPermission { granted in
             DispatchQueue.main.async {
                 micAuthorized = granted
@@ -166,11 +207,9 @@ struct StepRow: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(title)
                     .font(.subheadline.bold())
-
                 Text(description)
                     .font(.caption)
                     .foregroundColor(.secondary)
-
                 if let action = action, !isDone {
                     Button("前往设置 →", action: action)
                         .font(.caption.bold())
@@ -178,6 +217,24 @@ struct StepRow: View {
                         .padding(.top, 4)
                 }
             }
+        }
+    }
+}
+
+struct ToggleRow: View {
+    let title: String
+    let description: String
+    @Binding var isOn: Bool
+
+    var body: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.subheadline.bold())
+                Text(description).font(.caption2).foregroundColor(.secondary)
+            }
+            Spacer()
+            Toggle("", isOn: $isOn)
+                .labelsHidden()
         }
     }
 }
