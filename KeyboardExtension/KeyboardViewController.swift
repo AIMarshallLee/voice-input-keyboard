@@ -486,16 +486,23 @@ class KeyboardViewController: UIInputViewController {
                 }
             }
 
-            // 直接用音频会话的采样率创建标准 PCM 格式
-            // 不依赖 inputNode.outputFormat(forBus: 0),键盘扩展中该值可能无效
-            let sessionRate = session.sampleRate > 0 ? session.sampleRate : 44100
-            guard let tapFormat = AVAudioFormat(standardFormatWithSampleRate: sessionRate, channels: 1) else {
-                liveTextLabel.text = "音频格式初始化失败"
-                cleanup()
-                return
+            // 获取输入节点的硬件格式,无效时回退到 44100/mono
+            // 注意: 不能用 session.sampleRate,键盘扩展中可能返回 48000 导致格式不兼容
+            let inputNode = engine.inputNode
+            let hardwareFormat = inputNode.outputFormat(forBus: 0)
+            let tapFormat: AVAudioFormat
+            if hardwareFormat.sampleRate > 0 && hardwareFormat.channelCount > 0 {
+                tapFormat = hardwareFormat
+            } else {
+                // 回退到 44100/mono (Build 3 验证过可以正常启动引擎)
+                guard let fallback = AVAudioFormat(standardFormatWithSampleRate: 44100, channels: 1) else {
+                    liveTextLabel.text = "音频格式初始化失败"
+                    cleanup()
+                    return
+                }
+                tapFormat = fallback
             }
 
-            let inputNode = engine.inputNode
             inputNode.removeTap(onBus: 0)
             inputNode.installTap(onBus: 0, bufferSize: 1024, format: tapFormat) { buffer, _ in
                 req.append(buffer)
