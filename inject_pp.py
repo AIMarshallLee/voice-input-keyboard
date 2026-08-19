@@ -29,11 +29,11 @@ content = re.sub(r'PROVISIONING_PROFILE_SPECIFIER = "[^"]*";', 'PROVISIONING_PRO
 content = re.sub(r'PROVISIONING_PROFILE = "[^"]*";', 'PROVISIONING_PROFILE = "";', content)
 
 # Inject PROVISIONING_PROFILE after each target's bundle ID
-app_replacement = f'PRODUCT_BUNDLE_IDENTIFIER = com.voiceinput.app;\n\t\t\t\tPROVISIONING_PROFILE = "{pp_app}";'
-kb_replacement = f'PRODUCT_BUNDLE_IDENTIFIER = com.voiceinput.votype.keyboard;\n\t\t\t\tPROVISIONING_PROFILE = "{pp_kb}";'
+app_replacement = f'PRODUCT_BUNDLE_IDENTIFIER = com.votype.app;\n\t\t\t\tPROVISIONING_PROFILE = "{pp_app}";'
+kb_replacement = f'PRODUCT_BUNDLE_IDENTIFIER = com.votype.app.keyboard;\n\t\t\t\tPROVISIONING_PROFILE = "{pp_kb}";'
 
-content = content.replace('PRODUCT_BUNDLE_IDENTIFIER = com.voiceinput.app;', app_replacement)
-content = content.replace('PRODUCT_BUNDLE_IDENTIFIER = com.voiceinput.votype.keyboard;', kb_replacement)
+content = content.replace('PRODUCT_BUNDLE_IDENTIFIER = com.votype.app;', app_replacement)
+content = content.replace('PRODUCT_BUNDLE_IDENTIFIER = com.votype.app.keyboard;', kb_replacement)
 
 with open(pbxproj_path, 'w') as f:
     f.write(content)
