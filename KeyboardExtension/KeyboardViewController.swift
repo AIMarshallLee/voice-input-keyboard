@@ -1,4 +1,5 @@
 import UIKit
+import CoreFoundation
 
 /// 语音输入键盘 - 容器 App 回调架构
 /// iOS 键盘扩展无法直接录音(平台限制)

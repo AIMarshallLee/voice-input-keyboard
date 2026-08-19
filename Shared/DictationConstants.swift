@@ -1,5 +1,6 @@
 import Foundation
 import UIKit
+import CoreFoundation
 
 /// 键盘扩展与容器 App 之间通信的共享常量
 /// iOS 键盘扩展无法直接录音(平台限制)
@@ -71,7 +72,7 @@ enum DictationConstants {
         ]
         guard let data = try? JSONSerialization.data(withJSONObject: payload),
               let json = String(data: data, encoding: .utf8) else { return }
-        let pb = UIPasteboard(name: pasteboardName as String, create: true)
+        let pb = UIPasteboard(name: UIPasteboard.Name(rawValue: pasteboardName), create: true)
         pb?.string = json
     }
 
@@ -83,13 +84,13 @@ enum DictationConstants {
         ]
         guard let data = try? JSONSerialization.data(withJSONObject: payload),
               let json = String(data: data, encoding: .utf8) else { return }
-        let pb = UIPasteboard(name: pasteboardName as String, create: true)
+        let pb = UIPasteboard(name: UIPasteboard.Name(rawValue: pasteboardName), create: true)
         pb?.string = json
     }
 
     /// 读取并消费剪贴板结果,返回 (text?, error?)
     static func readAndConsumeResult() -> (text: String?, error: String?) {
-        guard let pb = UIPasteboard(name: pasteboardName as String, create: false),
+        guard let pb = UIPasteboard(name: UIPasteboard.Name(rawValue: pasteboardName), create: false),
               let json = pb.string,
               let data = json.data(using: .utf8),
               let dict = try? JSONSerialization.jsonObject(with: data) as? [String: String] else {
