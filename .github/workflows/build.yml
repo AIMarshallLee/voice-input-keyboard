@@ -259,6 +259,41 @@ jobs:
             --api-key-path /tmp/api_key.json \
             --skip_waiting_for_build_processing
 
+      - name: Upload Metadata & Screenshots to App Store Connect
+        if: steps.check_dist.outputs.has_dist == 'true'
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_CONTENT: ${{ secrets.ASC_KEY_CONTENT }}
+        run: |
+          # 创建 API key JSON
+          python3 -c "
+          import json, os, base64
+          key_id = os.environ['ASC_KEY_ID']
+          issuer_id = os.environ['ASC_ISSUER_ID']
+          key_b64 = os.environ['ASC_KEY_CONTENT']
+          key = base64.b64decode(key_b64).decode('utf-8')
+          api_key = {
+              'key_id': key_id,
+              'issuer_id': issuer_id,
+              'key': key,
+              'in_house': False
+          }
+          with open('/tmp/api_key.json', 'w') as f:
+              json.dump(api_key, f, indent=2)
+          print('API key JSON created')
+          "
+
+          # 上传元数据和截图
+          fastlane deliver \
+            --api-key-path /tmp/api_key.json \
+            --metadata fastlane/metadata \
+            --screenshots fastlane/screenshots \
+            --skip_binary_upload \
+            --force \
+            --precheck_include_in_app_purchases false \
+            --automatic_release
+
       - name: Cleanup Keychain
         if: always()
         run: |

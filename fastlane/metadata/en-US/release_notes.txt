@@ -1,0 +1,1 @@
+Initial release! VoType brings privacy-first voice-to-text to your keyboard.
