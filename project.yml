@@ -95,7 +95,7 @@ targets:
           NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).KeyboardViewController
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.voiceinput.app.keyboard
+        PRODUCT_BUNDLE_IDENTIFIER: com.voiceinput.votype.keyboard
         SWIFT_VERSION: "5.9"
         IPHONEOS_DEPLOYMENT_TARGET: "16.0"
         GENERATE_INFOPLIST_FILE: NO
