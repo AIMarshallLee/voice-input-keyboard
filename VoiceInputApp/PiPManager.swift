@@ -113,7 +113,7 @@ class PiPManager: NSObject {
     }
 
     /// 生成录音状态画面
-    private func generateRecordingImage(isFinal: Bool) UIImage {
+    private func generateRecordingImage(isFinal: Bool) -> UIImage {
         let size = CGSize(width: 640, height: 360)
         let renderer = UIGraphicsImageRenderer(size: size)
 
