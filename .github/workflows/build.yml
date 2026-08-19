@@ -93,44 +93,58 @@ jobs:
       # ---- 签名构建 ----
       - name: Build App (signed)
         if: steps.check_secrets.outputs.has_signing == 'true'
+        env:
+          PP_UUID_APP: ${{ env.PP_UUID_APP }}
+          PP_UUID_KB: ${{ env.PP_UUID_KB }}
         run: |
-          # 直接在 xcodeproj 中注入 PROVISIONING_PROFILE UUID
+          # 在 xcodeproj 中按 target 注入 PROVISIONING_PROFILE UUID
           python3 << 'PYEOF'
           import re
+
+          pp_app = "$PP_UUID_APP"
+          pp_kb = "$PP_UUID_KB"
 
           with open('VoType.xcodeproj/project.pbxproj', 'r') as f:
               content = f.read()
 
-          # 清除所有 PROVISIONING_PROFILE_SPECIFIER 值
+          # 找到 VoiceInputApp 的 Build Settings block，注入 PROVISIONING_PROFILE
+          # 按 target name 附近的 build settings 注入
+          # 策略：找包含 "com.voiceinput.app" 的行附近，注入 PROVISIONING_PROFILE
+          # 更简单的方法：用 PROVISIONING_PROFILE_SPECIFIER 指定名字
+
+          # 把所有 PROVISIONING_PROFILE_SPECIFIER 清空
           content = re.sub(
               r'PROVISIONING_PROFILE_SPECIFIER = "[^"]*";',
               'PROVISIONING_PROFILE_SPECIFIER = "";',
               content
           )
-          # 清除所有 PROVISIONING_PROFILE 值
+          # 把所有 PROVISIONING_PROFILE 清空
           content = re.sub(
               r'PROVISIONING_PROFILE = "[^"]*";',
               'PROVISIONING_PROFILE = "";',
               content
           )
 
+          # 通过 PRODUCT_BUNDLE_IDENTIFIER 找到对应 target 的 build settings block
+          # VoiceInputApp target: com.voiceinput.app
+          # KeyboardExtension target: com.voiceinput.votype.keyboard
+
+          # 对 App target：在 com.voiceinput.app 后面注入 PROVISIONING_PROFILE
+          content = content.replace(
+              'PRODUCT_BUNDLE_IDENTIFIER = "com.voiceinput.app";',
+              'PRODUCT_BUNDLE_IDENTIFIER = "com.voiceinput.app";\n\t\t\t\tPROVISIONING_PROFILE = "' + pp_app + '";'
+          )
+
+          # 对 Keyboard target：在 com.voiceinput.votype.keyboard 后面注入 PROVISIONING_PROFILE
+          content = content.replace(
+              'PRODUCT_BUNDLE_IDENTIFIER = "com.voiceinput.votype.keyboard";',
+              'PRODUCT_BUNDLE_IDENTIFIER = "com.voiceinput.votype.keyboard";\n\t\t\t\tPROVISIONING_PROFILE = "' + pp_kb + '";'
+          )
+
           with open('VoType.xcodeproj/project.pbxproj', 'w') as f:
               f.write(content)
-          print('Cleared provisioning profile settings')
+          print(f'Injected PP UUIDs: App={pp_app}, KB={pp_kb}')
           PYEOF
-
-          # 分别构建键盘扩展和主应用
-          xcodebuild \
-            -project VoType.xcodeproj \
-            -target KeyboardExtension \
-            -configuration Release \
-            -sdk iphoneos \
-            CODE_SIGNING_ALLOWED=YES \
-            CODE_SIGN_IDENTITY="Apple Development" \
-            DEVELOPMENT_TEAM="$TEAM_ID" \
-            CODE_SIGN_STYLE="Manual" \
-            PROVISIONING_PROFILE="$PP_UUID_KB" \
-            OTHER_CODE_SIGN_FLAGS="--keychain $KEYCHAIN_FILE"
 
           xcodebuild \
             -project VoType.xcodeproj \
@@ -142,7 +156,6 @@ jobs:
             CODE_SIGN_IDENTITY="Apple Development" \
             DEVELOPMENT_TEAM="$TEAM_ID" \
             CODE_SIGN_STYLE="Manual" \
-            PROVISIONING_PROFILE="$PP_UUID_APP" \
             -derivedDataPath ./build \
             OTHER_CODE_SIGN_FLAGS="--keychain $KEYCHAIN_FILE"
 
