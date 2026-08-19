@@ -6,7 +6,7 @@ on:
     branches: [main]
 
 env:
-  TEAM_ID: JVP8SN8P4M
+  TEAM_ID: R765X25892
 
 jobs:
   build:
