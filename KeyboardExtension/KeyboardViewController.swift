@@ -440,11 +440,11 @@ class KeyboardViewController: UIInputViewController {
             let session = AVAudioSession.sharedInstance()
 
             // 键盘扩展中必须使用 .playAndRecord
-            // mode 用 .measurement（Apple 推荐用于语音识别）
+            // mode 用 .default（最兼容，键盘扩展环境受限）
             if isWhisperMode {
                 try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.duckOthers, .allowBluetooth])
             } else {
-                try session.setCategory(.playAndRecord, mode: .measurement, options: [.duckOthers, .allowBluetooth])
+                try session.setCategory(.playAndRecord, mode: .default, options: [.duckOthers, .allowBluetooth])
             }
             try session.setActive(true, options: .notifyOthersOnDeactivation)
 
@@ -453,7 +453,9 @@ class KeyboardViewController: UIInputViewController {
             req.shouldReportPartialResults = true
 
             if #available(iOS 13, *) {
-                req.requiresOnDeviceRecognition = speechRecognizer?.supportsOnDeviceRecognition ?? false
+                // 键盘扩展内存限制约 60MB,设备端模型动辄上百 MB
+                // 强制关闭设备端识别,使用服务器识别避免 jetsam 崩溃
+                req.requiresOnDeviceRecognition = false
             }
 
             recognitionTask = speechRecognizer?.recognitionTask(with: req) { [weak self] result, error in
@@ -484,18 +486,16 @@ class KeyboardViewController: UIInputViewController {
                 }
             }
 
-            // 会话激活后获取输入节点的实际硬件格式
-            let inputNode = engine.inputNode
-            var tapFormat = inputNode.outputFormat(forBus: 0)
-
-            // 如果硬件格式无效（sampleRate=0），使用音频会话的采样率
-            if tapFormat.sampleRate == 0 || tapFormat.channelCount == 0 {
-                let sessionRate = session.sampleRate > 0 ? session.sampleRate : 44100
-                if let fallback = AVAudioFormat(standardFormatWithSampleRate: sessionRate, channels: 1) {
-                    tapFormat = fallback
-                }
+            // 直接用音频会话的采样率创建标准 PCM 格式
+            // 不依赖 inputNode.outputFormat(forBus: 0),键盘扩展中该值可能无效
+            let sessionRate = session.sampleRate > 0 ? session.sampleRate : 44100
+            guard let tapFormat = AVAudioFormat(standardFormatWithSampleRate: sessionRate, channels: 1) else {
+                liveTextLabel.text = "音频格式初始化失败"
+                cleanup()
+                return
             }
 
+            let inputNode = engine.inputNode
             inputNode.removeTap(onBus: 0)
             inputNode.installTap(onBus: 0, bufferSize: 1024, format: tapFormat) { buffer, _ in
                 req.append(buffer)
