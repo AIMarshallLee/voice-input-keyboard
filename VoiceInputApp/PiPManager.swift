@@ -318,6 +318,13 @@ class PiPManager: NSObject, AVPictureInPictureSampleBufferPlaybackDelegate, AVPi
 
     // MARK: - AVPictureInPictureSampleBufferPlaybackDelegate
 
+    @objc func pictureInPictureController(
+        _ pictureInPictureController: AVPictureInPictureController,
+        setPlaying playing: Bool
+    ) {
+        // 不需要控制播放/暂停
+    }
+
     @objc func pictureInPictureControllerTimeRangeForPlayback(
         _ pictureInPictureController: AVPictureInPictureController
     ) -> CMTimeRange {
