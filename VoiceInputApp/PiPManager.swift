@@ -16,9 +16,11 @@ class PiPManager: NSObject, AVPictureInPictureSampleBufferPlaybackDelegate, AVPi
     private var displayLayer: AVSampleBufferDisplayLayer?
     private var pipController: AVPictureInPictureController?
     private weak var hostView: UIView?
-    private var frameTimer: Timer?
+    private var frameTimer: DispatchSourceTimer?
+    private var frameQueue = DispatchQueue(label: "com.daseanle.votype.pipframes", qos: .userInitiated)
     private var recordingStartTime: Date?
     private var liveText: String = ""
+    private var isSetupComplete = false
 
     // MARK: - 状态
 
@@ -33,8 +35,16 @@ class PiPManager: NSObject, AVPictureInPictureSampleBufferPlaybackDelegate, AVPi
     // MARK: - 初始化
 
     /// 在指定 view 上设置 PiP 显示层
-    /// 必须在 viewDidAppear 之后调用,确保 view 有 window
+    /// 必须在 view 已添加到 window 后调用
     func setup(in view: UIView) {
+        guard view.window != nil else {
+            // view 还没挂到 window 上,延迟重试
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                self?.setup(in: view)
+            }
+            return
+        }
+
         hostView = view
 
         // 移除旧 layer
@@ -52,12 +62,18 @@ class PiPManager: NSObject, AVPictureInPictureSampleBufferPlaybackDelegate, AVPi
             playbackDelegate: self
         )
         let controller = AVPictureInPictureController(contentSource: source)
+        // 关键:设置为 true 后,当 App 进入后台时 PiP 会自动启动
         controller.canStartPictureInPictureAutomaticallyFromInline = true
         controller.delegate = self
         pipController = controller
 
-        // 推送第一帧
-        pushFrame()
+        // 推送 3 帧初始画面,确保 display layer 进入 rendering 状态
+        for _ in 0..<3 {
+            pushFrame()
+        }
+
+        isSetupComplete = true
+        print("[PiP] Setup complete, layer status: \(layer.status.rawValue)")
     }
 
     // MARK: - 开始 / 停止 PiP
@@ -68,21 +84,30 @@ class PiPManager: NSObject, AVPictureInPictureSampleBufferPlaybackDelegate, AVPi
             return
         }
 
-        if !controller.isPictureInPictureActive {
-            controller.startPictureInPicture()
+        guard isSetupComplete else {
+            print("[PiP] Setup not complete yet, retrying in 0.5s")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                self?.startPiP()
+            }
+            return
         }
 
-        // 开始定期刷新画面 (显示录音时长 + 波形)
-        recordingStartTime = Date()
-        frameTimer?.invalidate()
-        frameTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
-            self?.pushFrame()
+        // 确保画面在持续推送
+        startFrameTimer()
+
+        // 尝试启动 PiP
+        // 注意:在前台调用 startPictureInPicture 可能不会立即生效
+        // 但 canStartPictureInPictureAutomaticallyFromInline = true 会在进入后台时自动启动
+        if !controller.isPictureInPictureActive {
+            controller.startPictureInPicture()
+            print("[PiP] startPictureInPicture() called, will auto-start when app goes to background")
         }
+
+        recordingStartTime = Date()
     }
 
     func stopPiP() {
-        frameTimer?.invalidate()
-        frameTimer = nil
+        stopFrameTimer()
         recordingStartTime = nil
 
         // 推送最后一帧 (完成状态)
@@ -91,15 +116,40 @@ class PiPManager: NSObject, AVPictureInPictureSampleBufferPlaybackDelegate, AVPi
         // 通知 PiP 控制器状态已变更
         pipController?.invalidatePlaybackState()
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
-            self?.pipController?.stopPictureInPicture()
+        // 延迟停止 PiP,让用户看到完成画面
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+            guard let self = self else { return }
+            self.pipController?.stopPictureInPicture()
+            print("[PiP] stopPictureInPicture() called")
         }
     }
 
     /// 更新悬浮窗中显示的实时识别文本
     func updateLiveText(_ text: String) {
         liveText = text
-        pushFrame()
+        // 在后台线程生成画面,避免阻塞主线程
+        frameQueue.async { [weak self] in
+            self?.pushFrame()
+        }
+    }
+
+    // MARK: - 帧定时器 (使用 DispatchSourceTimer,后台也能可靠触发)
+
+    private func startFrameTimer() {
+        frameTimer?.cancel()
+
+        let timer = DispatchSource.makeTimerSource(queue: frameQueue)
+        timer.schedule(deadline: .now() + 0.5, repeating: 0.5)
+        timer.setEventHandler { [weak self] in
+            self?.pushFrame()
+        }
+        timer.resume()
+        frameTimer = timer
+    }
+
+    private func stopFrameTimer() {
+        frameTimer?.cancel()
+        frameTimer = nil
     }
 
     // MARK: - 画面生成
@@ -108,9 +158,15 @@ class PiPManager: NSObject, AVPictureInPictureSampleBufferPlaybackDelegate, AVPi
         guard let layer = displayLayer else { return }
 
         let image = generateRecordingImage(isFinal: isFinal)
-        guard let buffer = createSampleBuffer(from: image) else { return }
+        guard let buffer = createSampleBuffer(from: image) else {
+            print("[PiP] Failed to create sample buffer")
+            return
+        }
 
-        layer.enqueue(buffer)
+        // enqueue 必须在主线程
+        DispatchQueue.main.async {
+            layer.enqueue(buffer)
+        }
     }
 
     /// 生成录音状态画面
@@ -307,13 +363,15 @@ class PiPManager: NSObject, AVPictureInPictureSampleBufferPlaybackDelegate, AVPi
     // MARK: - 清理
 
     func cleanup() {
-        frameTimer?.invalidate()
-        frameTimer = nil
+        stopFrameTimer()
         recordingStartTime = nil
-        displayLayer?.removeFromSuperlayer()
-        displayLayer = nil
+        DispatchQueue.main.async { [weak self] in
+            self?.displayLayer?.removeFromSuperlayer()
+            self?.displayLayer = nil
+        }
         pipController = nil
         hostView = nil
+        isSetupComplete = false
     }
 
     // MARK: - AVPictureInPictureSampleBufferPlaybackDelegate
@@ -367,6 +425,7 @@ class PiPManager: NSObject, AVPictureInPictureSampleBufferPlaybackDelegate, AVPi
         _ pictureInPictureController: AVPictureInPictureController
     ) {
         print("[PiP] Did start PiP - app can now go to background")
+        NotificationCenter.default.post(name: .pipDidStart, object: nil)
     }
 
     func pictureInPictureController(
@@ -374,6 +433,8 @@ class PiPManager: NSObject, AVPictureInPictureSampleBufferPlaybackDelegate, AVPi
         failedToStartPictureInPictureWithError error: Error
     ) {
         print("[PiP] Failed to start: \(error.localizedDescription)")
+        print("[PiP] Error code: \((error as NSError).code)")
+        print("[PiP] Will retry when app goes to background (auto-start)")
     }
 
     func pictureInPictureControllerWillStopPictureInPicture(
@@ -386,6 +447,7 @@ class PiPManager: NSObject, AVPictureInPictureSampleBufferPlaybackDelegate, AVPi
         _ pictureInPictureController: AVPictureInPictureController
     ) {
         print("[PiP] Did stop PiP")
+        NotificationCenter.default.post(name: .pipDidStop, object: nil)
     }
 
     func pictureInPictureController(

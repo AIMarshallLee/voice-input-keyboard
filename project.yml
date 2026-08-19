@@ -30,7 +30,7 @@ targets:
           - en
           - zh-Hans
         CFBundleShortVersionString: "1.0"
-        CFBundleVersion: "11"
+        CFBundleVersion: "12"
         LSRequiresIPhoneOS: true
         UIBackgroundModes:
           - audio
@@ -89,7 +89,7 @@ targets:
           - en
           - zh-Hans
         CFBundleShortVersionString: "1.0"
-        CFBundleVersion: "11"
+        CFBundleVersion: "12"
         NSMicrophoneUsageDescription: VoType needs microphone access for voice-to-text input
         NSSpeechRecognitionUsageDescription: VoType needs speech recognition to convert your voice to text
         NSExtension:

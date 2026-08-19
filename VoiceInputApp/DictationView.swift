@@ -11,8 +11,8 @@ struct PiPContainerView: UIViewRepresentable {
     func makeUIView(context: Context) -> UIView {
         let view = UIView()
         view.backgroundColor = .black
-        // 延迟 setup 确保 view 已经有 window
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+        // setup 会在 view 有 window 后自动执行 (PiPManager 内部处理了重试)
+        DispatchQueue.main.async {
             PiPManager.shared.setup(in: view)
         }
         return view
@@ -192,8 +192,6 @@ class DictationViewModel: ObservableObject {
         recognitionRequest?.endAudio()
         recognitionTask?.cancel()
 
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
-
         let resultText = recognizedText
 
         if resultText.isEmpty {
@@ -206,8 +204,16 @@ class DictationViewModel: ObservableObject {
 
         hasResult = true
 
-        // 停止 PiP 悬浮窗
+        // 关键:先停 PiP,等 PiP 停止后再关闭 audio session
+        // 如果先关 audio session,App 会被系统杀掉 (因为 UIBackgroundModes: audio 靠 audio session 保活)
         PiPManager.shared.stopPiP()
+
+        // 延迟 2 秒再关闭 audio session,确保 PiP 完全停止
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+            print("[Dictation] Audio session deactivated after PiP stop")
+            _ = self
+        }
     }
 
     // MARK: - 静音自动停止
@@ -225,10 +231,6 @@ class DictationViewModel: ObservableObject {
                 }
             }
         }
-    }
-
-    private func resetSilenceTimer() {
-        // Timer 会自动继续触发,不需要重启
     }
 
     // MARK: - 清理
@@ -353,30 +355,43 @@ struct DictationView: View {
         }
         .onAppear {
             viewModel.loadSettings(from: url)
-            // 延迟 0.2s 确保 PiPContainerView 的 makeUIView 已执行
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+            // 延迟 0.3s 确保 PiPContainerView 的 makeUIView 已执行且 view 有 window
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                 viewModel.checkPermissionsAndStart()
             }
         }
         .onChange(of: viewModel.isRecording) { isRecording in
             if isRecording {
-                // 录音开始后,启动 PiP 悬浮窗
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                // 录音开始后,启动 PiP 帧定时器 + 尝试启动 PiP
+                // 实际 PiP 窗口会在用户滑回宿主 App 时自动弹出 (canStartPictureInPictureAutomaticallyFromInline = true)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                     PiPManager.shared.startPiP()
                 }
             }
         }
         .onChange(of: scenePhase) { phase in
             if phase == .background && viewModel.isRecording {
-                // App 进入后台,PiP 应该已经启动
-                // 确保 PiP 仍在运行
+                // App 进入后台,PiP 应该由 canStartPictureInPictureAutomaticallyFromInline 自动启动
+                // 如果没有自动启动,尝试手动启动 (可能为时已晚,但作为 fallback)
+                print("[Dictation] App went to background, isRecording=\(viewModel.isRecording), isPiPActive=\(PiPManager.shared.isPiPActive)")
                 if !PiPManager.shared.isPiPActive {
                     PiPManager.shared.startPiP()
                 }
+            } else if phase == .inactive && viewModel.isRecording {
+                // App 即将进入后台,这是 PiP 自动启动的时机
+                print("[Dictation] App going inactive (about to background)")
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .pipDidRestore)) { _ in
             // 用户点击了 PiP 的还原按钮,回到全屏 App
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .pipDidStart)) { _ in
+            viewModel.isPiPActive = true
+            print("[Dictation] PiP started notification received")
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .pipDidStop)) { _ in
+            viewModel.isPiPActive = false
+            print("[Dictation] PiP stopped notification received")
         }
         .onDisappear {
             viewModel.cleanup()
