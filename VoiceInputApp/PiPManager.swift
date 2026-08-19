@@ -318,27 +318,27 @@ class PiPManager: NSObject, AVPictureInPictureSampleBufferPlaybackDelegate, AVPi
 
     // MARK: - AVPictureInPictureSampleBufferPlaybackDelegate
 
-    func pictureInPictureController(
+    @objc func pictureInPictureController(
         _ pictureInPictureController: AVPictureInPictureController,
         setPlaying playing: Bool
     ) {
         // 不需要控制播放/暂停
     }
 
-    func pictureInPictureControllerTimeRange(
+    @objc func pictureInPictureControllerTimeRangeForPlayback(
         _ pictureInPictureController: AVPictureInPictureController
     ) -> CMTimeRange {
         // 返回从0开始的无限时长,让 PiP 持续保持活跃
         return CMTimeRange(start: .zero, duration: .positiveInfinity)
     }
 
-    func pictureInPictureControllerIsPlaying(
+    @objc func pictureInPictureControllerIsPlaying(
         _ pictureInPictureController: AVPictureInPictureController
     ) -> Bool {
         return true
     }
 
-    func pictureInPictureController(
+    @objc func pictureInPictureController(
         _ pictureInPictureController: AVPictureInPictureController,
         skipByInterval skipInterval: CMTime,
         completion completionHandler: @escaping () -> Void
