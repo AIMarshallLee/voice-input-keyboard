@@ -129,14 +129,7 @@ jobs:
             DEVELOPMENT_TEAM="" \
             -derivedDataPath ./build
 
-      - name: Cleanup Keychain
-        if: always()
-        run: |
-          if [ -n "$KEYCHAIN_FILE" ]; then
-            security delete-keychain "$KEYCHAIN_FILE" 2>/dev/null || true
-          fi
-
-      - name: Package IPA
+      - name: Package Dev IPA
         run: |
           APP_PATH=$(find ./build -name "VoiceInputApp.app" -path "*/Release-iphoneos/*" | head -1)
           echo "Found: $APP_PATH"
@@ -231,3 +224,10 @@ jobs:
           name: VoType-AppStore-IPA
           path: VoType-AppStore.ipa
           retention-days: 30
+
+      - name: Cleanup Keychain
+        if: always()
+        run: |
+          if [ -n "$KEYCHAIN_FILE" ]; then
+            security delete-keychain "$KEYCHAIN_FILE" 2>/dev/null || true
+          fi
