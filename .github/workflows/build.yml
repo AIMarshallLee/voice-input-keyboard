@@ -94,34 +94,11 @@ jobs:
       - name: Build App (signed)
         if: steps.check_secrets.outputs.has_signing == 'true'
         run: |
-          # 在 xcodeproj 中按 target 注入 PROVISIONING_PROFILE UUID
-          python3 -c "
-          import re, os
+          # 用 Python 脚本注入 PROVISIONING_PROFILE UUID
+          python3 inject_pp.py
 
-          pp_app = os.environ['PP_UUID_APP']
-          pp_kb = os.environ['PP_UUID_KB']
-
-          with open('VoType.xcodeproj/project.pbxproj', 'r') as f:
-              content = f.read()
-
-          # 清空所有 PROVISIONING_PROFILE_SPECIFIER 和 PROVISIONING_PROFILE
-          content = re.sub(r'PROVISIONING_PROFILE_SPECIFIER = \"[^\"]*\";', 'PROVISIONING_PROFILE_SPECIFIER = \"\";', content)
-          content = re.sub(r'PROVISIONING_PROFILE = \"[^\"]*\";', 'PROVISIONING_PROFILE = \"\";', content)
-
-          # 按 Bundle ID 注入对应的 PROVISIONING_PROFILE UUID
-          content = content.replace(
-              'PRODUCT_BUNDLE_IDENTIFIER = \"com.voiceinput.app\";',
-              'PRODUCT_BUNDLE_IDENTIFIER = \"com.voiceinput.app\";\n\t\t\t\tPROVISIONING_PROFILE = \"' + pp_app + '\";'
-          )
-          content = content.replace(
-              'PRODUCT_BUNDLE_IDENTIFIER = \"com.voiceinput.votype.keyboard\";',
-              'PRODUCT_BUNDLE_IDENTIFIER = \"com.voiceinput.votype.keyboard\";\n\t\t\t\tPROVISIONING_PROFILE = \"' + pp_kb + '\";'
-          )
-
-          with open('VoType.xcodeproj/project.pbxproj', 'w') as f:
-              f.write(content)
-          print(f'Injected PP UUIDs: App={pp_app}, KB={pp_kb}')
-          "
+          # 验证注入结果
+          grep -c "PROVISIONING_PROFILE" VoType.xcodeproj/project.pbxproj || true
 
           xcodebuild \
             -project VoType.xcodeproj \
