@@ -290,9 +290,9 @@ jobs:
             --metadata fastlane/metadata \
             --screenshots fastlane/screenshots \
             --skip_binary_upload \
+            --app_version "1.0" \
             --force \
-            --precheck_include_in_app_purchases false \
-            --automatic_release
+            --precheck_include_in_app_purchases false
 
       - name: Cleanup Keychain
         if: always()
