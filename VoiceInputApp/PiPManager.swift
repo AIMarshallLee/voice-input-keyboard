@@ -7,7 +7,7 @@ import CoreVideo
 /// 使用 AVSampleBufferDisplayLayer + AVPictureInPictureController 创建悬浮窗
 /// 让容器 App 在用户滑回宿主 App 后继续在后台录音
 /// Typeless 和微信输入法用的就是这套方案
-class PiPManager: NSObject {
+class PiPManager: NSObject, AVPictureInPictureSampleBufferPlaybackDelegate, AVPictureInPictureControllerDelegate {
 
     static let shared = PiPManager()
 
@@ -137,7 +137,7 @@ class PiPManager: NSObject {
                     .font: UIFont.systemFont(ofSize: 28, weight: .semibold),
                     .foregroundColor: UIColor.white
                 ]
-                let text = "识别完成 ✓"
+                let text = "识别完成"
                 let textSize = (text as NSString).size(withAttributes: attrs)
                 (text as NSString).draw(
                     at: CGPoint(x: (size.width - textSize.width) / 2, y: 200),
@@ -191,7 +191,7 @@ class PiPManager: NSObject {
                     withAttributes: subAttrs
                 )
 
-                // 实时识别文本 (最多显示3行)
+                // 实时识别文本
                 if !liveText.isEmpty {
                     let textAttrs: [NSAttributedString.Key: Any] = [
                         .font: UIFont.systemFont(ofSize: 18),
@@ -202,7 +202,7 @@ class PiPManager: NSObject {
                     (displayText as NSString).draw(in: rect, withAttributes: textAttrs)
                 }
 
-                // 波形动画 (简单的正弦波)
+                // 波形动画
                 let wavePath = UIBezierPath()
                 let waveY: CGFloat = 280
                 let waveWidth: CGFloat = 400
@@ -220,18 +220,6 @@ class PiPManager: NSObject {
                 wavePath.lineWidth = 3
                 wavePath.lineCapStyle = .round
                 wavePath.stroke()
-
-                // 提示
-                let hintAttrs: [NSAttributedString.Key: Any] = [
-                    .font: UIFont.systemFont(ofSize: 16),
-                    .foregroundColor: UIColor.systemGray
-                ]
-                let hint = "点击此处可展开停止"
-                let hintSize = (hint as NSString).size(withAttributes: hintAttrs)
-                (hint as NSString).draw(
-                    at: CGPoint(x: (size.width - hintSize.width) / 2, y: 320),
-                    withAttributes: hintAttrs
-                )
             }
         }
     }
@@ -296,14 +284,14 @@ class PiPManager: NSObject {
             decodeTimeStamp: .invalid
         )
 
-        // 创建 sample buffer (使用 ForImageBuffer 版本)
+        // 创建 sample buffer
         var sampleBuffer: CMSampleBuffer?
         let bufferStatus = CMSampleBufferCreateForImageBuffer(
             allocator: kCFAllocatorDefault,
             imageBuffer: pb,
             dataReady: true,
             makeDataReadyCallback: nil,
-            makeDataReadyRefcon: nil,
+            refcon: nil,
             formatDescription: format,
             sampleTiming: &timingInfo,
             sampleBufferOut: &sampleBuffer
@@ -327,44 +315,38 @@ class PiPManager: NSObject {
         pipController = nil
         hostView = nil
     }
-}
 
-// MARK: - AVPictureInPictureSampleBufferPlaybackDelegate
+    // MARK: - AVPictureInPictureSampleBufferPlaybackDelegate
 
-extension PiPManager: AVPictureInPictureSampleBufferPlaybackDelegate {
-
-    @objc func pictureInPictureController(
+    func pictureInPictureController(
         _ pictureInPictureController: AVPictureInPictureController,
         setPlaying playing: Bool
     ) {
         // 不需要控制播放/暂停
     }
 
-    @objc func pictureInPictureControllerTimeRange(
+    func pictureInPictureControllerTimeRange(
         _ pictureInPictureController: AVPictureInPictureController
     ) -> CMTimeRange {
         // 返回从0开始的无限时长,让 PiP 持续保持活跃
         return CMTimeRange(start: .zero, duration: .positiveInfinity)
     }
 
-    @objc func pictureInPictureControllerIsPlaying(
+    func pictureInPictureControllerIsPlaying(
         _ pictureInPictureController: AVPictureInPictureController
     ) -> Bool {
         return true
     }
 
-    @objc func pictureInPictureController(
+    func pictureInPictureController(
         _ pictureInPictureController: AVPictureInPictureController,
         skipByInterval skipInterval: CMTime,
         completion completionHandler: @escaping () -> Void
     ) {
         completionHandler()
     }
-}
 
-// MARK: - AVPictureInPictureControllerDelegate
-
-extension PiPManager: AVPictureInPictureControllerDelegate {
+    // MARK: - AVPictureInPictureControllerDelegate
 
     func pictureInPictureControllerWillStartPictureInPicture(
         _ pictureInPictureController: AVPictureInPictureController
