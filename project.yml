@@ -30,7 +30,7 @@ targets:
           - en
           - zh-Hans
         CFBundleShortVersionString: "1.0"
-        CFBundleVersion: "7"
+        CFBundleVersion: "8"
         LSRequiresIPhoneOS: true
         NSMicrophoneUsageDescription: VoType needs microphone access for voice-to-text input
         NSSpeechRecognitionUsageDescription: VoType needs speech recognition to convert your voice to text
@@ -45,6 +45,10 @@ targets:
           - UIInterfaceOrientationPortraitUpsideDown
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
+        CFBundleURLTypes:
+          - CFBundleURLName: com.daseanle.votype
+            CFBundleURLSchemes:
+              - votype
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.daseanle.votype
@@ -83,7 +87,7 @@ targets:
           - en
           - zh-Hans
         CFBundleShortVersionString: "1.0"
-        CFBundleVersion: "7"
+        CFBundleVersion: "8"
         NSMicrophoneUsageDescription: VoType needs microphone access for voice-to-text input
         NSSpeechRecognitionUsageDescription: VoType needs speech recognition to convert your voice to text
         NSExtension:

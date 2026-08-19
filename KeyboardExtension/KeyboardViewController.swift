@@ -1,27 +1,8 @@
 import UIKit
-import AVFoundation
-import Speech
 
-/// 语音输入键盘 - 全功能版
-/// 全面对标并超越 Typeless:
-/// 1. 中英混输(本地识别天然支持)
-/// 2. 完全离线(on-device 识别)
-/// 3. 完全免费
-/// 4. 零网络传输(隐私优先)
-/// 5. 无会话时间限制
-/// 6. 实时转写显示
-/// 7. 自动去口水词
-/// 8. 自动标点
-/// 9. 符号快捷栏
-/// 10. 智能自我纠正 (7种模式)
-/// 11. LLM 润色 (iOS 26+, 设备端)
-/// 12. 智能自动格式化 (列表/步骤检测)
-/// 13. 实时翻译模式 (iOS 26+)
-/// 14. 场景感知 (邮件/URL/社交自动调整)
-/// 15. 语音编辑 (选中文字说话即可修改)
-/// 16. 耳语模式 (安静环境增强)
-/// 17. 使用统计追踪
-/// 18. 20 语言支持
+/// 语音输入键盘 - 容器 App 回调架构
+/// iOS 键盘扩展无法直接录音(平台限制)
+/// 流程: 键盘点击麦克风 → 启动容器 App → 容器 App 录音+识别 → App Group 传回结果 → 键盘插入文字
 class KeyboardViewController: UIInputViewController {
 
     // MARK: - UI 元素
@@ -40,14 +21,10 @@ class KeyboardViewController: UIInputViewController {
     private let symbolStack = UIStackView()
     private var deleteTimer: Timer?
 
-    // MARK: - 语音识别
-    private var audioEngine: AVAudioEngine?
-    private var speechRecognizer: SFSpeechRecognizer?
-    private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
-    private var recognitionTask: SFSpeechRecognitionTask?
-    private var isRecording = false
-    private var recognizedText = ""
-    private var hasInsertedText = false
+    // MARK: - 容器 App 通信
+    private let sharedDefaults = UserDefaults(suiteName: DictationConstants.appGroupID)
+    private var lastConsumedSessionId: String?
+    private var isWaitingForResult = false
 
     // MARK: - 模式状态
     private var isWhisperMode = false
@@ -61,7 +38,7 @@ class KeyboardViewController: UIInputViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         setupUI()
-        setupSpeech()
+        setupDarwinNotification()
     }
 
     override func viewWillAppear(_ animated: Bool) {
@@ -69,11 +46,13 @@ class KeyboardViewController: UIInputViewController {
         // 同步设置(用户可能在宿主 App 中修改了设置)
         updateTranslateButton()
         updateLangButton()
+        // 检查是否有待处理的识别结果(用户从容器 App 返回时)
+        processPendingResult()
     }
 
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
-        stopRecording()
+        stopPulse()
     }
 
     // MARK: - UI
@@ -265,10 +244,23 @@ class KeyboardViewController: UIInputViewController {
         spaceButton.setContentHuggingPriority(.defaultLow, for: .horizontal)
     }
 
-    // MARK: - 语音识别设置
+    // MARK: - Darwin 通知
 
-    private func setupSpeech() {
-        speechRecognizer = LanguageManager.shared.createSpeechRecognizer()
+    private func setupDarwinNotification() {
+        CFNotificationCenterAddObserver(
+            CFNotificationCenterGetDarwinNotificationCenter(),
+            Unmanaged.passUnretained(self).toOpaque(),
+            { _, observer, _, _, _ in
+                DispatchQueue.main.async {
+                    guard let observer = observer else { return }
+                    let vc = Unmanaged<KeyboardViewController>.fromOpaque(observer).takeUnretainedValue()
+                    vc.processPendingResult()
+                }
+            },
+            DictationConstants.darwinNotificationName,
+            nil,
+            .deliverImmediately
+        )
     }
 
     // MARK: - 语言切换
@@ -281,10 +273,6 @@ class KeyboardViewController: UIInputViewController {
     }
 
     @objc private func langTapped() {
-        if isRecording {
-            stopRecording()
-        }
-
         // 如果翻译模式开启,切换的是翻译目标语言
         if TranslationManager.shared.translationEnabled {
             let newTarget = TranslationManager.shared.cycleTargetLanguage()
@@ -293,7 +281,6 @@ class KeyboardViewController: UIInputViewController {
         }
 
         let newLang = LanguageManager.shared.cycleToNextLanguage()
-        speechRecognizer = LanguageManager.shared.createSpeechRecognizer()
         updateLangButton()
         liveTextLabel.text = "语言切换至: \(newLang.flag) \(newLang.name)"
     }
@@ -306,9 +293,8 @@ class KeyboardViewController: UIInputViewController {
         translateButton.backgroundColor = isOn ? UIColor.systemOrange : (traitCollection.userInterfaceStyle == .dark ? UIColor(white: 0.18, alpha: 1) : UIColor.white)
 
         if isOn {
-            let target = TranslationManager.shared.targetLanguageID
-            let config = LanguageManager.allLanguages.first { $0.id == target }
-            let flag = config?.flag ?? ""
+            let target = LanguageManager.allLanguages.first { $0.id == TranslationManager.shared.targetLanguageID }
+            let flag = target?.flag ?? ""
             translateButton.setTitle(flag, for: .normal)
             translateButton.setImage(nil, for: .normal)
             translateButton.titleLabel?.font = UIFont.systemFont(ofSize: 16)
@@ -319,8 +305,6 @@ class KeyboardViewController: UIInputViewController {
     }
 
     @objc private func translateToggled() {
-        if isRecording { stopRecording() }
-
         let newState = !TranslationManager.shared.translationEnabled
         TranslationManager.shared.setTranslationEnabled(newState)
         updateTranslateButton()
@@ -355,7 +339,11 @@ class KeyboardViewController: UIInputViewController {
     // MARK: - 按钮事件
 
     @objc private func micTapped() {
-        if isRecording { stopRecording() } else { startRecording() }
+        if isWaitingForResult {
+            liveTextLabel.text = "正在等待语音结果,请返回之前的App..."
+            return
+        }
+        launchDictation()
     }
 
     @objc private func globeTapped() {
@@ -391,178 +379,117 @@ class KeyboardViewController: UIInputViewController {
         }
     }
 
-    // MARK: - 录音
+    // MARK: - 启动容器 App 录音
 
-    private func startRecording() {
+    private func launchDictation() {
         guard hasFullAccess else {
-            liveTextLabel.text = "请到设置→键盘→语音输入→开启「允许完全访问」"
+            liveTextLabel.text = "请到设置→键盘→VoType→开启「允许完全访问」"
             return
         }
 
-        guard speechRecognizer != nil, speechRecognizer!.isAvailable else {
-            liveTextLabel.text = "语音识别暂不可用"
-            return
-        }
+        // 保存设置到 App Group,容器 App 会读取这些设置
+        let sessionId = UUID().uuidString
+        let defaults = sharedDefaults
 
-        // 语音编辑: 录音前捕获选中的文本
+        defaults?.set(sessionId, forKey: DictationConstants.sessionIdKey)
+        defaults?.set(DictationConstants.statusPending, forKey: DictationConstants.statusKey)
+        defaults?.set(LanguageManager.shared.currentLanguage.id, forKey: DictationConstants.languageKey)
+        defaults?.set(isWhisperMode, forKey: DictationConstants.whisperModeKey)
+        defaults?.set(TranslationManager.shared.translationEnabled, forKey: DictationConstants.translationEnabledKey)
+        defaults?.set(TranslationManager.shared.targetLanguageID, forKey: DictationConstants.translationTargetIDKey)
+
+        // 语音编辑: 保存选中文本
         selectedTextBeforeRecording = textDocumentProxy.selectedText
-
-        // 如果有选中文本,提示语音编辑模式
-        if let selected = selectedTextBeforeRecording, !selected.isEmpty, TextProcessor.shared.voiceEditEnabled {
-            let preview = selected.prefix(15)
-            liveTextLabel.text = "编辑模式: 「\(preview)…」说话即可修改"
-        } else if TranslationManager.shared.translationEnabled {
-            let target = LanguageManager.allLanguages.first { $0.id == TranslationManager.shared.targetLanguageID }
-            liveTextLabel.text = "翻译模式: 说\(LanguageManager.shared.currentLanguage.name) → 输出\(target?.name ?? "")"
+        if let selected = selectedTextBeforeRecording, !selected.isEmpty {
+            defaults?.set(selected, forKey: DictationConstants.selectedTextKey)
+        } else {
+            defaults?.removeObject(forKey: DictationConstants.selectedTextKey)
         }
 
-        SFSpeechRecognizer.requestAuthorization { [weak self] status in
-            DispatchQueue.main.async {
-                guard let self = self else { return }
-                guard status == .authorized else {
-                    self.liveTextLabel.text = "请到设置中允许语音识别权限"
-                    return
-                }
-                self.beginRecording()
-            }
-        }
-    }
+        // 场景感知: 保存键盘类型
+        let kbType = textDocumentProxy.keyboardType?.rawValue ?? 0
+        defaults?.set(kbType, forKey: DictationConstants.keyboardTypeKey)
 
-    private func beginRecording() {
-        recognizedText = ""
-        hasInsertedText = false
-
-        // 每次录音创建新的 AVAudioEngine，避免残留状态导致崩溃
-        let engine = AVAudioEngine()
-        audioEngine = engine
-
-        do {
-            let session = AVAudioSession.sharedInstance()
-
-            // 键盘扩展中必须使用 .playAndRecord
-            // mode 用 .default（最兼容，键盘扩展环境受限）
-            if isWhisperMode {
-                try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.duckOthers, .allowBluetooth])
-            } else {
-                try session.setCategory(.playAndRecord, mode: .default, options: [.duckOthers, .allowBluetooth])
-            }
-            try session.setActive(true, options: .notifyOthersOnDeactivation)
-
-            recognitionRequest = SFSpeechAudioBufferRecognitionRequest()
-            guard let req = recognitionRequest else { return }
-            req.shouldReportPartialResults = true
-
-            if #available(iOS 13, *) {
-                // 键盘扩展内存限制约 60MB,设备端模型动辄上百 MB
-                // 强制关闭设备端识别,使用服务器识别避免 jetsam 崩溃
-                req.requiresOnDeviceRecognition = false
-            }
-
-            recognitionTask = speechRecognizer?.recognitionTask(with: req) { [weak self] result, error in
-                DispatchQueue.main.async {
-                    guard let self = self else { return }
-
-                    if let result = result {
-                        let rawText = result.bestTranscription.formattedString
-                        let preview = TextProcessor.shared.processSync(rawText)
-                        self.recognizedText = rawText
-
-                        let livePreview = TextProcessor.shared.livePreviewEnabled
-                        if livePreview {
-                            if preview.isEmpty {
-                                self.liveTextLabel.text = "正在聆听…"
-                            } else {
-                                self.liveTextLabel.text = preview
-                            }
+        // 通过 responder chain 启动容器 App
+        guard let url = URL(string: DictationConstants.dictationURL) else { return }
+        var responder: UIResponder? = self
+        var launched = false
+        while let r = responder {
+            if let app = r as? UIApplication {
+                app.open(url) { [weak self] success in
+                    DispatchQueue.main.async {
+                        guard let self = self else { return }
+                        if success {
+                            self.isWaitingForResult = true
+                            self.liveTextLabel.text = "正在启动语音输入..."
+                            self.startPulse()
+                        } else {
+                            self.liveTextLabel.text = "无法启动语音输入,请确保App已安装"
                         }
                     }
-
-                    if let error = error as? NSError, error.code != 203 {
-                        self.stopRecording()
-                    }
-                    if result?.isFinal == true {
-                        self.stopRecording()
-                    }
                 }
+                launched = true
+                break
             }
+            responder = r.next
+        }
 
-            // 始终用标准 PCM 44100/mono 格式
-            // inputNode.outputFormat(forBus:0) 在键盘扩展中返回非 PCM 格式,
-            // installTap 只接受 PCM,导致 0x77686174 错误
-            // Build 3 验证过 44100/mono 可以正常启动引擎
-            guard let tapFormat = AVAudioFormat(standardFormatWithSampleRate: 44100, channels: 1) else {
-                liveTextLabel.text = "音频格式初始化失败"
-                cleanup()
-                return
-            }
-
-            let inputNode = engine.inputNode
-            inputNode.removeTap(onBus: 0)
-            inputNode.installTap(onBus: 0, bufferSize: 1024, format: tapFormat) { buffer, _ in
-                req.append(buffer)
-            }
-
-            engine.prepare()
-            try engine.start()
-
-            isRecording = true
-            micButton.setImage(nil, for: .normal)
-            micButton.setTitle("停止", for: .normal)
-            micButton.titleLabel?.font = UIFont.systemFont(ofSize: 17, weight: .semibold)
-            micButton.backgroundColor = UIColor.systemRed
-            waveformView.isHidden = false
-            liveTextLabel.text = "正在聆听…"
-            startPulse()
-
-        } catch {
-            liveTextLabel.text = "启动失败: \(error.localizedDescription)"
-            cleanup()
+        if !launched {
+            liveTextLabel.text = "无法启动语音输入"
         }
     }
 
-    private func stopRecording() {
-        guard isRecording else { return }
-        isRecording = false
+    // MARK: - 处理识别结果
 
-        if let engine = audioEngine {
-            engine.stop()
-            engine.inputNode.removeTap(onBus: 0)
+    /// 检查 App Group 中是否有待处理的识别结果
+    /// 在 viewWillAppear 和 Darwin 通知回调中调用
+    private func processPendingResult() {
+        let defaults = sharedDefaults
+        let status = defaults?.string(forKey: DictationConstants.statusKey)
+        let sessionId = defaults?.string(forKey: DictationConstants.sessionIdKey)
+
+        guard status == DictationConstants.statusCompleted,
+              sessionId != lastConsumedSessionId,
+              let sessionId = sessionId else {
+            // 检查是否有错误状态
+            if status == DictationConstants.statusError,
+               sessionId != lastConsumedSessionId,
+               let sid = sessionId {
+                lastConsumedSessionId = sid
+                isWaitingForResult = false
+                stopPulse()
+                micButton.backgroundColor = UIColor.systemBlue
+                let error = defaults?.string(forKey: DictationConstants.errorMessageKey) ?? "未知错误"
+                liveTextLabel.text = error
+                defaults?.set(DictationConstants.statusConsumed, forKey: DictationConstants.statusKey)
+            }
+            return
         }
-        audioEngine = nil
-        recognitionRequest?.endAudio()
-        recognitionTask?.cancel()
 
-        // 确保音频会话被正确停用
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
-
+        lastConsumedSessionId = sessionId
+        isWaitingForResult = false
         stopPulse()
-        micButton.setTitle(nil, for: .normal)
-        let config = UIImage.SymbolConfiguration(pointSize: 34, weight: .bold)
-        micButton.setImage(UIImage(systemName: "mic.fill", withConfiguration: config), for: .normal)
         micButton.backgroundColor = UIColor.systemBlue
-        waveformView.isHidden = true
+        defaults?.set(DictationConstants.statusConsumed, forKey: DictationConstants.statusKey)
 
-        let rawText = recognizedText
+        let result = defaults?.string(forKey: DictationConstants.resultKey) ?? ""
+        handleDictationResult(result)
+    }
 
+    /// 处理识别结果:语音编辑 + 自我纠正 + 口水词 + LLM润色 + 翻译 + 自动格式化 + 自动标点
+    private func handleDictationResult(_ rawText: String) {
         if rawText.isEmpty {
             liveTextLabel.text = "未识别到语音,请重试"
-            cleanup()
             return
         }
 
-        if hasInsertedText {
-            cleanup()
-            return
-        }
+        liveTextLabel.text = "正在处理..."
+        micButton.backgroundColor = UIColor.systemOrange
 
-        // 显示处理中状态
-        liveTextLabel.text = "正在处理…"
+        // 从 App Group 读取保存的设置
+        let selectedText = sharedDefaults?.string(forKey: DictationConstants.selectedTextKey)
+        let kbType = sharedDefaults?.integer(forKey: DictationConstants.keyboardTypeKey) ?? 0
 
-        // 获取上下文:选中文本(语音编辑)和键盘类型(场景感知)
-        let selectedText = selectedTextBeforeRecording
-        let kbType = textDocumentProxy.keyboardType?.rawValue ?? 0
-
-        // 异步处理:语音编辑+自我纠正+口水词+LLM润色+翻译+自动格式化+自动标点
         Task { [weak self] in
             guard let self = self else { return }
             let processed = await TextProcessor.shared.process(
@@ -572,40 +499,27 @@ class KeyboardViewController: UIInputViewController {
             )
 
             await MainActor.run {
-                if !self.hasInsertedText {
-                    // 语音编辑模式: 先删除选中的文本
-                    if let selected = selectedText, !selected.isEmpty,
-                       TextProcessor.shared.voiceEditEnabled {
-                        // deleteBackward 一次会删除整个选区
-                        self.textDocumentProxy.deleteBackward()
-                    }
-
-                    if !processed.isEmpty {
-                        self.textDocumentProxy.insertText(processed)
-                        self.hasInsertedText = true
-                        let preview = processed.prefix(30)
-                        self.liveTextLabel.text = "已输入 ✓  \(preview)\(processed.count > 30 ? "…" : "")"
-                    } else if selectedText != nil {
-                        // 空结果 = 语音编辑删除指令
-                        self.hasInsertedText = true
-                        self.liveTextLabel.text = "已删除选中文字 ✓"
-                    } else {
-                        self.liveTextLabel.text = "未识别到语音,请重试"
-                    }
-                } else {
-                    self.liveTextLabel.text = "未识别到语音,请重试"
+                // 语音编辑模式: 先删除选中的文本
+                if let selected = selectedText, !selected.isEmpty,
+                   TextProcessor.shared.voiceEditEnabled {
+                    self.textDocumentProxy.deleteBackward()
                 }
-                self.cleanup()
+
+                if !processed.isEmpty {
+                    self.textDocumentProxy.insertText(processed)
+                    let preview = processed.prefix(30)
+                    self.liveTextLabel.text = "已输入 ✓  \(preview)\(processed.count > 30 ? "…" : "")"
+                } else if selectedText != nil {
+                    self.liveTextLabel.text = "已删除选中文字 ✓"
+                } else {
+                    // 处理结果为空,插入原始文本作为兜底
+                    self.textDocumentProxy.insertText(rawText)
+                    self.liveTextLabel.text = "已输入 ✓"
+                }
+
+                self.micButton.backgroundColor = UIColor.systemBlue
             }
         }
-    }
-
-    // MARK: - 清理
-
-    private func cleanup() {
-        recognitionRequest = nil
-        recognitionTask = nil
-        selectedTextBeforeRecording = nil
     }
 
     // MARK: - 脉冲动画
@@ -645,7 +559,7 @@ class WaveformView: UIView {
     private func setup() {
         backgroundColor = .clear
         waveLayer.fillColor = UIColor.clear.cgColor
-        waveLayer.strokeColor = UIColor.systemRed.cgColor
+        waveLayer.strokeColor = UIColor.systemBlue.cgColor
         waveLayer.lineWidth = 3
         waveLayer.lineCap = .round
         layer.addSublayer(waveLayer)
