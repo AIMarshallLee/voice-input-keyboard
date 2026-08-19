@@ -6,6 +6,7 @@ import Speech
 
 /// 容器 App 语音听写 ViewModel
 /// 在主 App 中执行录音和语音识别(键盘扩展无法录音)
+/// 通过 URL 参数接收设置,通过命名剪贴板返回结果
 @MainActor
 class DictationViewModel: ObservableObject {
     @Published var isRecording = false
@@ -26,18 +27,26 @@ class DictationViewModel: ObservableObject {
     private var selectedText: String?
     private var sessionId = ""
 
-    // MARK: - 加载设置
+    // MARK: - 从 URL 加载设置
 
-    func loadSettings() {
-        let defaults = DictationConstants.sharedDefaults
-        sessionId = defaults?.string(forKey: DictationConstants.sessionIdKey) ?? UUID().uuidString
-        languageID = defaults?.string(forKey: DictationConstants.languageKey) ?? "zh-CN"
-        whisperMode = defaults?.bool(forKey: DictationConstants.whisperModeKey) ?? false
-        selectedText = defaults?.string(forKey: DictationConstants.selectedTextKey)
-        selectedTextPreview = selectedText
+    func loadSettings(from url: URL?) {
+        // 从 URL 参数解析设置
+        if let url = url, let components = URLComponents(url: url, resolvingAgainstBaseURL: false) {
+            let queryItems = components.queryItems ?? []
+            let dict = Dictionary(queryItems.compactMap { item -> (String, String)? in
+                guard let value = item.value else { return nil }
+                return (item.name, value)
+            }, uniquingKeysWith: { _, last in last })
 
-        // 更新状态为录音中
-        defaults?.set(DictationConstants.statusRecording, forKey: DictationConstants.statusKey)
+            sessionId = dict[DictationConstants.paramSession] ?? UUID().uuidString
+            languageID = dict[DictationConstants.paramLang] ?? "zh-CN"
+            whisperMode = dict[DictationConstants.paramWhisper] == "1"
+            selectedText = dict[DictationConstants.paramSelectedText]
+            selectedTextPreview = selectedText
+        } else {
+            sessionId = UUID().uuidString
+            languageID = "zh-CN"
+        }
 
         // 创建语音识别器
         speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: languageID))
@@ -106,8 +115,6 @@ class DictationViewModel: ObservableObject {
             recognitionRequest = SFSpeechAudioBufferRecognitionRequest()
             guard let req = recognitionRequest else { return }
             req.shouldReportPartialResults = true
-            // 主 App 没有内存限制,可以使用设备端识别
-            // 但服务器识别兼容性更好,MVP 阶段先用服务器识别
             req.requiresOnDeviceRecognition = false
 
             recognitionTask = recognizer.recognitionTask(with: req) { [weak self] result, error in
@@ -158,45 +165,34 @@ class DictationViewModel: ObservableObject {
 
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
 
-        let defaults = DictationConstants.sharedDefaults
         let resultText = recognizedText
 
         if resultText.isEmpty {
-            defaults?.set(DictationConstants.statusError, forKey: DictationConstants.statusKey)
-            defaults?.set("未识别到语音", forKey: DictationConstants.errorMessageKey)
+            // 写入错误到命名剪贴板
+            DictationConstants.writeError(message: "未识别到语音", session: sessionId)
             statusMessage = "未识别到语音"
         } else {
-            defaults?.set(resultText, forKey: DictationConstants.resultKey)
-            defaults?.set(DictationConstants.statusCompleted, forKey: DictationConstants.statusKey)
+            // 写入结果到命名剪贴板
+            DictationConstants.writeResult(text: resultText, session: sessionId)
         }
 
         hasResult = true
 
         // 发送 Darwin 通知,通知键盘扩展读取结果
-        CFNotificationCenterPostNotification(
-            CFNotificationCenterGetDarwinNotificationCenter(),
-            CFNotificationName(DictationConstants.darwinNotificationName),
-            nil, nil, true
-        )
+        DictationConstants.postDarwinNotification()
     }
 
     func cleanup() {
         if isRecording {
             // 录音被中断,标记为错误
-            let defaults = DictationConstants.sharedDefaults
-            defaults?.set(DictationConstants.statusError, forKey: DictationConstants.statusKey)
-            defaults?.set("已取消", forKey: DictationConstants.errorMessageKey)
+            DictationConstants.writeError(message: "已取消", session: sessionId)
 
             audioEngine?.stop()
             audioEngine?.inputNode.removeTap(onBus: 0)
             isRecording = false
 
             // 发送通知让键盘知道已取消
-            CFNotificationCenterPostNotification(
-                CFNotificationCenterGetDarwinNotificationCenter(),
-                CFNotificationName(DictationConstants.darwinNotificationName),
-                nil, nil, true
-            )
+            DictationConstants.postDarwinNotification()
         }
         recognitionRequest?.endAudio()
         recognitionTask?.cancel()
@@ -209,10 +205,11 @@ class DictationViewModel: ObservableObject {
 // MARK: - View
 
 /// 容器 App 的语音听写页面
-/// 由键盘扩展通过 URL Scheme (votype://dictation) 触发
+/// 由键盘扩展通过 URL Scheme (votype://dictation?lang=zh-CN&...) 触发
 struct DictationView: View {
     @StateObject private var viewModel = DictationViewModel()
     @Environment(\.dismiss) var dismiss
+    var url: URL?
 
     var body: some View {
         VStack(spacing: 24) {
@@ -315,7 +312,7 @@ struct DictationView: View {
         }
         .padding()
         .onAppear {
-            viewModel.loadSettings()
+            viewModel.loadSettings(from: url)
             viewModel.checkPermissions()
         }
         .onDisappear {

@@ -2,7 +2,7 @@ import UIKit
 
 /// 语音输入键盘 - 容器 App 回调架构
 /// iOS 键盘扩展无法直接录音(平台限制)
-/// 流程: 键盘点击麦克风 → 启动容器 App → 容器 App 录音+识别 → App Group 传回结果 → 键盘插入文字
+/// 流程: 键盘点击麦克风 → URL启动容器App → 容器App录音+识别 → 命名剪贴板传回结果 → Darwin通知信号 → 键盘插入文字
 class KeyboardViewController: UIInputViewController {
 
     // MARK: - UI 元素
@@ -21,10 +21,13 @@ class KeyboardViewController: UIInputViewController {
     private let symbolStack = UIStackView()
     private var deleteTimer: Timer?
 
-    // MARK: - 容器 App 通信
-    private let sharedDefaults = UserDefaults(suiteName: DictationConstants.appGroupID)
-    private var lastConsumedSessionId: String?
+    // MARK: - 容器 App 通信状态
     private var isWaitingForResult = false
+    private var currentSessionId: String?
+
+    // 暂存启动时的设置,处理结果时使用
+    private var pendingSelectedText: String?
+    private var pendingKbType: Int = 0
 
     // MARK: - 模式状态
     private var isWhisperMode = false
@@ -387,31 +390,30 @@ class KeyboardViewController: UIInputViewController {
             return
         }
 
-        // 保存设置到 App Group,容器 App 会读取这些设置
+        // 生成会话 ID
         let sessionId = UUID().uuidString
-        let defaults = sharedDefaults
+        currentSessionId = sessionId
 
-        defaults?.set(sessionId, forKey: DictationConstants.sessionIdKey)
-        defaults?.set(DictationConstants.statusPending, forKey: DictationConstants.statusKey)
-        defaults?.set(LanguageManager.shared.currentLanguage.id, forKey: DictationConstants.languageKey)
-        defaults?.set(isWhisperMode, forKey: DictationConstants.whisperModeKey)
-        defaults?.set(TranslationManager.shared.translationEnabled, forKey: DictationConstants.translationEnabledKey)
-        defaults?.set(TranslationManager.shared.targetLanguageID, forKey: DictationConstants.translationTargetIDKey)
-
-        // 语音编辑: 保存选中文本
+        // 暂存设置,处理结果时使用
         selectedTextBeforeRecording = textDocumentProxy.selectedText
-        if let selected = selectedTextBeforeRecording, !selected.isEmpty {
-            defaults?.set(selected, forKey: DictationConstants.selectedTextKey)
-        } else {
-            defaults?.removeObject(forKey: DictationConstants.selectedTextKey)
+        pendingSelectedText = selectedTextBeforeRecording
+        pendingKbType = textDocumentProxy.keyboardType?.rawValue ?? 0
+
+        // 通过 URL 参数传递设置给容器 App
+        guard let url = DictationConstants.buildDictationURL(
+            language: LanguageManager.shared.currentLanguage.id,
+            whisper: isWhisperMode,
+            translateEnabled: TranslationManager.shared.translationEnabled,
+            translateTarget: TranslationManager.shared.targetLanguageID,
+            selectedText: selectedTextBeforeRecording,
+            keyboardType: pendingKbType,
+            session: sessionId
+        ) else {
+            liveTextLabel.text = "无法创建语音输入URL"
+            return
         }
 
-        // 场景感知: 保存键盘类型
-        let kbType = textDocumentProxy.keyboardType?.rawValue ?? 0
-        defaults?.set(kbType, forKey: DictationConstants.keyboardTypeKey)
-
         // 通过 responder chain 启动容器 App
-        guard let url = URL(string: DictationConstants.dictationURL) else { return }
         var responder: UIResponder? = self
         var launched = false
         while let r = responder {
@@ -441,39 +443,24 @@ class KeyboardViewController: UIInputViewController {
 
     // MARK: - 处理识别结果
 
-    /// 检查 App Group 中是否有待处理的识别结果
+    /// 检查命名剪贴板中是否有待处理的识别结果
     /// 在 viewWillAppear 和 Darwin 通知回调中调用
     private func processPendingResult() {
-        let defaults = sharedDefaults
-        let status = defaults?.string(forKey: DictationConstants.statusKey)
-        let sessionId = defaults?.string(forKey: DictationConstants.sessionIdKey)
+        guard isWaitingForResult else { return }
 
-        guard status == DictationConstants.statusCompleted,
-              sessionId != lastConsumedSessionId,
-              let sessionId = sessionId else {
-            // 检查是否有错误状态
-            if status == DictationConstants.statusError,
-               sessionId != lastConsumedSessionId,
-               let sid = sessionId {
-                lastConsumedSessionId = sid
-                isWaitingForResult = false
-                stopPulse()
-                micButton.backgroundColor = UIColor.systemBlue
-                let error = defaults?.string(forKey: DictationConstants.errorMessageKey) ?? "未知错误"
-                liveTextLabel.text = error
-                defaults?.set(DictationConstants.statusConsumed, forKey: DictationConstants.statusKey)
-            }
-            return
+        let result = DictationConstants.readAndConsumeResult()
+
+        if let text = result.text {
+            isWaitingForResult = false
+            stopPulse()
+            micButton.backgroundColor = UIColor.systemBlue
+            handleDictationResult(text)
+        } else if let error = result.error {
+            isWaitingForResult = false
+            stopPulse()
+            micButton.backgroundColor = UIColor.systemBlue
+            liveTextLabel.text = error
         }
-
-        lastConsumedSessionId = sessionId
-        isWaitingForResult = false
-        stopPulse()
-        micButton.backgroundColor = UIColor.systemBlue
-        defaults?.set(DictationConstants.statusConsumed, forKey: DictationConstants.statusKey)
-
-        let result = defaults?.string(forKey: DictationConstants.resultKey) ?? ""
-        handleDictationResult(result)
     }
 
     /// 处理识别结果:语音编辑 + 自我纠正 + 口水词 + LLM润色 + 翻译 + 自动格式化 + 自动标点
@@ -486,9 +473,9 @@ class KeyboardViewController: UIInputViewController {
         liveTextLabel.text = "正在处理..."
         micButton.backgroundColor = UIColor.systemOrange
 
-        // 从 App Group 读取保存的设置
-        let selectedText = sharedDefaults?.string(forKey: DictationConstants.selectedTextKey)
-        let kbType = sharedDefaults?.integer(forKey: DictationConstants.keyboardTypeKey) ?? 0
+        // 使用暂存的设置
+        let selectedText = pendingSelectedText
+        let kbType = pendingKbType
 
         Task { [weak self] in
             guard let self = self else { return }
