@@ -130,7 +130,6 @@ jobs:
             DEVELOPMENT_TEAM="$TEAM_ID" \
             CODE_SIGN_STYLE="Manual" \
             PROVISIONING_PROFILE="$PP_UUID_KB" \
-            -derivedDataPath ./build \
             OTHER_CODE_SIGN_FLAGS="--keychain $KEYCHAIN_FILE"
 
           xcodebuild \
