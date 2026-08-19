@@ -195,6 +195,9 @@ jobs:
       - name: Build App Store IPA
         if: steps.check_dist.outputs.has_dist == 'true'
         run: |
+          # 重新生成干净的 Xcode 项目
+          xcodegen generate
+
           # 用 Python 注入 Distribution PP UUID
           PP_UUID_APP="$DIST_PP_UUID_APP" PP_UUID_KB="$DIST_PP_UUID_KB" python3 inject_pp.py
 
