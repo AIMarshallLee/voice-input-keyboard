@@ -1,6 +1,7 @@
 import AVKit
 import UIKit
-import CoreImage
+import CoreMedia
+import CoreVideo
 
 /// 画中画管理器
 /// 使用 AVSampleBufferDisplayLayer + AVPictureInPictureController 创建悬浮窗
@@ -124,7 +125,7 @@ class PiPManager: NSObject {
                 UIColor(red: 0.15, green: 0.15, blue: 0.25, alpha: 1).cgColor
             ]
             let gradient = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: colors as CFArray, locations: [0, 1])!
-            ctx.cgContext?.drawLinearGradient(gradient, start: .zero, end: CGPoint(x: 0, y: size.height), options: [])
+            ctx.cgContext.drawLinearGradient(gradient, start: .zero, end: CGPoint(x: 0, y: size.height), options: [])
 
             if isFinal {
                 // 完成状态
@@ -235,7 +236,7 @@ class PiPManager: NSObject {
         }
     }
 
-    // MARK: - UIImage → CMSampleBuffer
+    // MARK: - UIImage -> CMSampleBuffer
 
     private func createSampleBuffer(from image: UIImage) -> CMSampleBuffer? {
         guard let cgImage = image.cgImage else { return nil }
@@ -295,15 +296,17 @@ class PiPManager: NSObject {
             decodeTimeStamp: .invalid
         )
 
-        // 创建 sample buffer
+        // 创建 sample buffer (使用 ForImageBuffer 版本)
         var sampleBuffer: CMSampleBuffer?
-        let bufferStatus = CMSampleBufferCreateForImage(
+        let bufferStatus = CMSampleBufferCreateForImageBuffer(
             allocator: kCFAllocatorDefault,
             imageBuffer: pb,
             dataReady: true,
-            sampleBufferOut: &sampleBuffer,
+            makeDataReadyCallback: nil,
+            makeDataReadyRefcon: nil,
             formatDescription: format,
-            sampleTiming: &timingInfo
+            sampleTiming: &timingInfo,
+            sampleBufferOut: &sampleBuffer
         )
         guard bufferStatus == noErr else {
             print("[PiP] CMSampleBufferCreate failed: \(bufferStatus)")
@@ -326,38 +329,31 @@ class PiPManager: NSObject {
     }
 }
 
-// MARK: - AVPictureInPictureController.ContentSourcePlaybackDelegate
+// MARK: - AVPictureInPictureSampleBufferPlaybackDelegate
 
-extension PiPManager: AVPictureInPictureController.ContentSourcePlaybackDelegate {
+extension PiPManager: AVPictureInPictureSampleBufferPlaybackDelegate {
 
-    func pictureInPictureController(
+    @objc func pictureInPictureController(
         _ pictureInPictureController: AVPictureInPictureController,
         setPlaying playing: Bool
     ) {
         // 不需要控制播放/暂停
     }
 
-    func pictureInPictureControllerTimeRange(
+    @objc func pictureInPictureControllerTimeRange(
         _ pictureInPictureController: AVPictureInPictureController
     ) -> CMTimeRange {
         // 返回从0开始的无限时长,让 PiP 持续保持活跃
         return CMTimeRange(start: .zero, duration: .positiveInfinity)
     }
 
-    func pictureInPictureControllerIsPlaying(
+    @objc func pictureInPictureControllerIsPlaying(
         _ pictureInPictureController: AVPictureInPictureController
     ) -> Bool {
         return true
     }
 
-    func pictureInPictureController(
-        _ pictureInPictureController: AVPictureInPictureController,
-        didTransitionToRenderState newRenderState: AVPictureInPictureController.RenderState
-    ) {
-        // 渲染状态变化
-    }
-
-    func pictureInPictureController(
+    @objc func pictureInPictureController(
         _ pictureInPictureController: AVPictureInPictureController,
         skipByInterval skipInterval: CMTime,
         completion completionHandler: @escaping () -> Void

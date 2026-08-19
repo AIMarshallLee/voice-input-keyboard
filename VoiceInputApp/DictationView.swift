@@ -127,9 +127,9 @@ class DictationViewModel: ObservableObject {
             // playAndRecord + mixWithOthers: 录音同时不打断其他 App 的音频
             // 这是 PiP 后台保活的关键配置
             if whisperMode {
-                try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.duckOthers, .allowBluetooth, .mixWithOthers])
+                try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.duckOthers, .allowBluetooth, .allowBluetoothA2DP, .mixWithOthers])
             } else {
-                try session.setCategory(.playAndRecord, mode: .default, options: [.duckOthers, .allowBluetooth, .mixWithOthers])
+                try session.setCategory(.playAndRecord, mode: .default, options: [.duckOthers, .allowBluetooth, .allowBluetoothA2DP, .mixWithOthers])
             }
             try session.setActive(true, options: .notifyOthersOnDeactivation)
 
