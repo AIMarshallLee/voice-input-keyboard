@@ -41,7 +41,7 @@ class KeyboardViewController: UIInputViewController {
     private var deleteTimer: Timer?
 
     // MARK: - 语音识别
-    private let audioEngine = AVAudioEngine()
+    private var audioEngine: AVAudioEngine?
     private var speechRecognizer: SFSpeechRecognizer?
     private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
     private var recognitionTask: SFSpeechRecognitionTask?
@@ -432,19 +432,19 @@ class KeyboardViewController: UIInputViewController {
         recognizedText = ""
         hasInsertedText = false
 
-        // 重置音频引擎（防止上次录音残留状态）
-        audioEngine.stop()
-        audioEngine.reset()
+        // 每次录音创建新的 AVAudioEngine，避免残留状态导致崩溃
+        let engine = AVAudioEngine()
+        audioEngine = engine
 
         do {
             let session = AVAudioSession.sharedInstance()
 
-            // 键盘扩展中必须使用 .playAndRecord，.record 会导致引擎启动失败
-            // mode 必须用 .default，.measurement 在键盘扩展中不兼容（错误 0x77686174）
+            // 键盘扩展中必须使用 .playAndRecord
+            // mode 用 .measurement（Apple 推荐用于语音识别）
             if isWhisperMode {
                 try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.duckOthers, .allowBluetooth])
             } else {
-                try session.setCategory(.playAndRecord, mode: .default, options: [.duckOthers, .allowBluetooth])
+                try session.setCategory(.playAndRecord, mode: .measurement, options: [.duckOthers, .allowBluetooth])
             }
             try session.setActive(true, options: .notifyOthersOnDeactivation)
 
@@ -462,7 +462,6 @@ class KeyboardViewController: UIInputViewController {
 
                     if let result = result {
                         let rawText = result.bestTranscription.formattedString
-                        // 实时预览:同步快速处理(不含 LLM,太慢)
                         let preview = TextProcessor.shared.processSync(rawText)
                         self.recognizedText = rawText
 
@@ -485,23 +484,25 @@ class KeyboardViewController: UIInputViewController {
                 }
             }
 
-            let inputNode = audioEngine.inputNode
+            // 会话激活后获取输入节点的实际硬件格式
+            let inputNode = engine.inputNode
+            var tapFormat = inputNode.outputFormat(forBus: 0)
 
-            // 使用标准格式而非 inputNode.outputFormat(forBus: 0)
-            // 键盘扩展中 inputNode 的输出格式可能无效，导致引擎启动失败
-            guard let format = AVAudioFormat(standardFormatWithSampleRate: 44100, channels: 1) else {
-                liveTextLabel.text = "音频格式初始化失败"
-                cleanup()
-                return
+            // 如果硬件格式无效（sampleRate=0），使用音频会话的采样率
+            if tapFormat.sampleRate == 0 || tapFormat.channelCount == 0 {
+                let sessionRate = session.sampleRate > 0 ? session.sampleRate : 44100
+                if let fallback = AVAudioFormat(standardFormatWithSampleRate: sessionRate, channels: 1) {
+                    tapFormat = fallback
+                }
             }
 
             inputNode.removeTap(onBus: 0)
-            inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in
+            inputNode.installTap(onBus: 0, bufferSize: 1024, format: tapFormat) { buffer, _ in
                 req.append(buffer)
             }
 
-            audioEngine.prepare()
-            try audioEngine.start()
+            engine.prepare()
+            try engine.start()
 
             isRecording = true
             micButton.setImage(nil, for: .normal)
@@ -522,9 +523,11 @@ class KeyboardViewController: UIInputViewController {
         guard isRecording else { return }
         isRecording = false
 
-        audioEngine.stop()
-        audioEngine.inputNode.removeTap(onBus: 0)
-        audioEngine.reset()
+        if let engine = audioEngine {
+            engine.stop()
+            engine.inputNode.removeTap(onBus: 0)
+        }
+        audioEngine = nil
         recognitionRequest?.endAudio()
         recognitionTask?.cancel()
 
