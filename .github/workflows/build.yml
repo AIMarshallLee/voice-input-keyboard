@@ -93,58 +93,35 @@ jobs:
       # ---- 签名构建 ----
       - name: Build App (signed)
         if: steps.check_secrets.outputs.has_signing == 'true'
-        env:
-          PP_UUID_APP: ${{ env.PP_UUID_APP }}
-          PP_UUID_KB: ${{ env.PP_UUID_KB }}
         run: |
           # 在 xcodeproj 中按 target 注入 PROVISIONING_PROFILE UUID
-          python3 << 'PYEOF'
-          import re
+          python3 -c "
+          import re, os
 
-          pp_app = "$PP_UUID_APP"
-          pp_kb = "$PP_UUID_KB"
+          pp_app = os.environ['PP_UUID_APP']
+          pp_kb = os.environ['PP_UUID_KB']
 
           with open('VoType.xcodeproj/project.pbxproj', 'r') as f:
               content = f.read()
 
-          # 找到 VoiceInputApp 的 Build Settings block，注入 PROVISIONING_PROFILE
-          # 按 target name 附近的 build settings 注入
-          # 策略：找包含 "com.voiceinput.app" 的行附近，注入 PROVISIONING_PROFILE
-          # 更简单的方法：用 PROVISIONING_PROFILE_SPECIFIER 指定名字
+          # 清空所有 PROVISIONING_PROFILE_SPECIFIER 和 PROVISIONING_PROFILE
+          content = re.sub(r'PROVISIONING_PROFILE_SPECIFIER = \"[^\"]*\";', 'PROVISIONING_PROFILE_SPECIFIER = \"\";', content)
+          content = re.sub(r'PROVISIONING_PROFILE = \"[^\"]*\";', 'PROVISIONING_PROFILE = \"\";', content)
 
-          # 把所有 PROVISIONING_PROFILE_SPECIFIER 清空
-          content = re.sub(
-              r'PROVISIONING_PROFILE_SPECIFIER = "[^"]*";',
-              'PROVISIONING_PROFILE_SPECIFIER = "";',
-              content
-          )
-          # 把所有 PROVISIONING_PROFILE 清空
-          content = re.sub(
-              r'PROVISIONING_PROFILE = "[^"]*";',
-              'PROVISIONING_PROFILE = "";',
-              content
-          )
-
-          # 通过 PRODUCT_BUNDLE_IDENTIFIER 找到对应 target 的 build settings block
-          # VoiceInputApp target: com.voiceinput.app
-          # KeyboardExtension target: com.voiceinput.votype.keyboard
-
-          # 对 App target：在 com.voiceinput.app 后面注入 PROVISIONING_PROFILE
+          # 按 Bundle ID 注入对应的 PROVISIONING_PROFILE UUID
           content = content.replace(
-              'PRODUCT_BUNDLE_IDENTIFIER = "com.voiceinput.app";',
-              'PRODUCT_BUNDLE_IDENTIFIER = "com.voiceinput.app";\n\t\t\t\tPROVISIONING_PROFILE = "' + pp_app + '";'
+              'PRODUCT_BUNDLE_IDENTIFIER = \"com.voiceinput.app\";',
+              'PRODUCT_BUNDLE_IDENTIFIER = \"com.voiceinput.app\";\n\t\t\t\tPROVISIONING_PROFILE = \"' + pp_app + '\";'
           )
-
-          # 对 Keyboard target：在 com.voiceinput.votype.keyboard 后面注入 PROVISIONING_PROFILE
           content = content.replace(
-              'PRODUCT_BUNDLE_IDENTIFIER = "com.voiceinput.votype.keyboard";',
-              'PRODUCT_BUNDLE_IDENTIFIER = "com.voiceinput.votype.keyboard";\n\t\t\t\tPROVISIONING_PROFILE = "' + pp_kb + '";'
+              'PRODUCT_BUNDLE_IDENTIFIER = \"com.voiceinput.votype.keyboard\";',
+              'PRODUCT_BUNDLE_IDENTIFIER = \"com.voiceinput.votype.keyboard\";\n\t\t\t\tPROVISIONING_PROFILE = \"' + pp_kb + '\";'
           )
 
           with open('VoType.xcodeproj/project.pbxproj', 'w') as f:
               f.write(content)
           print(f'Injected PP UUIDs: App={pp_app}, KB={pp_kb}')
-          PYEOF
+          "
 
           xcodebuild \
             -project VoType.xcodeproj \
