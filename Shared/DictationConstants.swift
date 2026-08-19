@@ -1,18 +1,15 @@
 import Foundation
 import UIKit
-import CoreFoundation
 
 /// 键盘扩展与容器 App 之间通信的共享常量
 /// iOS 键盘扩展无法直接录音(平台限制)
-/// 通过 URL 参数(传设置) + 命名剪贴板(传结果) + Darwin 通知(传信号) 实现跨进程通信
+/// 通过 URL 参数(传设置) + 命名剪贴板(传结果) 实现跨进程通信
 /// 不使用 App Group,避免 provisioning profile 问题
+/// 不使用 Darwin 通知,改为 viewWillAppear 轮询命名剪贴板
 enum DictationConstants {
     // MARK: - URL Scheme
     static let urlScheme = "votype"
     static let dictationPath = "dictation"
-
-    // MARK: - Darwin 通知 (仅信号,不携带数据)
-    static let darwinNotificationName = "com.daseanle.votype.dictationComplete" as CFString
 
     // MARK: - 命名剪贴板 (跨进程传结果)
     static let pasteboardName = "com.daseanle.votype.result"
@@ -107,14 +104,5 @@ enum DictationConstants {
             return (nil, dict["error"])
         }
         return (nil, nil)
-    }
-
-    // MARK: - 发送 Darwin 通知
-    static func postDarwinNotification() {
-        CFNotificationCenterPostNotification(
-            CFNotificationCenterGetDarwinNotificationCenter(),
-            CFNotificationName(darwinNotificationName),
-            nil, nil, true
-        )
     }
 }

@@ -1,5 +1,4 @@
 import UIKit
-import CoreFoundation
 
 /// 语音输入键盘 - 容器 App 回调架构
 /// iOS 键盘扩展无法直接录音(平台限制)
@@ -42,7 +41,6 @@ class KeyboardViewController: UIInputViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         setupUI()
-        setupDarwinNotification()
     }
 
     override func viewWillAppear(_ animated: Bool) {
@@ -246,25 +244,6 @@ class KeyboardViewController: UIInputViewController {
 
         // 让 spaceButton 在 stack 中占满剩余空间
         spaceButton.setContentHuggingPriority(.defaultLow, for: .horizontal)
-    }
-
-    // MARK: - Darwin 通知
-
-    private func setupDarwinNotification() {
-        CFNotificationCenterAddObserver(
-            CFNotificationCenterGetDarwinNotificationCenter(),
-            Unmanaged.passUnretained(self).toOpaque(),
-            { _, observer, _, _, _ in
-                DispatchQueue.main.async {
-                    guard let observer = observer else { return }
-                    let vc = Unmanaged<KeyboardViewController>.fromOpaque(observer).takeUnretainedValue()
-                    vc.processPendingResult()
-                }
-            },
-            DictationConstants.darwinNotificationName,
-            nil,
-            .deliverImmediately
-        )
     }
 
     // MARK: - 语言切换

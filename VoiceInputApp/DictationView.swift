@@ -177,9 +177,6 @@ class DictationViewModel: ObservableObject {
         }
 
         hasResult = true
-
-        // 发送 Darwin 通知,通知键盘扩展读取结果
-        DictationConstants.postDarwinNotification()
     }
 
     func cleanup() {
@@ -190,9 +187,6 @@ class DictationViewModel: ObservableObject {
             audioEngine?.stop()
             audioEngine?.inputNode.removeTap(onBus: 0)
             isRecording = false
-
-            // 发送通知让键盘知道已取消
-            DictationConstants.postDarwinNotification()
         }
         recognitionRequest?.endAudio()
         recognitionTask?.cancel()
