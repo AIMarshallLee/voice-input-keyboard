@@ -94,6 +94,45 @@ jobs:
       - name: Build App (signed)
         if: steps.check_secrets.outputs.has_signing == 'true'
         run: |
+          # 直接在 xcodeproj 中注入 PROVISIONING_PROFILE UUID
+          python3 << 'PYEOF'
+          import re
+
+          with open('VoType.xcodeproj/project.pbxproj', 'r') as f:
+              content = f.read()
+
+          # 清除所有 PROVISIONING_PROFILE_SPECIFIER 值
+          content = re.sub(
+              r'PROVISIONING_PROFILE_SPECIFIER = "[^"]*";',
+              'PROVISIONING_PROFILE_SPECIFIER = "";',
+              content
+          )
+          # 清除所有 PROVISIONING_PROFILE 值
+          content = re.sub(
+              r'PROVISIONING_PROFILE = "[^"]*";',
+              'PROVISIONING_PROFILE = "";',
+              content
+          )
+
+          with open('VoType.xcodeproj/project.pbxproj', 'w') as f:
+              f.write(content)
+          print('Cleared provisioning profile settings')
+          PYEOF
+
+          # 分别构建键盘扩展和主应用
+          xcodebuild \
+            -project VoType.xcodeproj \
+            -target KeyboardExtension \
+            -configuration Release \
+            -sdk iphoneos \
+            CODE_SIGNING_ALLOWED=YES \
+            CODE_SIGN_IDENTITY="Apple Development" \
+            DEVELOPMENT_TEAM="$TEAM_ID" \
+            CODE_SIGN_STYLE="Manual" \
+            PROVISIONING_PROFILE="$PP_UUID_KB" \
+            -derivedDataPath ./build \
+            OTHER_CODE_SIGN_FLAGS="--keychain $KEYCHAIN_FILE"
+
           xcodebuild \
             -project VoType.xcodeproj \
             -scheme VoiceInputApp \
@@ -101,8 +140,12 @@ jobs:
             -sdk iphoneos \
             -destination 'generic/platform=iOS' \
             CODE_SIGNING_ALLOWED=YES \
-            OTHER_CODE_SIGN_FLAGS="--keychain $KEYCHAIN_FILE" \
-            -derivedDataPath ./build
+            CODE_SIGN_IDENTITY="Apple Development" \
+            DEVELOPMENT_TEAM="$TEAM_ID" \
+            CODE_SIGN_STYLE="Manual" \
+            PROVISIONING_PROFILE="$PP_UUID_APP" \
+            -derivedDataPath ./build \
+            OTHER_CODE_SIGN_FLAGS="--keychain $KEYCHAIN_FILE"
 
       # ---- 无签名回退构建 ----
       - name: Build App (unsigned)

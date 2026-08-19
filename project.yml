@@ -56,9 +56,6 @@ targets:
         GENERATE_INFOPLIST_FILE: NO
         CODE_SIGN_ENTITLEMENTS: VoiceInputApp/VoiceInputApp.entitlements
         CODE_SIGN_STYLE: Manual
-        CODE_SIGN_IDENTITY: "Apple Development"
-        DEVELOPMENT_TEAM: JVP8SN8P4M
-        PROVISIONING_PROFILE_SPECIFIER: VoType_App_Dev
     dependencies:
       - target: KeyboardExtension
 
@@ -105,6 +102,3 @@ targets:
         GENERATE_INFOPLIST_FILE: NO
         CODE_SIGN_ENTITLEMENTS: KeyboardExtension/KeyboardExtension.entitlements
         CODE_SIGN_STYLE: Manual
-        CODE_SIGN_IDENTITY: "Apple Development"
-        DEVELOPMENT_TEAM: JVP8SN8P4M
-        PROVISIONING_PROFILE_SPECIFIER: VoType_Keyboard_Dev2
