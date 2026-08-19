@@ -318,13 +318,6 @@ class PiPManager: NSObject, AVPictureInPictureSampleBufferPlaybackDelegate, AVPi
 
     // MARK: - AVPictureInPictureSampleBufferPlaybackDelegate
 
-    @objc func pictureInPictureController(
-        _ pictureInPictureController: AVPictureInPictureController,
-        setPlaying playing: Bool
-    ) {
-        // 不需要控制播放/暂停
-    }
-
     @objc func pictureInPictureControllerTimeRangeForPlayback(
         _ pictureInPictureController: AVPictureInPictureController
     ) -> CMTimeRange {
@@ -332,10 +325,19 @@ class PiPManager: NSObject, AVPictureInPictureSampleBufferPlaybackDelegate, AVPi
         return CMTimeRange(start: .zero, duration: .positiveInfinity)
     }
 
-    @objc func pictureInPictureControllerIsPlaying(
+    @objc func pictureInPictureControllerIsPlaybackPaused(
         _ pictureInPictureController: AVPictureInPictureController
     ) -> Bool {
-        return true
+        // 永远不在暂停状态,保持 PiP 活跃
+        return false
+    }
+
+    @objc func pictureInPictureController(
+        _ pictureInPictureController: AVPictureInPictureController,
+        didTransitionToRenderSize newRenderSize: CMVideoDimensions
+    ) {
+        // 渲染尺寸变化时重新推送画面
+        pushFrame()
     }
 
     @objc func pictureInPictureController(
