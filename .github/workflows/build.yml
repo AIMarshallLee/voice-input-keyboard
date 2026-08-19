@@ -70,22 +70,25 @@ jobs:
           PP_APP: ${{ secrets.PROVISIONING_PROFILE_APP }}
           PP_KEYBOARD: ${{ secrets.PROVISIONING_PROFILE_KEYBOARD }}
         run: |
+          set -ex
           PP_DIR="$HOME/Library/MobileDevice/Provisioning Profiles"
           mkdir -p "$PP_DIR"
 
           # App 主目标
           echo "$PP_APP" | base64 --decode > "$PP_DIR/app.mobileprovision"
-          PP_UUID_APP=$(security cms -D -i "$PP_DIR/app.mobileprovision" | grep -A1 UUID | grep -o '[0-9A-F-]\{36\}')
+          ls -la "$PP_DIR/app.mobileprovision"
+          PP_UUID_APP=$(security cms -D -i "$PP_DIR/app.mobileprovision" 2>/dev/null | plutil -extract UUID raw -)
+          echo "App PP UUID: $PP_UUID_APP"
           mv "$PP_DIR/app.mobileprovision" "$PP_DIR/$PP_UUID_APP.mobileprovision"
           echo "PP_UUID_APP=$PP_UUID_APP" >> $GITHUB_ENV
-          echo "App PP UUID: $PP_UUID_APP"
 
           # 键盘扩展
           echo "$PP_KEYBOARD" | base64 --decode > "$PP_DIR/keyboard.mobileprovision"
-          PP_UUID_KB=$(security cms -D -i "$PP_DIR/keyboard.mobileprovision" | grep -A1 UUID | grep -o '[0-9A-F-]\{36\}')
+          ls -la "$PP_DIR/keyboard.mobileprovision"
+          PP_UUID_KB=$(security cms -D -i "$PP_DIR/keyboard.mobileprovision" 2>/dev/null | plutil -extract UUID raw -)
+          echo "Keyboard PP UUID: $PP_UUID_KB"
           mv "$PP_DIR/keyboard.mobileprovision" "$PP_DIR/$PP_UUID_KB.mobileprovision"
           echo "PP_UUID_KB=$PP_UUID_KB" >> $GITHUB_ENV
-          echo "Keyboard PP UUID: $PP_UUID_KB"
 
       # ---- 签名构建 ----
       - name: Build App (signed)
@@ -98,10 +101,7 @@ jobs:
             -sdk iphoneos \
             -destination 'generic/platform=iOS' \
             CODE_SIGNING_ALLOWED=YES \
-            CODE_SIGN_IDENTITY="Apple Development" \
-            DEVELOPMENT_TEAM="$TEAM_ID" \
-            PROVISIONING_PROFILE_VoiceInputApp="$PP_UUID_APP" \
-            PROVISIONING_PROFILE_KeyboardExtension="$PP_UUID_KB" \
+            OTHER_CODE_SIGN_FLAGS="--keychain $KEYCHAIN_FILE" \
             -derivedDataPath ./build
 
       # ---- 无签名回退构建 ----
