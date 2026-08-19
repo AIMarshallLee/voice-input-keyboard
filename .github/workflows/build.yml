@@ -260,7 +260,7 @@ jobs:
             --skip_waiting_for_build_processing
 
       - name: Upload Metadata & Screenshots to App Store Connect
-        if: steps.check_dist.outputs.has_dist == 'true'
+        if: always() && steps.check_dist.outputs.has_dist == 'true'
         env:
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
