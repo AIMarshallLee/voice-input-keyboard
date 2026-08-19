@@ -228,6 +228,43 @@ jobs:
           path: VoType-AppStore.ipa
           retention-days: 30
 
+      - name: Upload to App Store Connect
+        if: steps.check_dist.outputs.has_dist == 'true'
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_CONTENT: ${{ secrets.ASC_KEY_CONTENT }}
+        run: |
+          # 创建 API Key .p8 文件
+          mkdir -p ~/.appstoreconnect/private_keys
+          echo "$ASC_KEY_CONTENT" | base64 --decode > ~/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8
+
+          # 创建 fastlane API key JSON
+          cat > /tmp/api_key.json << 'ENDJSON'
+          {
+            "key_id": "${ASC_KEY_ID}",
+            "issuer_id": "${ASC_ISSUER_ID}",
+            "key_filepath": "~/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8",
+            "in_house": false
+          }
+          ENDJSON
+
+          # 替换变量
+          sed -i '' "s|\${ASC_KEY_ID}|${ASC_KEY_ID}|g" /tmp/api_key.json
+          sed -i '' "s|\${ASC_ISSUER_ID}|${ASC_ISSUER_ID}|g" /tmp/api_key.json
+          sed -i '' "s|~/.appstoreconnect|$HOME/.appstoreconnect|g" /tmp/api_key.json
+
+          cat /tmp/api_key.json
+
+          # 上传 IPA 到 App Store Connect
+          fastlane deliver \
+            --ipa VoType-AppStore.ipa \
+            --api-key-path /tmp/api_key.json \
+            --skip_screenshots \
+            --skip_metadata \
+            --force \
+            --precheck_include_in_app_purchases false
+
       - name: Cleanup Keychain
         if: always()
         run: |
