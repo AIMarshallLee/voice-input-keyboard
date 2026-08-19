@@ -432,14 +432,19 @@ class KeyboardViewController: UIInputViewController {
         recognizedText = ""
         hasInsertedText = false
 
+        // 重置音频引擎（防止上次录音残留状态）
+        audioEngine.stop()
+        audioEngine.reset()
+
         do {
             let session = AVAudioSession.sharedInstance()
 
-            // 耳语模式: 使用 voiceChat 增强语音捕获
+            // 键盘扩展中必须使用 .playAndRecord，.record 会导致引擎启动失败
+            // mode 必须用 .default，.measurement 在键盘扩展中不兼容（错误 0x77686174）
             if isWhisperMode {
                 try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.duckOthers, .allowBluetooth])
             } else {
-                try session.setCategory(.record, mode: .measurement, options: .duckOthers)
+                try session.setCategory(.playAndRecord, mode: .default, options: [.duckOthers, .allowBluetooth])
             }
             try session.setActive(true, options: .notifyOthersOnDeactivation)
 
@@ -481,7 +486,15 @@ class KeyboardViewController: UIInputViewController {
             }
 
             let inputNode = audioEngine.inputNode
-            let format = inputNode.outputFormat(forBus: 0)
+
+            // 使用标准格式而非 inputNode.outputFormat(forBus: 0)
+            // 键盘扩展中 inputNode 的输出格式可能无效，导致引擎启动失败
+            guard let format = AVAudioFormat(standardFormatWithSampleRate: 44100, channels: 1) else {
+                liveTextLabel.text = "音频格式初始化失败"
+                cleanup()
+                return
+            }
+
             inputNode.removeTap(onBus: 0)
             inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in
                 req.append(buffer)
@@ -511,9 +524,11 @@ class KeyboardViewController: UIInputViewController {
 
         audioEngine.stop()
         audioEngine.inputNode.removeTap(onBus: 0)
+        audioEngine.reset()
         recognitionRequest?.endAudio()
         recognitionTask?.cancel()
 
+        // 确保音频会话被正确停用
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
 
         stopPulse()
