@@ -1,51 +1,13 @@
 import SwiftUI
 import AVFoundation
 import Speech
-import AVKit
-
-// MARK: - PiP 容器视图 (UIViewRepresentable)
-
-/// 桥接 UIKit view 给 PiPManager
-/// AVSampleBufferDisplayLayer 必须挂载在一个有 window 的 UIView 上
-struct PiPContainerView: UIViewRepresentable {
-
-    /// 当前持有的 view,供 rehost() 使用
-    static weak var currentView: UIView?
-
-    func makeUIView(context: Context) -> UIView {
-        let view = UIView()
-        view.backgroundColor = .clear
-        PiPContainerView.currentView = view
-        DispatchQueue.main.async {
-            PiPManager.shared.setup(in: view)
-        }
-        return view
-    }
-
-    func updateUIView(_ uiView: UIView, context: Context) {
-        PiPContainerView.currentView = uiView
-        // 重新挂载 PiP layer (DictationView dismiss 后 ContentView 的 view 需要接管)
-        DispatchQueue.main.async {
-            PiPManager.shared.setup(in: uiView)
-        }
-    }
-
-    /// 把 PiP layer 重新挂载到 ContentView 的 view
-    /// DictationView dismiss 后调用,确保 PiP 不丢失
-    static func rehost() {
-        guard let view = currentView else { return }
-        DispatchQueue.main.async {
-            PiPManager.shared.setup(in: view)
-        }
-    }
-}
 
 // MARK: - ViewModel
 
 /// 容器 App 语音听写 ViewModel
-/// 在主 App 中执行录音和语音识别(键盘扩展无法录音)
-/// 通过 PiP 悬浮窗让 App 在后台保活,用户可以滑回宿主 App 继续看微信
-/// 这是 Typeless 和微信输入法使用的同款方案
+/// 仅首次使用时显示 (URL Scheme 降级路径)
+/// 录音完成后自动启用 BackgroundDictationManager 后台保活
+/// 之后不再显示此页面
 @MainActor
 class DictationViewModel: ObservableObject {
     @Published var isRecording = false
@@ -53,7 +15,6 @@ class DictationViewModel: ObservableObject {
     @Published var statusMessage = "准备中..."
     @Published var hasResult = false
     @Published var permissionError: String?
-    @Published var isPiPActive = false
 
     private var audioEngine: AVAudioEngine?
     private var speechRecognizer: SFSpeechRecognizer?
@@ -141,7 +102,7 @@ class DictationViewModel: ObservableObject {
         }
     }
 
-    // MARK: - 录音 + PiP
+    // MARK: - 录音
 
     func startRecording() {
         recognizedText = ""
@@ -157,12 +118,12 @@ class DictationViewModel: ObservableObject {
 
         do {
             let session = AVAudioSession.sharedInstance()
-            // playAndRecord + mixWithOthers: 录音同时不打断其他 App 的音频
-            // 这是 PiP 后台保活的关键配置
+            // ★ 不使用 .duckOthers！和后台保活模式一致
+            // .duckOthers 会让 iOS 认为这个 session 是"次要"的，更容易被挂起
             if whisperMode {
-                try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.duckOthers, .allowBluetoothHFP, .allowBluetoothA2DP, .mixWithOthers])
+                try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetoothHFP, .allowBluetoothA2DP, .mixWithOthers])
             } else {
-                try session.setCategory(.playAndRecord, mode: .default, options: [.duckOthers, .allowBluetoothHFP, .allowBluetoothA2DP, .mixWithOthers])
+                try session.setCategory(.playAndRecord, mode: .default, options: [.allowBluetoothHFP, .allowBluetoothA2DP, .mixWithOthers])
             }
             try session.setActive(true, options: .notifyOthersOnDeactivation)
 
@@ -179,8 +140,6 @@ class DictationViewModel: ObservableObject {
                         self.recognizedText = text
                         self.liveText = text
                         self.lastTextUpdateTime = Date()
-                        // 同步更新 PiP 悬浮窗显示的文字
-                        PiPManager.shared.updateLiveText(text)
                     }
                     if let error = error as? NSError, error.code != 203 {
                         self.stopRecording()
@@ -203,7 +162,7 @@ class DictationViewModel: ObservableObject {
             try engine.start()
 
             isRecording = true
-            statusMessage = "正在聆听...可以滑回之前的App"
+            statusMessage = "正在聆听..."
             lastTextUpdateTime = Date()
             startSilenceTimer()
 
@@ -279,15 +238,12 @@ class DictationViewModel: ObservableObject {
             }
         }
 
-        print("[Dictation] Recording stopped, transitioning to PiP standby mode")
+        print("[Dictation] Recording stopped, transitioning to standby mode")
     }
 
     private func transitionToStandby() {
-        // ★ 核心:不停 PiP!转待命模式,保持 App 后台存活
-        PiPManager.shared.setCompletedMode(text: recognizedText)
-
-        // 1s 后切换到待命状态 (配合 DictationView 2.5s auto-dismiss)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+        // ★ 启用后台保活，不使用 PiP
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
             guard let self = self else { return }
 
             // 停掉 ViewModel 自己的心跳,BG manager 会接管
@@ -296,21 +252,18 @@ class DictationViewModel: ObservableObject {
             // 启用后台待命
             BackgroundDictationManager.shared.enablePipStandby()
 
-            // PiP 切到待命画面
-            PiPManager.shared.setStandbyMode()
-
             // 清理录音资源但保留 audio session
             self.cleanupAudioOnly()
         }
     }
 
-    /// 只清理录音资源,保留 audio session 和 PiP
+    /// 只清理录音资源,保留 audio session
     private func cleanupAudioOnly() {
         recognitionRequest = nil
         recognitionTask = nil
         audioEngine = nil
         // 不调 AVAudioSession.setActive(false) - 保活需要 session 保持 active
-        print("[Dictation] Audio resources cleaned, session kept active for PiP standby")
+        print("[Dictation] Audio resources cleaned, session kept active for standby")
     }
 
     // MARK: - 静音自动停止
@@ -343,7 +296,6 @@ class DictationViewModel: ObservableObject {
         recognitionRequest = nil
         recognitionTask = nil
         audioEngine = nil
-        PiPManager.shared.cleanup()
     }
 
     // MARK: - 心跳定时器
@@ -368,21 +320,15 @@ class DictationViewModel: ObservableObject {
 // MARK: - View
 
 /// 容器 App 的语音听写页面
-/// 由键盘扩展通过 URL Scheme (votype://dictation?lang=zh-CN&...) 触发
-/// 打开后自动开始录音 + 进入 PiP 模式,用户可以滑回宿主 App
-/// 悬浮窗会显示录音状态 + 实时识别文本,和 Typeless / 微信输入法体验一致
+/// 仅首次使用时由 URL Scheme 触发显示
+/// 录音完成后自动启用后台保活,之后不再显示
 struct DictationView: View {
     @StateObject private var viewModel = DictationViewModel()
     @Environment(\.dismiss) var dismiss
-    @Environment(\.scenePhase) var scenePhase
     var url: URL?
 
     var body: some View {
         ZStack {
-            // PiP 容器层 (必须在最底层,用于 AVSampleBufferDisplayLayer)
-            PiPContainerView()
-                .ignoresSafeArea()
-
             // 背景色
             Color.black.opacity(0.95).ignoresSafeArea()
 
@@ -435,7 +381,7 @@ struct DictationView: View {
                 // 底部操作按钮
                 VStack(spacing: 16) {
                     if viewModel.hasResult {
-                        Text("文字已就绪,返回键盘即可\nPiP 已进入待命模式")
+                        Text("文字已就绪,返回键盘即可\n后台保活已自动开启")
                             .font(.subheadline)
                             .foregroundColor(.blue)
                             .multilineTextAlignment(.center)
@@ -454,10 +400,6 @@ struct DictationView: View {
                         .tint(.red)
                         .controlSize(.large)
                         .padding(.horizontal)
-
-                        Text("💡 可以向上滑回微信,录音会在悬浮窗中继续")
-                            .font(.caption)
-                            .foregroundColor(.gray)
                     } else if viewModel.permissionError == nil {
                         ProgressView()
                             .scaleEffect(1.5)
@@ -471,56 +413,17 @@ struct DictationView: View {
         }
         .onAppear {
             viewModel.loadSettings(from: url)
-            // 延迟 0.3s 确保 PiPContainerView 的 makeUIView 已执行且 view 有 window
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                 viewModel.checkPermissionsAndStart()
             }
         }
-        .onChange(of: viewModel.isRecording) { isRecording in
-            if isRecording {
-                // 录音开始后,启动 PiP 帧定时器 + 尝试启动 PiP
-                // 实际 PiP 窗口会在用户滑回宿主 App 时自动弹出 (canStartPictureInPictureAutomaticallyFromInline = true)
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                    PiPManager.shared.startPiP()
-                }
-            }
-        }
-        .onChange(of: scenePhase) { phase in
-            if phase == .background && viewModel.isRecording {
-                // App 进入后台,PiP 应该由 canStartPictureInPictureAutomaticallyFromInline 自动启动
-                // 如果没有自动启动,尝试手动启动 (可能为时已晚,但作为 fallback)
-                print("[Dictation] App went to background, isRecording=\(viewModel.isRecording), isPiPActive=\(PiPManager.shared.isPiPActive)")
-                if !PiPManager.shared.isPiPActive {
-                    PiPManager.shared.startPiP()
-                }
-            } else if phase == .inactive && viewModel.isRecording {
-                // App 即将进入后台,这是 PiP 自动启动的时机
-                print("[Dictation] App going inactive (about to background)")
-            }
-        }
         .onChange(of: viewModel.hasResult) { hasResult in
             if hasResult {
-                // 录音完成后,2.5s 后自动 dismiss (1.5s 完成画面 + 1s 待命过渡)
+                // 录音完成后,2.5s 后自动 dismiss
                 DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
                     dismiss()
                 }
             }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .pipDidRestore)) { _ in
-            // 用户点击了 PiP 的还原按钮,回到全屏 App
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .pipDidStart)) { _ in
-            viewModel.isPiPActive = true
-            print("[Dictation] PiP started notification received")
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .pipDidStop)) { _ in
-            viewModel.isPiPActive = false
-            print("[Dictation] PiP stopped notification received")
-        }
-        .onDisappear {
-            // 不调 cleanup!PiP 需要保持存活
-            // 把 PiP layer 重新挂载到 ContentView 的 view 上
-            PiPContainerView.rehost()
         }
     }
 }

@@ -415,8 +415,8 @@ class KeyboardViewController: UIInputViewController {
 
     /// 无跳转触发 (Typeless / 微信输入法同款方案):
     /// 1. 总是先发 Darwin 通知给主 App (不切 App!)
-    /// 2. 主 App 在 PiP 保活中 → 几百毫秒内响应 dictationStarted → 不跳转
-    /// 3. 主 App 不在保活中 → 1.5s 超时降级到 URL Scheme (首次使用)
+    /// 2. 主 App 在后台保活中 → 几百毫秒内响应 dictationStarted → 不跳转
+    /// 3. 主 App 不在保活中 → 5s 超时降级到 URL Scheme (首次使用)
     ///
     /// 之前的问题: 先检查心跳,但键盘重启后心跳丢失,导致误判主 App 不存活
     /// 现在: 不依赖心跳,直接发通知,让主 App 自己响应
@@ -445,8 +445,8 @@ class KeyboardViewController: UIInputViewController {
         DarwinBridge.writeDictationSettings(settings)
 
         // ★ 总是先走 Darwin 通知,不检查心跳!
-        // PiP 保活中: 主 App 几百毫秒内响应 → 不跳转
-        // 主 App 不在保活中: 1.5s 超时 → 降级 URL Scheme
+        // 后台保活中: 主 App 几百毫秒内响应 → 不跳转
+        // 主 App 不在保活中: 5s 超时 → 降级 URL Scheme
         print("[KB] Sending Darwin notification (always Path A first)")
         DarwinBridge.postNotification(DarwinNotificationName.requestStartDictation)
 
@@ -459,14 +459,15 @@ class KeyboardViewController: UIInputViewController {
         micButton.setImage(UIImage(systemName: "waveform", withConfiguration: waveConfig), for: .normal)
         micButton.backgroundColor = UIColor.systemRed
 
-        // 2.5s 超时降级: 主 App 没在后台保活中，需要 URL Scheme 启动
+        // 5s 超时降级: 主 App 没在后台保活中，需要 URL Scheme 启动
         // 给 Darwin 通知足够时间传递 + 主 App 从挂起状态恢复
+        // Build 28: 从 2.5s 增加到 5s，减少误触发 URL Scheme 跳转
         darwinFallbackTimer = Timer.scheduledTimer(
-            withTimeInterval: 2.5,
+            withTimeInterval: 5.0,
             repeats: false
         ) { [weak self] _ in
             guard let self = self, self.isWaitingForResult else { return }
-            print("[KB] No Darwin response in 2.5s, falling back to URL Scheme")
+            print("[KB] No Darwin response in 5s, falling back to URL Scheme")
             self.launchViaURL(sessionId: sessionId)
         }
     }

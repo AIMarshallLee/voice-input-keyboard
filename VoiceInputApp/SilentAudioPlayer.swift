@@ -6,14 +6,16 @@ import AVFoundation
 /// 而是**是否有 AVAudioPlayer/AVAudioEngine 正在播放**。
 /// 只 setActive 不播放,iOS 会在几十秒到几分钟后挂起 App。
 ///
-/// 本类持续播放一段无声音频(全零 WAV),让 iOS 认为 App 在"播放音频",
-/// 从而保持 App 在后台存活。这是 Typeless / 微信输入法 / 导航类 App
-/// 后台保活的核心技术。
+/// 本类持续播放一段极低音量噪声,让 iOS 认为 App 在"播放音频",
+/// 从而保持 App 在后台存活。
 ///
-/// 体积:1 秒 44.1kHz 单声道 16bit = 88KB,内存中生成,不写磁盘
+/// 关键: 不能用全零数据 + volume=0!
+/// iOS 会检测到"没有实际音频"并暂停播放器。
+/// 改用极低振幅随机噪声 + volume=0.01,iOS 认为是正常音频播放。
 class SilentAudioPlayer {
 
     private var player: AVAudioPlayer?
+    private var healthTimer: DispatchSourceTimer?
 
     /// 开始播放无声音频 (无限循环)
     func start() {
@@ -21,33 +23,36 @@ class SilentAudioPlayer {
             if player?.isPlaying == false {
                 player?.play()
             }
+            startHealthCheck()
             return
         }
 
-        guard let data = SilentAudioPlayer.generateSilentWAV(seconds: 1) else {
-            print("[SilentAudio] Failed to generate silent WAV")
+        guard let data = SilentAudioPlayer.generateNearSilentWAV(seconds: 1) else {
+            print("[SilentAudio] Failed to generate WAV")
             return
         }
 
         do {
             player = try AVAudioPlayer(data: data)
             player?.numberOfLoops = -1   // 无限循环
-            player?.volume = 0            // 完全静音
+            player?.volume = 0.03        // 极低音量，iOS 不会认为是静音
             player?.prepareToPlay()
             player?.play()
             print("[SilentAudio] Started — background keep-alive active")
+            startHealthCheck()
         } catch {
             print("[SilentAudio] Failed to init player: \(error.localizedDescription)")
         }
     }
 
-    /// 暂停 (录音时调用,释放麦克风给 AVAudioEngine)
+    /// 暂停 (仅在需要麦克风独占时调用)
     func pause() {
         player?.pause()
-        print("[SilentAudio] Paused for recording")
+        stopHealthCheck()
+        print("[SilentAudio] Paused")
     }
 
-    /// 恢复 (录音结束后调用,恢复后台保活)
+    /// 恢复
     func resume() {
         guard let p = player else {
             start()
@@ -57,20 +62,54 @@ class SilentAudioPlayer {
             p.play()
             print("[SilentAudio] Resumed — keep-alive restored")
         }
+        startHealthCheck()
     }
 
     /// 完全停止
     func stop() {
         player?.stop()
         player = nil
+        stopHealthCheck()
         print("[SilentAudio] Stopped")
     }
 
-    // MARK: - 生成静音 WAV
+    // MARK: - 健康检查
 
-    /// 在内存中生成一段全零(静音)的 WAV 文件
-    /// 格式: RIFF / WAVE / PCM / 44100Hz / 单声道 / 16bit
-    static func generateSilentWAV(seconds: Int) -> Data? {
+    /// 每 2 秒检查一次播放器是否还在播放
+    /// 如果被 iOS 暂停了，立即重启
+    private func startHealthCheck() {
+        stopHealthCheck()
+        let timer = DispatchSource.makeTimerSource(queue: .global(qos: .background))
+        timer.schedule(deadline: .now() + 2.0, repeating: 2.0)
+        timer.setEventHandler { [weak self] in
+            guard let self = self else { return }
+            if self.player?.isPlaying != true {
+                print("[SilentAudio] Player stopped! Restarting...")
+                DispatchQueue.main.async {
+                    self.player?.play()
+                    if self.player?.isPlaying != true {
+                        // 播放器可能已失效，重新创建
+                        self.player = nil
+                        self.start()
+                    }
+                }
+            }
+        }
+        timer.resume()
+        healthTimer = timer
+    }
+
+    private func stopHealthCheck() {
+        healthTimer?.cancel()
+        healthTimer = nil
+    }
+
+    // MARK: - 生成极低音量噪声 WAV
+
+    /// 生成一段极低振幅随机噪声的 WAV 文件
+    /// 不是全零！全零会被 iOS 检测为静音并暂停播放器
+    /// 振幅 1/32767，人耳几乎听不见，但 iOS 认为是有效音频
+    static func generateNearSilentWAV(seconds: Int) -> Data? {
         let sampleRate = 44100
         let numChannels = 1
         let bitsPerSample = 16
@@ -86,18 +125,23 @@ class SilentAudioPlayer {
 
         // fmt chunk
         data.append("fmt ".data(using: .ascii)!)
-        appendUInt32(&data, 16)                                    // fmt chunk size
+        appendUInt32(&data, 16)
         appendUInt16(&data, 1)                                     // PCM format
         appendUInt16(&data, UInt16(numChannels))
         appendUInt32(&data, UInt32(sampleRate))
-        appendUInt32(&data, UInt32(sampleRate * numChannels * bitsPerSample / 8)) // byte rate
-        appendUInt16(&data, UInt16(numChannels * bitsPerSample / 8))              // block align
+        appendUInt32(&data, UInt32(sampleRate * numChannels * bitsPerSample / 8))
+        appendUInt16(&data, UInt16(numChannels * bitsPerSample / 8))
         appendUInt16(&data, UInt16(bitsPerSample))
 
-        // data chunk (all zeros = silence)
+        // data chunk: 极低振幅随机噪声
         data.append("data".data(using: .ascii)!)
         appendUInt32(&data, UInt32(dataSize))
-        data.append(Data(count: dataSize))
+
+        // 生成极低振幅噪声 (振幅 1，范围 -1 到 1，16bit 满量程是 -32768~32767)
+        for _ in 0..<numSamples {
+            let noise = Int16.random(in: -1...1)
+            appendUInt16(&data, UInt16(bitPattern: noise))
+        }
 
         return data
     }

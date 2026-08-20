@@ -34,19 +34,13 @@ struct ContentView: View {
     @State private var showBatchImport = false
     @State private var batchImportText = ""
 
-    // PiP 待命状态
+    // 后台保活状态
     @ObservedObject private var bgDictation = BackgroundDictationManager.shared
 
     private let sharedDefaults = UserDefaults.standard as UserDefaults?
 
     var body: some View {
-        ZStack {
-            // PiP 容器层 (透明,在所有内容下方)
-            // 当 DictationView dismiss 后,PiP layer 会挂载到这里
-            PiPContainerView()
-                .ignoresSafeArea()
-
-            NavigationView {
+        NavigationView {
             ScrollView {
                 VStack(spacing: 20) {
 
@@ -307,10 +301,10 @@ struct ContentView: View {
                         .cornerRadius(16)
                     }
 
-                    // PiP 保活 (Typeless / 微信输入法核心功能)
+                    // 后台保活 (Typeless / 微信输入法核心功能)
                     VStack(alignment: .leading, spacing: 14) {
                         HStack {
-                            Text("PiP 后台保活").font(.headline)
+                            Text("后台保活").font(.headline)
                             Spacer()
                             Toggle("", isOn: Binding(
                                 get: { bgDictation.isPipStandbyEnabled },
@@ -327,7 +321,7 @@ struct ContentView: View {
 
                         if bgDictation.isPipStandbyEnabled {
                             HStack(spacing: 12) {
-                                Image(systemName: "pip.fill")
+                                Image(systemName: "speaker.wave.2.fill")
                                     .font(.title2)
                                     .foregroundColor(.green)
 
@@ -434,9 +428,8 @@ struct ContentView: View {
                     onSave: batchImportEntries
                 )
             }
-            }
-            .navigationViewStyle(.stack)
         }
+        .navigationViewStyle(.stack)
     }
 
     // MARK: - 设置
