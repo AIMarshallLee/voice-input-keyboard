@@ -64,7 +64,7 @@ class BackgroundDictationManager: ObservableObject {
     }
 
     deinit {
-        stopHeartbeat()
+        heartbeatTimer?.cancel()
     }
 
     // MARK: - Darwin 通知监听
@@ -136,7 +136,7 @@ class BackgroundDictationManager: ObservableObject {
         stopHeartbeat()
 
         let timer = DispatchSource.makeTimerSource(queue: .global(qos: .background))
-        timer.schedule(deadline: .now(), interval: 2.0)
+        timer.schedule(deadline: .now(), repeating: 2.0)
         timer.setEventHandler { DarwinBridge.writeHeartbeat() }
         timer.resume()
         heartbeatTimer = timer
