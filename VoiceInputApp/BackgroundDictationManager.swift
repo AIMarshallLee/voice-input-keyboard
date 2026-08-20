@@ -216,7 +216,6 @@ class BackgroundDictationManager: ObservableObject {
             req.shouldReportPartialResults = true
             req.requiresOnDeviceRecognition = false
 
-            let sessionId = currentSessionId
             recognitionTask = recognizer.recognitionTask(with: req) { [weak self] result, error in
                 Task { @MainActor in
                     guard let self = self else { return }
@@ -314,7 +313,7 @@ class BackgroundDictationManager: ObservableObject {
         silenceTimer?.cancel()
 
         let timer = DispatchSource.makeTimerSource(queue: .global(qos: .background))
-        timer.schedule(deadline: .now() + 1.0, interval: 1.0)
+        timer.schedule(deadline: .now() + 1.0, repeating: 1.0)
         timer.setEventHandler { [weak self] in
             Task { @MainActor in
                 guard let self = self, self.state == .recording else { return }

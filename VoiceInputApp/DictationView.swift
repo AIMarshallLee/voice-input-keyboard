@@ -317,7 +317,7 @@ class DictationViewModel: ObservableObject {
     private func startHeartbeat() {
         stopHeartbeat()
         let timer = DispatchSource.makeTimerSource(queue: .global(qos: .background))
-        timer.scheduleRepeating(deadline: .now(), interval: 0.5)
+        timer.schedule(deadline: .now(), repeating: 0.5)
         timer.setEventHandler { DarwinBridge.writeHeartbeat() }
         timer.resume()
         heartbeatTimer = timer

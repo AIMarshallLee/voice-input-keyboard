@@ -45,7 +45,7 @@ struct VoiceInputApp: App {
                             // 但如果 Darwin 通知没送达,键盘会降级到 URL
                             // 这种情况下让 BackgroundDictationManager 处理
                             print("[App] URL Scheme received but standby enabled - redirecting to BG manager")
-                            if let settings = DarwinBridge.readDictationSettings() {
+                            if DarwinBridge.readDictationSettings() != nil {
                                 // 通知 BG manager 处理
                                 DarwinBridge.postNotification(DarwinNotificationName.requestStartDictation)
                             }
