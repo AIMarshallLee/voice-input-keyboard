@@ -89,22 +89,51 @@ class BackgroundDictationManager: ObservableObject {
 
     // MARK: - PiP 保活模式
 
-    /// 开启 PiP 保活
-    /// App 进入后台,PiP 显示"待命中",每 2s 发心跳
+    /// 开启 PiP 保活 (Typeless / 微信输入法核心方案)
+    ///
+    /// 用户在 App 内开启此开关后:
+    /// 1. 立即激活后台音频会话并持续保持 (iOS 认为 App 在"播放音频",不会被杀)
+    /// 2. 启动心跳 (每 2s 发一次,让键盘知道 App 存活)
+    /// 3. PiP 悬浮窗显示"待命中"
+    /// 4. 用户滑回宿主 App 后,PiP 自动弹出
+    /// 5. 键盘点麦克风 → Darwin 通知 → 后台直接录音 → 文字插入
+    /// 全程不切换 App,和 Typeless / 微信输入法一样
     func enablePipStandby() {
         guard !isPipStandbyEnabled else { return }
         isPipStandbyEnabled = true
 
+        // ★ 关键: 立即激活后台音频会话并持续保持
+        // 这是保活的核心: audio session 持续激活 = iOS 不挂起/杀掉 App
+        // 麦克风仅在收到 Darwin 通知时才采集 (省电)
+        activateBackgroundAudioSession()
+
         // 启动心跳
         startHeartbeat()
 
-        // 设置 PiP 为待命状态
+        // 设置 PiP 为待命状态并尝试启动
         PiPManager.shared.setStandbyMode()
+        PiPManager.shared.startPiP()
 
         // 发送 dictationStarted 让键盘知道我们准备好了
         DarwinBridge.postNotification(DarwinNotificationName.dictationStarted)
 
-        print("[BGDictation] PiP standby enabled, heartbeat started")
+        print("[BGDictation] PiP standby enabled, audio session held, heartbeat started")
+    }
+
+    /// 激活后台音频会话 (持续保持,不关闭)
+    /// 这是 Typeless / 微信输入法保活的核心机制:
+    /// - playAndRecord + mixWithOthers: 不打断其他 App 音频
+    /// - 持续激活 = iOS 认为 App 在"播放音频" = 进程不被挂起
+    /// - 麦克风仅在 startRecording 时才开始采集
+    private func activateBackgroundAudioSession() {
+        do {
+            let session = AVAudioSession.sharedInstance()
+            try session.setCategory(.playAndRecord, mode: .default, options: [.duckOthers, .allowBluetooth, .allowBluetoothA2DP, .mixWithOthers])
+            try session.setActive(true, options: .notifyOthersOnDeactivation)
+            print("[BGDictation] Background audio session activated and held")
+        } catch {
+            print("[BGDictation] Failed to activate audio session: \(error.localizedDescription)")
+        }
     }
 
     /// 关闭 PiP 保活
@@ -163,6 +192,9 @@ class BackgroundDictationManager: ObservableObject {
             return
         }
 
+        // ★ 确保 audio session 还活着 (App 可能被系统暂时挂起后恢复)
+        try? AVAudioSession.sharedInstance().setActive(true, options: .notifyOthersOnDeactivation)
+
         // 从命名剪贴板读取设置
         guard let settings = DarwinBridge.readDictationSettings() else {
             print("[BGDictation] No settings in clipboard, cannot start")
@@ -186,8 +218,9 @@ class BackgroundDictationManager: ObservableObject {
         recognizedText = ""
         state = .recording
 
-        // 更新 PiP 显示
+        // 更新 PiP 显示 + 确保 PiP 在运行
         PiPManager.shared.setRecordingMode()
+        PiPManager.shared.startPiP()
 
         // 配置语音识别器
         speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: settings.language))

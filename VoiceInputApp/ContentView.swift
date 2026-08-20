@@ -307,15 +307,22 @@ struct ContentView: View {
                         .cornerRadius(16)
                     }
 
-                    // PiP 待命状态 (Typeless/微信输入法核心功能)
+                    // PiP 保活 (Typeless / 微信输入法核心功能)
                     VStack(alignment: .leading, spacing: 14) {
                         HStack {
-                            Text("PiP 后台待命").font(.headline)
+                            Text("PiP 后台保活").font(.headline)
                             Spacer()
-                            if bgDictation.isPipStandbyEnabled {
-                                Image(systemName: "pip.fill")
-                                    .foregroundColor(.green)
-                            }
+                            Toggle("", isOn: Binding(
+                                get: { bgDictation.isPipStandbyEnabled },
+                                set: { newValue in
+                                    if newValue {
+                                        bgDictation.enablePipStandby()
+                                    } else {
+                                        bgDictation.disablePipStandby()
+                                    }
+                                }
+                            ))
+                            .labelsHidden()
                         }
 
                         if bgDictation.isPipStandbyEnabled {
@@ -328,25 +335,25 @@ struct ContentView: View {
                                     Text("待命中")
                                         .font(.subheadline.bold())
                                         .foregroundColor(.green)
-                                    Text("App 在后台保活,键盘点麦克风直接录音,不切 App")
+                                    Text("请滑回您要输入文字的App\nPiP悬浮窗自动出现,键盘点麦克风即可说话")
                                         .font(.caption2)
                                         .foregroundColor(.secondary)
                                 }
                                 Spacer()
-
-                                Button(role: .destructive) {
-                                    bgDictation.disablePipStandby()
-                                } label: {
-                                    Image(systemName: "xmark.circle.fill")
-                                        .font(.title3)
-                                        .foregroundColor(.red)
-                                }
                             }
                             .padding(.vertical, 4)
                         } else {
-                            Text("首次使用语音输入后,App 会自动进入 PiP 待命模式\n后续按麦克风不需要切换 App,和 Typeless / 微信输入法一样")
-                                .font(.caption2)
-                                .foregroundColor(.secondary)
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text("开启后,App 进入后台待命模式")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                Text("在任何App的键盘上点麦克风即可直接语音输入,不切换App")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                                Text("和 Typeless / 微信输入法一样的体验")
+                                    .font(.caption2)
+                                    .foregroundColor(.blue)
+                            }
                         }
                     }
                     .padding()
@@ -357,10 +364,11 @@ struct ContentView: View {
                     VStack(alignment: .leading, spacing: 12) {
                         Text("使用方法").font(.headline)
 
-                        InstructionRow(text: "在 UU远程(或其他任何 App)中点击输入框")
+                        InstructionRow(text: "先开启上方「PiP 后台保活」开关")
+                        InstructionRow(text: "滑回您要输入文字的 App(如微信)")
                         InstructionRow(text: "键盘弹出后,切换到「语音输入」键盘")
-                        InstructionRow(text: "点击中间的大麦克风按钮开始说话")
-                        InstructionRow(text: "说完后再次点击按钮,AI 自动处理后插入")
+                        InstructionRow(text: "点击中间的大麦克风按钮直接说话(不切 App)")
+                        InstructionRow(text: "说完后自动停止,文字自动插入光标位置")
                         InstructionRow(text: "说错了可以说「不对,应该是...」自动纠正")
                         InstructionRow(text: "说「第一」「第二」等会自动转为编号列表")
                         InstructionRow(text: "选中文字后说话,可替换或追加内容(语音编辑)")
