@@ -443,7 +443,7 @@ class KeyboardViewController: UIInputViewController {
         let heartbeatAge = DarwinBridge.heartbeatAge()
         print("[KB] Heartbeat age: \(heartbeatAge == .infinity ? "never" : "\(heartbeatAge)s")")
 
-        if DarwinBridge.isMainAppAlive(threshold: 3.0) {
+        if DarwinBridge.isMainAppAlive(threshold: 6.0) {
             // 路径 A: Darwin 通知 (主 App 存活,不切 App)
             print("[KB] Path A: Darwin notification")
             DarwinBridge.postNotification(DarwinNotificationName.requestStartDictation)

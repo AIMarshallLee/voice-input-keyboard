@@ -141,13 +141,21 @@ class PiPManager: NSObject, AVPictureInPictureSampleBufferPlaybackDelegate, AVPi
         stateLock.lock()
         guard let controller = pipController, isSetupComplete else {
             stateLock.unlock()
-            print("[PiP] Not ready, retrying in 0.5s")
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-                self?.startPiP()
+            pipRetryCount += 1
+            if pipRetryCount < maxPipRetries {
+                print("[PiP] Not ready, retrying in 0.5s (attempt \(pipRetryCount)/\(maxPipRetries))")
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                    self?.startPiP()
+                }
+            } else {
+                print("[PiP] Max retries (\(maxPipRetries)) reached, giving up startPiP")
+                pipRetryCount = 0
             }
             return
         }
         stateLock.unlock()
+
+        pipRetryCount = 0
 
         // 确保画面在持续推送
         startFrameTimer()

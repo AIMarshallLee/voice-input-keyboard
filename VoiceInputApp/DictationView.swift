@@ -24,6 +24,10 @@ struct PiPContainerView: UIViewRepresentable {
 
     func updateUIView(_ uiView: UIView, context: Context) {
         PiPContainerView.currentView = uiView
+        // 重新挂载 PiP layer (DictationView dismiss 后 ContentView 的 view 需要接管)
+        DispatchQueue.main.async {
+            PiPManager.shared.setup(in: uiView)
+        }
     }
 
     /// 把 PiP layer 重新挂载到 ContentView 的 view
