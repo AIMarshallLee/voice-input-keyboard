@@ -247,14 +247,15 @@ class BackgroundDictationManager: ObservableObject {
         // 确保 audio session 还活着（App 可能被系统暂时挂起后恢复）
         try? AVAudioSession.sharedInstance().setActive(true, options: .notifyOthersOnDeactivation)
 
-        // 暂停静音播放器，释放麦克风给 AVAudioEngine
-        silentPlayer.pause()
+        // ★ 不暂停静音播放器！
+        // .mixWithOthers 允许 AVAudioPlayer 和 AVAudioEngine 同时工作
+        // 静音音频全是零数据，不会干扰录音
+        // 如果暂停了，录音结束后的 2s 空窗期 iOS 会挂起 App → 下次 Darwin 通知收不到 → 跳转
 
         // 从命名剪贴板读取设置
         guard let settings = DarwinBridge.readDictationSettings() else {
             print("[BGDictation] No settings in clipboard, cannot start")
             DarwinBridge.writeError("设置读取失败", session: UUID().uuidString)
-            silentPlayer.resume()
             return
         }
 
@@ -275,8 +276,8 @@ class BackgroundDictationManager: ObservableObject {
         recognizedText = ""
         state = .recording
 
-        // 暂停静音播放器,释放麦克风给 AVAudioEngine
-        silentPlayer.pause()
+        // ★ 不暂停静音播放器！保持 App 持续存活
+        // .mixWithOthers 允许同时录音和播放
 
         // 更新 PiP 显示 + 确保 PiP 在运行
         PiPManager.shared.setRecordingMode()
@@ -288,7 +289,6 @@ class BackgroundDictationManager: ObservableObject {
         guard let recognizer = speechRecognizer, recognizer.isAvailable else {
             DarwinBridge.writeError("语音识别不可用,请检查网络", session: currentSessionId)
             state = .idle
-            silentPlayer.resume()
             PiPManager.shared.setStandbyMode()
             return
         }
@@ -351,7 +351,6 @@ class BackgroundDictationManager: ObservableObject {
             print("[BGDictation] Failed to start recording: \(error.localizedDescription)")
             DarwinBridge.writeError("启动录音失败: \(error.localizedDescription)", session: currentSessionId)
             state = .idle
-            silentPlayer.resume()
             PiPManager.shared.setStandbyMode()
             cleanupAudio()
         }
