@@ -68,12 +68,12 @@ class DictationViewModel: ObservableObject {
             whisperMode = dict[DictationConstants.paramWhisper] == "1"
             selectedText = dict[DictationConstants.paramSelectedText]
         } else if let settings = DarwinBridge.readDictationSettings() {
-            // Path A: Darwin 通知触发,设置从 App Group 读取
+            // Path A: Darwin 通知触发,设置从命名剪贴板读取
             sessionId = settings.session
             languageID = settings.language
             whisperMode = settings.whisper
             selectedText = settings.selectedText
-            print("[Dictation] Loaded settings from App Group (Path A), session=\(sessionId.prefix(8))")
+            print("[Dictation] Loaded settings from clipboard (Path A), session=\(sessionId.prefix(8))")
         } else {
             sessionId = UUID().uuidString
             languageID = "zh-CN"
@@ -271,7 +271,7 @@ class DictationViewModel: ObservableObject {
 
     // MARK: - 心跳定时器
 
-    /// 每 0.5s 写一次心跳到 App Group UserDefaults
+    /// 每 0.5s 发一次心跳 Darwin 通知
     /// 键盘扩展通过心跳判断主 App 是否存活,决定走 Path A (Darwin) 还是 Path B (URL)
     private func startHeartbeat() {
         stopHeartbeat()

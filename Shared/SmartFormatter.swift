@@ -17,7 +17,7 @@ class SmartFormatter {
 
     static let shared = SmartFormatter()
 
-    private let sharedDefaults = UserDefaults(suiteName: "group.com.voiceinput.shared")
+    private let sharedDefaults = UserDefaults.standard as UserDefaults?
 
     var autoFormatEnabled: Bool {
         sharedDefaults?.object(forKey: "autoFormat") as? Bool ?? true

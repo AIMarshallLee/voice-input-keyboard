@@ -232,7 +232,7 @@ class LanguageManager {
 
     // MARK: - 用户偏好
 
-    private let sharedDefaults = UserDefaults(suiteName: "group.com.voiceinput.shared")
+    private let sharedDefaults = UserDefaults.standard as UserDefaults?
 
     /// 用户启用的语言 ID 列表
     var enabledLanguageIDs: [String] {

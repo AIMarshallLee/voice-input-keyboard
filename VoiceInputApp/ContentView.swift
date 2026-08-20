@@ -34,7 +34,7 @@ struct ContentView: View {
     @State private var showBatchImport = false
     @State private var batchImportText = ""
 
-    private let sharedDefaults = UserDefaults(suiteName: "group.com.voiceinput.shared")
+    private let sharedDefaults = UserDefaults.standard as UserDefaults?
 
     var body: some View {
         NavigationView {

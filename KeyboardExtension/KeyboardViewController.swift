@@ -1,6 +1,6 @@
 import UIKit
 
-/// 语音输入键盘 - Darwin 通知 + App Group IPC 架构 (Build 14)
+/// 语音输入键盘 - Darwin 通知 + 命名剪贴板 IPC 架构 (Build 16)
 /// iOS 键盘扩展无法直接录音(平台限制)
 ///
 /// 双路径触发:
@@ -61,8 +61,9 @@ class KeyboardViewController: UIInputViewController {
         // 同步设置(用户可能在宿主 App 中修改了设置)
         updateTranslateButton()
         updateLangButton()
-        // 检查是否有待处理的识别结果(用户从容器 App 返回时的兜底)
-        processPendingResult()
+        // 无条件检查剪贴板中是否有待处理结果
+        // (键盘扩展可能被系统杀掉后重启,内存状态丢失,但剪贴板数据还在)
+        checkAndProcessResult()
     }
 
     override func viewDidDisappear(_ animated: Bool) {
@@ -426,7 +427,7 @@ class KeyboardViewController: UIInputViewController {
         pendingSelectedText = selectedTextBeforeRecording
         pendingKbType = textDocumentProxy.keyboardType?.rawValue ?? 0
 
-        // 写入听写设置到 App Group (供 Darwin 路径使用)
+        // 写入听写设置到命名剪贴板 (供 Path A Darwin 路径使用)
         let settings = DictationSettings(
             language: LanguageManager.shared.currentLanguage.id,
             whisper: isWhisperMode,
@@ -437,7 +438,6 @@ class KeyboardViewController: UIInputViewController {
             session: sessionId
         )
         DarwinBridge.writeDictationSettings(settings)
-        DarwinBridge.writeSessionToken(sessionId)
 
         // 检查主 App 是否存活
         let heartbeatAge = DarwinBridge.heartbeatAge()
@@ -532,8 +532,34 @@ class KeyboardViewController: UIInputViewController {
 
     // MARK: - 处理识别结果
 
-    /// 读取 App Group 文件中的结果
-    /// 在 Darwin 通知回调和 viewWillAppear 中调用
+    /// 无条件检查剪贴板中是否有结果(viewWillAppear 调用)
+    /// 键盘扩展被系统杀掉后重启时,内存状态丢失,但剪贴板数据还在
+    /// 此方法不依赖 isWaitingForResult 状态,直接读剪贴板
+    private func checkAndProcessResult() {
+        let result = DarwinBridge.readAndConsumeResult()
+
+        // 剪贴板为空,说明没有待处理结果
+        guard result.text != nil || result.error != nil else { return }
+
+        // 有结果,恢复 session 并处理
+        if let session = result.session {
+            currentSessionId = session
+        }
+        isWaitingForResult = false
+        darwinFallbackTimer?.invalidate()
+        darwinFallbackTimer = nil
+        stopPulse()
+        micButton.backgroundColor = UIColor.systemBlue
+
+        if let text = result.text {
+            handleDictationResult(text)
+        } else if let error = result.error {
+            liveTextLabel.text = error
+        }
+    }
+
+    /// 读取命名剪贴板中的结果
+    /// 在 Darwin 通知回调中调用(需要 isWaitingForResult 为 true)
     private func processPendingResult() {
         guard isWaitingForResult else { return }
 

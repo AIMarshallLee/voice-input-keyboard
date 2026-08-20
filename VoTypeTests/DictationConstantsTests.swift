@@ -61,7 +61,7 @@ final class DictationConstantsTests: XCTestCase {
         XCTAssertEqual(queryDict["session"], "session-456")
     }
 
-    // MARK: - DarwinBridge IPC (App Group 文件)
+    // MARK: - DarwinBridge IPC (命名剪贴板)
 
     func testDarwinBridgeWriteAndReadTranscription() {
         let testText = "这是一段测试语音识别结果"
@@ -94,7 +94,7 @@ final class DictationConstantsTests: XCTestCase {
         DarwinBridge.writeTranscription(testText, session: testSession)
         _ = DarwinBridge.readAndConsumeResult()
 
-        // 第二次读应该返回 nil (文件已被删除)
+        // 第二次读应该返回 nil (剪贴板已被消费清空)
         let result = DarwinBridge.readAndConsumeResult()
         XCTAssertNil(result.text)
         XCTAssertNil(result.error)
@@ -118,12 +118,22 @@ final class DictationConstantsTests: XCTestCase {
     }
 
     func testDarwinBridgeHeartbeat() {
-        // 写入心跳
+        // 先访问 HeartbeatTracker 初始化单例(注册 Darwin 通知观察者)
+        _ = DarwinBridge.isMainAppAlive(threshold: 0.01)
+
+        // 发送心跳
         DarwinBridge.writeHeartbeat()
+
+        // 给主线程时间处理 Darwin 通知回调
+        let expectation = XCTestExpectation(description: "heartbeat received")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 2.0)
 
         // 心跳应该存在且新鲜
         let age = DarwinBridge.heartbeatAge()
-        XCTAssertLessThan(age, 1.0) // 应该小于 1 秒
+        XCTAssertLessThan(age, 2.0, "Heartbeat age should be less than 2 seconds")
         XCTAssertTrue(DarwinBridge.isMainAppAlive(threshold: 3.0))
     }
 

@@ -15,7 +15,7 @@ class TranslationManager {
 
     static let shared = TranslationManager()
 
-    private let sharedDefaults = UserDefaults(suiteName: "group.com.voiceinput.shared")
+    private let sharedDefaults = UserDefaults.standard as UserDefaults?
 
     // MARK: - 翻译模式
 

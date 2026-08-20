@@ -13,7 +13,7 @@ class UsageTracker {
 
     static let shared = UsageTracker()
 
-    private let sharedDefaults = UserDefaults(suiteName: "group.com.voiceinput.shared")
+    private let sharedDefaults = UserDefaults.standard as UserDefaults?
 
     // MARK: - 记录使用
 

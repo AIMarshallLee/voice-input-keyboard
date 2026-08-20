@@ -3,13 +3,14 @@ import UIKit
 
 /// 键盘扩展与容器 App 之间通信的共享常量
 ///
-/// Build 14 起,通信架构改为 Darwin 通知 + App Group 文件 (DarwinBridge.swift)
+/// Build 16 起,通信架构改为 Darwin 通知 + 命名剪贴板 (DarwinBridge.swift)
+/// 不依赖 App Group,完全使用 Darwin 通知传信号 + 命名剪贴板传数据
 /// 本文件仅保留 URL Scheme 构建 (Path B 降级路径使用)
 ///
 /// 通信流程:
 /// - 路径 A (首选): Darwin 通知 requestStartDictation → 主 App 录音 → transcriptionReady
 /// - 路径 B (降级): URL Scheme 启动主 App → 同上
-/// - 结果传递: DarwinBridge.writeTranscription / readAndConsumeResult (App Group 文件)
+/// - 结果传递: DarwinBridge.writeTranscription / readAndConsumeResult (命名剪贴板)
 enum DictationConstants {
     // MARK: - URL Scheme
     static let urlScheme = "votype"

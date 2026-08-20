@@ -53,7 +53,7 @@ class TextProcessor {
 
     // MARK: - 设置
 
-    private let sharedDefaults = UserDefaults(suiteName: "group.com.voiceinput.shared")
+    private let sharedDefaults = UserDefaults.standard as UserDefaults?
 
     var autoPunctuationEnabled: Bool {
         sharedDefaults?.object(forKey: "autoPunctuation") as? Bool ?? true
