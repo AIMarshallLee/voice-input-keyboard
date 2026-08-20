@@ -37,6 +37,9 @@ class BackgroundDictationManager: ObservableObject {
     @Published private(set) var state: State = .idle
     @Published var isPipStandbyEnabled = false  // PiP保活是否开启
 
+    // UserDefaults key for persisting PiP standby state
+    private let pipStandbyKey = "pipStandbyEnabled"
+
     // MARK: - 录音相关
 
     private var audioEngine: AVAudioEngine?
@@ -61,6 +64,16 @@ class BackgroundDictationManager: ObservableObject {
 
     private init() {
         setupDarwinObservers()
+    }
+
+    /// App 启动时调用:如果用户之前开启过 PiP 保活,自动恢复
+    /// 这样用户只需要开一次,以后每次打开 App 都自动进入待命模式
+    func autoRestoreIfNeeded() {
+        let saved = UserDefaults.standard.bool(forKey: pipStandbyKey)
+        if saved && !isPipStandbyEnabled {
+            print("[BGDictation] Auto-restoring PiP standby from UserDefaults")
+            enablePipStandby()
+        }
     }
 
     deinit {
@@ -102,6 +115,9 @@ class BackgroundDictationManager: ObservableObject {
         guard !isPipStandbyEnabled else { return }
         isPipStandbyEnabled = true
 
+        // 持久化:用户只需要开启一次,以后 App 重启后自动恢复
+        UserDefaults.standard.set(true, forKey: pipStandbyKey)
+
         // ★ 关键: 立即激活后台音频会话并持续保持
         // 这是保活的核心: audio session 持续激活 = iOS 不挂起/杀掉 App
         // 麦克风仅在收到 Darwin 通知时才采集 (省电)
@@ -139,6 +155,7 @@ class BackgroundDictationManager: ObservableObject {
     /// 关闭 PiP 保活
     func disablePipStandby() {
         isPipStandbyEnabled = false
+        UserDefaults.standard.set(false, forKey: pipStandbyKey)
         stopHeartbeat()
 
         if state == .recording {

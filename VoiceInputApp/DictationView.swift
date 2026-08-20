@@ -252,8 +252,8 @@ class DictationViewModel: ObservableObject {
 
         PiPManager.shared.setCompletedMode(text: resultText)
 
-        // 2s 后切换到待命状态
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+        // 1s 后切换到待命状态 (配合 DictationView 2.5s auto-dismiss)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
             guard let self = self else { return }
 
             // 停掉 ViewModel 自己的心跳,BG manager 会接管
@@ -468,8 +468,8 @@ struct DictationView: View {
         }
         .onChange(of: viewModel.hasResult) { hasResult in
             if hasResult {
-                // 录音完成后,4s 后自动 dismiss (2s 完成画面 + 2s 待命过渡)
-                DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) {
+                // 录音完成后,2.5s 后自动 dismiss (1.5s 完成画面 + 1s 待命过渡)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
                     dismiss()
                 }
             }

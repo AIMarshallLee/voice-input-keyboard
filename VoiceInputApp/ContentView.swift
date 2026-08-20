@@ -57,7 +57,7 @@ struct ContentView: View {
                             .foregroundColor(.blue)
                         Text("VoType")
                             .font(.title2.bold())
-                        Text("声入 · 离线语音转文字 · 翻译 · 格式化 · 语音编辑 · 场景感知 · 20语言")
+                        Text("声入 · 语音转文字 · 翻译 · 格式化 · 语音编辑 · 场景感知 · 20语言")
                             .font(.caption)
                             .foregroundColor(.secondary)
                             .multilineTextAlignment(.center)
@@ -335,7 +335,7 @@ struct ContentView: View {
                                     Text("待命中")
                                         .font(.subheadline.bold())
                                         .foregroundColor(.green)
-                                    Text("请滑回您要输入文字的App\nPiP悬浮窗自动出现,键盘点麦克风即可说话")
+                                    Text("键盘点麦克风即可直接说话,不切换App\n设置已保存,下次打开App自动恢复")
                                         .font(.caption2)
                                         .foregroundColor(.secondary)
                                 }
@@ -344,10 +344,10 @@ struct ContentView: View {
                             .padding(.vertical, 4)
                         } else {
                             VStack(alignment: .leading, spacing: 6) {
-                                Text("开启后,App 进入后台待命模式")
+                                Text("首次使用语音输入后自动开启")
                                     .font(.caption)
                                     .foregroundColor(.secondary)
-                                Text("在任何App的键盘上点麦克风即可直接语音输入,不切换App")
+                                Text("开启后在任何App的键盘上点麦克风即可直接语音输入")
                                     .font(.caption2)
                                     .foregroundColor(.secondary)
                                 Text("和 Typeless / 微信输入法一样的体验")
@@ -364,10 +364,8 @@ struct ContentView: View {
                     VStack(alignment: .leading, spacing: 12) {
                         Text("使用方法").font(.headline)
 
-                        InstructionRow(text: "先开启上方「PiP 后台保活」开关")
-                        InstructionRow(text: "滑回您要输入文字的 App(如微信)")
-                        InstructionRow(text: "键盘弹出后,切换到「语音输入」键盘")
-                        InstructionRow(text: "点击中间的大麦克风按钮直接说话(不切 App)")
+                        InstructionRow(text: "首次使用:点麦克风,App 打开后说话,自动返回")
+                        InstructionRow(text: "之后:键盘点麦克风即可直接说话(不切 App)")
                         InstructionRow(text: "说完后自动停止,文字自动插入光标位置")
                         InstructionRow(text: "说错了可以说「不对,应该是...」自动纠正")
                         InstructionRow(text: "说「第一」「第二」等会自动转为编号列表")
@@ -384,11 +382,11 @@ struct ContentView: View {
                     VStack(alignment: .leading, spacing: 8) {
                         Text("隐私说明").font(.headline).foregroundColor(.green)
 
-                        Text("• 所有语音识别在设备本地完成,不上传任何数据")
-                        Text("• LLM 润色和翻译使用 Apple 设备端模型,零网络传输")
+                        Text("• 语音识别使用 Apple Speech 框架,识别请求经 Apple 服务器处理")
+                        Text("• LLM 润色和翻译使用 Apple 设备端模型(iOS 26+),零网络传输")
                         Text("• 使用统计仅存储在本地,不上传任何信息")
                         Text("• 不收集任何用户信息,无账号,无追踪")
-                        Text("• 无网络连接也可正常工作(除 LLM/翻译需 iOS 26+)")
+                        Text("• 语音数据仅在识别期间使用,不被存储或保留")
                         Text("• 键盘仅在您点击麦克风时才使用麦克风")
                     }
                     .padding()
@@ -406,6 +404,8 @@ struct ContentView: View {
                 loadTranslationSettings()
                 loadUsageStats()
                 checkStatus()
+                // 自动恢复 PiP 保活 (如果用户之前开启过)
+                bgDictation.autoRestoreIfNeeded()
             }
             .onChange(of: autoPunctuation) { v in saveSetting("autoPunctuation", v) }
             .onChange(of: fillerWordRemoval) { v in saveSetting("fillerWordRemoval", v) }

@@ -367,6 +367,10 @@ class KeyboardViewController: UIInputViewController {
     // MARK: - 按钮事件
 
     @objc private func micTapped() {
+        // 触感反馈
+        let impact = UIImpactFeedbackGenerator(style: .medium)
+        impact.impactOccurred()
+
         if isWaitingForResult {
             liveTextLabel.text = "正在等待语音结果..."
             return
@@ -443,18 +447,18 @@ class KeyboardViewController: UIInputViewController {
         let heartbeatAge = DarwinBridge.heartbeatAge()
         print("[KB] Heartbeat age: \(heartbeatAge == .infinity ? "never" : "\(heartbeatAge)s")")
 
-        if DarwinBridge.isMainAppAlive(threshold: 6.0) {
+        if DarwinBridge.isMainAppAlive(threshold: 4.0) {
             // 路径 A: Darwin 通知 (主 App 存活,不切 App)
             print("[KB] Path A: Darwin notification")
             DarwinBridge.postNotification(DarwinNotificationName.requestStartDictation)
 
-            // 5 秒超时兜底:如果主 App 没响应,降级到 URL
+            // 2.5 秒超时兜底:如果主 App 没响应,降级到 URL
             darwinFallbackTimer = Timer.scheduledTimer(
-                withTimeInterval: 5.0,
+                withTimeInterval: 2.5,
                 repeats: false
             ) { [weak self] _ in
                 guard let self = self, self.isWaitingForResult else { return }
-                print("[KB] Darwin fallback: no response in 5s, trying URL")
+                print("[KB] Darwin fallback: no response in 2.5s, trying URL")
                 self.launchViaURL(sessionId: sessionId)
             }
 

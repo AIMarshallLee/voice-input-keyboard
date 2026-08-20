@@ -1,18 +1,19 @@
-VoType is a privacy-first voice-to-text keyboard for iOS. Speak naturally, and your words appear instantly in any app.
+VoType is a voice-to-text keyboard for iOS. Speak naturally, and your words appear instantly in any app.
 
 [KEY FEATURES]
-• One-tap voice input: Tap the mic, speak, tap again — your text is inserted
+• One-tap voice input: Tap the mic, speak — text is inserted automatically when you stop
+• PiP background standby: After first use, subsequent voice input works without switching apps, just like Typeless / WeChat Input
 • Real-time transcription: See your words appear as you speak
 • 20-language support: English, Chinese, Japanese, Korean, German, French, Spanish, and more
 • Smart auto-formatting: Automatically formats numbered lists, dates, and punctuation
-• On-device translation: Translate your speech to another language locally
+• On-device translation: Translate your speech to another language (iOS 26+ on-device LLM)
 • Scenario awareness: Adapts to email fields, URLs, and social media inputs
 • Voice editing: Replace, delete, or append to selected text using voice commands
 • Whisper mode: Enhanced voice capture for quiet environments
 • Usage statistics: Track your total words, sessions, and streaks
 
-[PRIVACY FIRST]
-All speech recognition runs on-device using Apple's built-in frameworks. Your voice never leaves your device. No accounts, no cloud processing, no tracking.
+[PRIVACY]
+Speech recognition uses Apple's Speech framework, with recognition requests processed via Apple's servers. LLM polish and translation use Apple's on-device models (iOS 26+). No user data is collected, no accounts, no tracking. Voice data is used only during recognition and is not stored.
 
 [COMPLETELY FREE]
 No subscriptions, no in-app purchases, no ads. Forever.
@@ -29,4 +30,4 @@ No subscriptions, no in-app purchases, no ads. Forever.
 3. Tap any text field in any app to bring up the keyboard
 4. Switch to the VoType keyboard
 5. Tap the mic button and start speaking
-6. Tap again when done — your text is inserted automatically
+6. Text is inserted automatically when you stop
