@@ -21,6 +21,8 @@ class PiPManager: NSObject, AVPictureInPictureSampleBufferPlaybackDelegate, AVPi
     private var recordingStartTime: Date?
     private var liveText: String = ""
     private var isSetupComplete = false
+    private var pipRetryCount = 0
+    private let maxPipRetries = 20
 
     // PiP 显示状态
     enum DisplayState {
