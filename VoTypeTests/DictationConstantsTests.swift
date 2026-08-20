@@ -3,6 +3,8 @@ import XCTest
 
 final class DictationConstantsTests: XCTestCase {
 
+    // MARK: - URL 构建 (Path B 降级路径)
+
     func testBuildDictationURL() {
         let url = DictationConstants.buildDictationURL(
             language: "zh-CN",
@@ -59,49 +61,93 @@ final class DictationConstantsTests: XCTestCase {
         XCTAssertEqual(queryDict["session"], "session-456")
     }
 
-    func testWriteAndReadResult() {
+    // MARK: - DarwinBridge IPC (App Group 文件)
+
+    func testDarwinBridgeWriteAndReadTranscription() {
         let testText = "这是一段测试语音识别结果"
         let testSession = UUID().uuidString
 
-        DictationConstants.writeResult(text: testText, session: testSession)
+        DarwinBridge.writeTranscription(testText, session: testSession)
 
-        let result = DictationConstants.readAndConsumeResult()
+        let result = DarwinBridge.readAndConsumeResult()
         XCTAssertEqual(result.text, testText)
+        XCTAssertEqual(result.session, testSession)
         XCTAssertNil(result.error)
     }
 
-    func testWriteAndReadError() {
+    func testDarwinBridgeWriteAndReadError() {
         let testError = "未识别到语音"
         let testSession = UUID().uuidString
 
-        DictationConstants.writeError(message: testError, session: testSession)
+        DarwinBridge.writeError(testError, session: testSession)
 
-        let result = DictationConstants.readAndConsumeResult()
+        let result = DarwinBridge.readAndConsumeResult()
         XCTAssertNil(result.text)
         XCTAssertEqual(result.error, testError)
+        XCTAssertEqual(result.session, testSession)
     }
 
-    func testReadAfterConsumeReturnsNil() {
+    func testDarwinBridgeReadAfterConsumeReturnsNil() {
         let testText = "测试"
         let testSession = UUID().uuidString
 
-        DictationConstants.writeResult(text: testText, session: testSession)
-        _ = DictationConstants.readAndConsumeResult()
+        DarwinBridge.writeTranscription(testText, session: testSession)
+        _ = DarwinBridge.readAndConsumeResult()
 
-        // 第二次读应该返回 nil (已被消费)
-        let result = DictationConstants.readAndConsumeResult()
+        // 第二次读应该返回 nil (文件已被删除)
+        let result = DarwinBridge.readAndConsumeResult()
         XCTAssertNil(result.text)
         XCTAssertNil(result.error)
+        XCTAssertNil(result.session)
     }
 
-    func testReadEmptyPasteboard() {
-        // 先清除剪贴板
-        if let pb = UIPasteboard(name: UIPasteboard.Name(rawValue: DictationConstants.pasteboardName), create: false) {
-            pb.string = ""
-        }
+    func testDarwinBridgeSessionMismatch() {
+        let session1 = "session-aaa"
+        let session2 = "session-bbb"
 
-        let result = DictationConstants.readAndConsumeResult()
-        XCTAssertNil(result.text)
-        XCTAssertNil(result.error)
+        // 写入 session1 的结果
+        DarwinBridge.writeTranscription("结果1", session: session1)
+
+        // 读取时验证 session
+        let result = DarwinBridge.readAndConsumeResult()
+        XCTAssertEqual(result.session, session1)
+        XCTAssertEqual(result.text, "结果1")
+
+        // session2 不匹配,应被拒绝
+        XCTAssertNotEqual(result.session, session2)
+    }
+
+    func testDarwinBridgeHeartbeat() {
+        // 写入心跳
+        DarwinBridge.writeHeartbeat()
+
+        // 心跳应该存在且新鲜
+        let age = DarwinBridge.heartbeatAge()
+        XCTAssertLessThan(age, 1.0) // 应该小于 1 秒
+        XCTAssertTrue(DarwinBridge.isMainAppAlive(threshold: 3.0))
+    }
+
+    func testDarwinBridgeDictationSettings() {
+        let settings = DictationSettings(
+            language: "zh-CN",
+            whisper: true,
+            translateEnabled: false,
+            translateTarget: "en",
+            selectedText: "选中文本",
+            keyboardType: 1,
+            session: "test-settings-session"
+        )
+
+        DarwinBridge.writeDictationSettings(settings)
+
+        let read = DarwinBridge.readDictationSettings()
+        XCTAssertNotNil(read)
+        XCTAssertEqual(read?.language, "zh-CN")
+        XCTAssertEqual(read?.whisper, true)
+        XCTAssertEqual(read?.translateEnabled, false)
+        XCTAssertEqual(read?.translateTarget, "en")
+        XCTAssertEqual(read?.selectedText, "选中文本")
+        XCTAssertEqual(read?.keyboardType, 1)
+        XCTAssertEqual(read?.session, "test-settings-session")
     }
 }

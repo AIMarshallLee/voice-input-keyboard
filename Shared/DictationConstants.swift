@@ -2,25 +2,20 @@ import Foundation
 import UIKit
 
 /// 键盘扩展与容器 App 之间通信的共享常量
-/// iOS 键盘扩展无法直接录音(平台限制)
-/// 通过 URL 参数(传设置) + 命名剪贴板(传结果) 实现跨进程通信
-/// 不使用 App Group,避免 provisioning profile 问题
-/// 不使用 Darwin 通知,改为 viewWillAppear 轮询命名剪贴板
+///
+/// Build 14 起,通信架构改为 Darwin 通知 + App Group 文件 (DarwinBridge.swift)
+/// 本文件仅保留 URL Scheme 构建 (Path B 降级路径使用)
+///
+/// 通信流程:
+/// - 路径 A (首选): Darwin 通知 requestStartDictation → 主 App 录音 → transcriptionReady
+/// - 路径 B (降级): URL Scheme 启动主 App → 同上
+/// - 结果传递: DarwinBridge.writeTranscription / readAndConsumeResult (App Group 文件)
 enum DictationConstants {
     // MARK: - URL Scheme
     static let urlScheme = "votype"
     static let dictationPath = "dictation"
 
-    // MARK: - 命名剪贴板 (跨进程传结果)
-    static let pasteboardName = "com.daseanle.votype.result"
-
-    // MARK: - 剪贴板数据格式 (JSON)
-    // {"status":"completed","text":"识别结果","session":"UUID"}
-    // {"status":"error","error":"错误信息","session":"UUID"}
-    static let statusCompleted = "completed"
-    static let statusError = "error"
-
-    // MARK: - URL 参数 Keys
+    // MARK: - URL 参数 Keys (Path B 降级路径使用)
     static let paramLang = "lang"
     static let paramWhisper = "whisper"
     static let paramTranslate = "translate"
@@ -29,7 +24,7 @@ enum DictationConstants {
     static let paramKbType = "kbType"
     static let paramSession = "session"
 
-    // MARK: - 构建听写 URL
+    // MARK: - 构建听写 URL (Path B: URL Scheme 降级路径)
     static func buildDictationURL(
         language: String,
         whisper: Bool,
@@ -58,51 +53,5 @@ enum DictationConstants {
 
         components.queryItems = items
         return components.url
-    }
-
-    // MARK: - 剪贴板读写
-    static func writeResult(text: String, session: String) {
-        let payload: [String: String] = [
-            "status": statusCompleted,
-            "text": text,
-            "session": session
-        ]
-        guard let data = try? JSONSerialization.data(withJSONObject: payload),
-              let json = String(data: data, encoding: .utf8) else { return }
-        let pb = UIPasteboard(name: UIPasteboard.Name(rawValue: pasteboardName), create: true)
-        pb?.string = json
-    }
-
-    static func writeError(message: String, session: String) {
-        let payload: [String: String] = [
-            "status": statusError,
-            "error": message,
-            "session": session
-        ]
-        guard let data = try? JSONSerialization.data(withJSONObject: payload),
-              let json = String(data: data, encoding: .utf8) else { return }
-        let pb = UIPasteboard(name: UIPasteboard.Name(rawValue: pasteboardName), create: true)
-        pb?.string = json
-    }
-
-    /// 读取并消费剪贴板结果,返回 (text?, error?)
-    static func readAndConsumeResult() -> (text: String?, error: String?) {
-        guard let pb = UIPasteboard(name: UIPasteboard.Name(rawValue: pasteboardName), create: false),
-              let json = pb.string,
-              let data = json.data(using: .utf8),
-              let dict = try? JSONSerialization.jsonObject(with: data) as? [String: String] else {
-            return (nil, nil)
-        }
-
-        // 清除剪贴板
-        pb.string = ""
-
-        let status = dict["status"] ?? ""
-        if status == statusCompleted {
-            return (dict["text"], nil)
-        } else if status == statusError {
-            return (nil, dict["error"])
-        }
-        return (nil, nil)
     }
 }

@@ -44,6 +44,9 @@ class DictationViewModel: ObservableObject {
     private var silenceTimer: Timer?
     private var lastTextUpdateTime: Date?
 
+    // 心跳定时器:每 0.5s 写一次心跳,让键盘知道主 App 存活
+    private var heartbeatTimer: DispatchSourceTimer?
+
     private var languageID = "zh-CN"
     private var whisperMode = false
     private var selectedText: String?
@@ -52,6 +55,7 @@ class DictationViewModel: ObservableObject {
     // MARK: - 从 URL 加载设置
 
     func loadSettings(from url: URL?) {
+        // Path B: URL Scheme 传参
         if let url = url, let components = URLComponents(url: url, resolvingAgainstBaseURL: false) {
             let queryItems = components.queryItems ?? []
             let dict = Dictionary(queryItems.compactMap { item -> (String, String)? in
@@ -63,6 +67,13 @@ class DictationViewModel: ObservableObject {
             languageID = dict[DictationConstants.paramLang] ?? "zh-CN"
             whisperMode = dict[DictationConstants.paramWhisper] == "1"
             selectedText = dict[DictationConstants.paramSelectedText]
+        } else if let settings = DarwinBridge.readDictationSettings() {
+            // Path A: Darwin 通知触发,设置从 App Group 读取
+            sessionId = settings.session
+            languageID = settings.language
+            whisperMode = settings.whisper
+            selectedText = settings.selectedText
+            print("[Dictation] Loaded settings from App Group (Path A), session=\(sessionId.prefix(8))")
         } else {
             sessionId = UUID().uuidString
             languageID = "zh-CN"
@@ -174,6 +185,11 @@ class DictationViewModel: ObservableObject {
             lastTextUpdateTime = Date()
             startSilenceTimer()
 
+            // 写入心跳 + 发送 dictationStarted 通知 (键盘收到后取消 5s 超时)
+            DarwinBridge.writeHeartbeat()
+            DarwinBridge.postNotification(DarwinNotificationName.dictationStarted)
+            startHeartbeat()
+
         } catch {
             statusMessage = "启动失败: \(error.localizedDescription)"
             cleanup()
@@ -186,6 +202,7 @@ class DictationViewModel: ObservableObject {
 
         silenceTimer?.invalidate()
         silenceTimer = nil
+        stopHeartbeat()
 
         audioEngine?.stop()
         audioEngine?.inputNode.removeTap(onBus: 0)
@@ -195,14 +212,17 @@ class DictationViewModel: ObservableObject {
         let resultText = recognizedText
 
         if resultText.isEmpty {
-            DictationConstants.writeError(message: "未识别到语音", session: sessionId)
+            DarwinBridge.writeError("未识别到语音", session: sessionId)
             statusMessage = "未识别到语音"
         } else {
-            DictationConstants.writeResult(text: resultText, session: sessionId)
+            DarwinBridge.writeTranscription(resultText, session: sessionId)
             statusMessage = "识别完成 ✓"
         }
 
         hasResult = true
+
+        // 通知键盘:听写已停止
+        DarwinBridge.postNotification(DarwinNotificationName.dictationStopped)
 
         // 关键:先停 PiP,等 PiP 停止后再关闭 audio session
         // 如果先关 audio session,App 会被系统杀掉 (因为 UIBackgroundModes: audio 靠 audio session 保活)
@@ -237,15 +257,34 @@ class DictationViewModel: ObservableObject {
 
     func cleanup() {
         if isRecording {
-            DictationConstants.writeError(message: "已取消", session: sessionId)
+            DarwinBridge.writeError("已取消", session: sessionId)
             stopRecording()
         }
+        stopHeartbeat()
         recognitionRequest?.endAudio()
         recognitionTask?.cancel()
         recognitionRequest = nil
         recognitionTask = nil
         audioEngine = nil
         PiPManager.shared.cleanup()
+    }
+
+    // MARK: - 心跳定时器
+
+    /// 每 0.5s 写一次心跳到 App Group UserDefaults
+    /// 键盘扩展通过心跳判断主 App 是否存活,决定走 Path A (Darwin) 还是 Path B (URL)
+    private func startHeartbeat() {
+        stopHeartbeat()
+        let timer = DispatchSource.makeTimerSource(queue: .global(qos: .background))
+        timer.scheduleRepeating(deadline: .now(), interval: 0.5)
+        timer.setEventHandler { DarwinBridge.writeHeartbeat() }
+        timer.resume()
+        heartbeatTimer = timer
+    }
+
+    private func stopHeartbeat() {
+        heartbeatTimer?.cancel()
+        heartbeatTimer = nil
     }
 }
 
