@@ -113,6 +113,9 @@ class DictationViewModel: ObservableObject {
             return
         }
 
+        // ★ 停止后台保活的 SilentAudioPlayer，避免噪声干扰录音
+        BackgroundDictationManager.shared.stopSilentPlayerForRecording()
+
         let engine = AVAudioEngine()
         audioEngine = engine
 

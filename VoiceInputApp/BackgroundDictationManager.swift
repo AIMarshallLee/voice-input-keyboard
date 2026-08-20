@@ -248,13 +248,19 @@ class BackgroundDictationManager: ObservableObject {
             return
         }
 
-        // 如果保活没启用，自动启用
+        // ★ 第一时间通知键盘:已收到请求！取消超时 timer，不跳转！
+        // 放在最前面，即使后续步骤失败也不会跳转
+        DarwinBridge.postNotification(DarwinNotificationName.dictationStarted)
+        print("[BGDictation] dictationStarted sent immediately")
+
+        // 如果保活没启用，自动启用（但不启动 silentPlayer，因为马上要录音）
         if !isPipStandbyEnabled {
-            print("[BGDictation] Auto-enabling standby on first request")
+            print("[BGDictation] Auto-enabling standby (no silentPlayer yet, recording imminent)")
             isPipStandbyEnabled = true
             UserDefaults.standard.set(true, forKey: pipStandbyKey)
             activateBackgroundAudioSession()
-            silentPlayer.start()
+            // ★ 不启动 silentPlayer！录音本身会保持 audio session active
+            // silentPlayer 会在 finishRecording() 中启动
             startHeartbeat()
         }
 
@@ -263,16 +269,14 @@ class BackgroundDictationManager: ObservableObject {
 
         // 从命名剪贴板读取设置
         guard let settings = DarwinBridge.readDictationSettings() else {
+            print("[BGDictation] ERROR: Failed to read settings from clipboard")
             DarwinBridge.writeError("设置读取失败", session: UUID().uuidString)
             return
         }
 
         currentSessionId = settings.session
         currentSettings = settings
-        print("[BGDictation] Starting recording, session=\(currentSessionId.prefix(8))")
-
-        // 立即通知键盘:已开始（取消超时 timer，不跳转！）
-        DarwinBridge.postNotification(DarwinNotificationName.dictationStarted)
+        print("[BGDictation] Starting recording, session=\(currentSessionId.prefix(8)), lang=\(settings.language)")
 
         // 开始录音
         startRecording(settings: settings)
@@ -284,13 +288,19 @@ class BackgroundDictationManager: ObservableObject {
         recognizedText = ""
         state = .recording
 
-        // ★ 不暂停 silentPlayer！.mixWithOthers 允许同时工作
+        // ★ 关键修复：停止 SilentAudioPlayer！
+        // 之前不暂停，导致播放器的噪声被麦克风录进去，干扰语音识别
+        // 录音期间 AVAudioEngine 保持 audio session active，app 不会被挂起
+        silentPlayer.stop()
+        print("[BGDictation] SilentAudioPlayer stopped for recording")
 
         speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: settings.language))
 
         guard let recognizer = speechRecognizer, recognizer.isAvailable else {
+            print("[BGDictation] ERROR: Speech recognizer not available")
             DarwinBridge.writeError("语音识别不可用,请检查网络", session: currentSessionId)
             state = .idle
+            finishRecording()
             return
         }
 
@@ -301,7 +311,6 @@ class BackgroundDictationManager: ObservableObject {
             let session = AVAudioSession.sharedInstance()
             // ★ 不改变 category options！和待命模式完全一致
             // 只改 mode（whisper 用 .voiceChat 提升语音质量）
-            // 避免 setCategory 导致 silent player 被中断
             if settings.whisper {
                 try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetoothHFP, .allowBluetoothA2DP, .mixWithOthers])
             } else {
@@ -310,7 +319,13 @@ class BackgroundDictationManager: ObservableObject {
             try session.setActive(true, options: .notifyOthersOnDeactivation)
 
             recognitionRequest = SFSpeechAudioBufferRecognitionRequest()
-            guard let req = recognitionRequest else { return }
+            guard let req = recognitionRequest else {
+                print("[BGDictation] ERROR: Failed to create recognition request")
+                DarwinBridge.writeError("创建识别请求失败", session: currentSessionId)
+                state = .idle
+                finishRecording()
+                return
+            }
             req.shouldReportPartialResults = true
             req.requiresOnDeviceRecognition = false
 
@@ -321,11 +336,14 @@ class BackgroundDictationManager: ObservableObject {
                         let text = result.bestTranscription.formattedString
                         self.recognizedText = text
                         self.lastTextUpdateTime = CFAbsoluteTimeGetCurrent()
+                        print("[BGDictation] Recognized: \(text.prefix(50))")
                     }
                     if let error = error as? NSError, error.code != 203 {
+                        print("[BGDictation] Recognition error: \(error.code) - \(error.localizedDescription)")
                         self.stopRecording()
                     }
                     if result?.isFinal == true {
+                        print("[BGDictation] Recognition final")
                         self.stopRecording()
                     }
                 }
@@ -333,6 +351,15 @@ class BackgroundDictationManager: ObservableObject {
 
             let inputNode = engine.inputNode
             let recordingFormat = inputNode.outputFormat(forBus: 0)
+
+            // ★ 安全检查：音频格式必须有效
+            guard recordingFormat.sampleRate > 0 else {
+                print("[BGDictation] ERROR: Invalid audio format (sampleRate=0)")
+                DarwinBridge.writeError("音频格式错误", session: currentSessionId)
+                state = .idle
+                finishRecording()
+                return
+            }
 
             inputNode.removeTap(onBus: 0)
             inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { buffer, _ in
@@ -345,13 +372,13 @@ class BackgroundDictationManager: ObservableObject {
             lastTextUpdateTime = CFAbsoluteTimeGetCurrent()
             startSilenceTimer()
 
-            print("[BGDictation] Recording started")
+            print("[BGDictation] Recording started, format: \(recordingFormat.sampleRate)Hz, \(recordingFormat.channelCount)ch")
 
         } catch {
-            print("[BGDictation] Failed to start: \(error.localizedDescription)")
+            print("[BGDictation] Failed to start recording: \(error.localizedDescription)")
             DarwinBridge.writeError("启动录音失败", session: currentSessionId)
             state = .idle
-            cleanupAudio()
+            finishRecording()
         }
     }
 
@@ -437,6 +464,15 @@ class BackgroundDictationManager: ObservableObject {
         }
         timer.resume()
         silenceTimer = timer
+    }
+
+    // MARK: - 供 DictationViewModel 调用
+
+    /// 录音前停止静音播放器（避免噪声干扰麦克风）
+    /// DictationViewModel 在 URL Scheme 降级路径录音前调用
+    func stopSilentPlayerForRecording() {
+        silentPlayer.stop()
+        print("[BGDictation] SilentAudioPlayer stopped (called by DictationViewModel)")
     }
 
     // MARK: - 清理
