@@ -246,24 +246,36 @@ class DictationViewModel: ObservableObject {
             statusMessage = "正在处理文字..."
             hasResult = true
 
+            // ★ 关键: 不依赖 self! DictationView 会在 2.5s 后 dismiss,
+            // viewModel 可能被释放。把所有需要的值捕获为局部变量,
+            // 这样即使 viewModel 被释放,Task 也能正常执行
+            let capturedSessionId = sessionId
+            let capturedSelectedText = selectedText
+            let capturedKbType = kbType
+            let capturedResultText = resultText
+            let capturedHadSelectedText = hadSelectedText
+
             // 在主 App 中处理文字 (LLM/翻译/格式化/语音编辑)
             // 键盘扩展内存太小,不能跑 LLM
             Task { [weak self] in
-                guard let self = self else { return }
                 let processed = await TextProcessor.shared.process(
-                    resultText,
-                    selectedText: self.selectedText,
-                    keyboardType: kbType
+                    capturedResultText,
+                    selectedText: capturedSelectedText,
+                    keyboardType: capturedKbType
                 )
 
-                let finalText = processed.isEmpty ? resultText : processed
+                let finalText = processed.isEmpty ? capturedResultText : processed
                 DarwinBridge.writeTranscription(
                     finalText,
-                    session: self.sessionId,
-                    deleteSelected: hadSelectedText && TextProcessor.shared.voiceEditEnabled
+                    session: capturedSessionId,
+                    deleteSelected: capturedHadSelectedText && TextProcessor.shared.voiceEditEnabled
                 )
-                self.statusMessage = "识别完成 ✓"
-                self.transitionToStandby()
+
+                // 回到主线程更新 UI (如果 viewModel 还活着)
+                await MainActor.run {
+                    self?.statusMessage = "识别完成 ✓"
+                    self?.transitionToStandby()
+                }
             }
         }
 

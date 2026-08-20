@@ -447,7 +447,7 @@ class KeyboardViewController: UIInputViewController {
         let heartbeatAge = DarwinBridge.heartbeatAge()
         print("[KB] Heartbeat age: \(heartbeatAge == .infinity ? "never" : "\(heartbeatAge)s")")
 
-        if DarwinBridge.isMainAppAlive(threshold: 4.0) {
+        if DarwinBridge.isMainAppAlive(threshold: 3.0) {
             // 路径 A: Darwin 通知 (主 App 存活,不切 App)
             print("[KB] Path A: Darwin notification")
             DarwinBridge.postNotification(DarwinNotificationName.requestStartDictation)
@@ -596,14 +596,19 @@ class KeyboardViewController: UIInputViewController {
     /// 主 App 已完成所有文字处理 (LLM/翻译/格式化/语音编辑)
     /// 键盘只负责插入,不跑任何 AI 模型
     private func insertResult(_ text: String, deleteSelected: Bool) {
-        if text.isEmpty {
-            liveTextLabel.text = "未识别到语音,请重试"
-            return
-        }
-
-        // 如果有选中文本且主 App 标记了 deleteSelected,先删除选中文本
+        // ★ 先处理 deleteSelected,即使 text 为空也要删除选中文本
+        // 语音编辑的"删除"模式: text 为空但 deleteSelected 为 true
         if deleteSelected {
             textDocumentProxy.deleteBackward()
+        }
+
+        if text.isEmpty {
+            if deleteSelected {
+                liveTextLabel.text = "已删除选中文本 ✓"
+            } else {
+                liveTextLabel.text = "未识别到语音,请重试"
+            }
+            return
         }
 
         textDocumentProxy.insertText(text)
