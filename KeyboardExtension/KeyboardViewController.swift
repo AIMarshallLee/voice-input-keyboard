@@ -411,27 +411,28 @@ class KeyboardViewController: UIInputViewController {
         }
     }
 
-    // MARK: - 双路径启动听写
+    // MARK: - 无跳转启动听写
 
-    /// 双路径触发:
-    /// 1. 检查心跳 → 如果主 App 存活,发 Darwin 通知 (不切 App,体验更好)
-    /// 2. 心跳过期 → URL Scheme 启动主 App (降级)
+    /// 无跳转触发 (Typeless / 微信输入法同款方案):
+    /// 1. 总是先发 Darwin 通知给主 App (不切 App!)
+    /// 2. 主 App 在 PiP 保活中 → 几百毫秒内响应 dictationStarted → 不跳转
+    /// 3. 主 App 不在保活中 → 1.5s 超时降级到 URL Scheme (首次使用)
+    ///
+    /// 之前的问题: 先检查心跳,但键盘重启后心跳丢失,导致误判主 App 不存活
+    /// 现在: 不依赖心跳,直接发通知,让主 App 自己响应
     private func launchDictation() {
         guard hasFullAccess else {
             liveTextLabel.text = "请到设置→键盘→VoType→开启「允许完全访问」"
             return
         }
 
-        // 生成会话 ID
         let sessionId = UUID().uuidString
         currentSessionId = sessionId
 
-        // 暂存设置
         selectedTextBeforeRecording = textDocumentProxy.selectedText
         pendingSelectedText = selectedTextBeforeRecording
         pendingKbType = textDocumentProxy.keyboardType?.rawValue ?? 0
 
-        // 写入听写设置到命名剪贴板 (供 Path A Darwin 路径使用)
         let settings = DictationSettings(
             language: LanguageManager.shared.currentLanguage.id,
             whisper: isWhisperMode,
@@ -443,32 +444,29 @@ class KeyboardViewController: UIInputViewController {
         )
         DarwinBridge.writeDictationSettings(settings)
 
-        // 检查主 App 是否存活
-        let heartbeatAge = DarwinBridge.heartbeatAge()
-        print("[KB] Heartbeat age: \(heartbeatAge == .infinity ? "never" : "\(heartbeatAge)s")")
+        // ★ 总是先走 Darwin 通知,不检查心跳!
+        // PiP 保活中: 主 App 几百毫秒内响应 → 不跳转
+        // 主 App 不在保活中: 1.5s 超时 → 降级 URL Scheme
+        print("[KB] Sending Darwin notification (always Path A first)")
+        DarwinBridge.postNotification(DarwinNotificationName.requestStartDictation)
 
-        if DarwinBridge.isMainAppAlive(threshold: 3.0) {
-            // 路径 A: Darwin 通知 (主 App 存活,不切 App)
-            print("[KB] Path A: Darwin notification")
-            DarwinBridge.postNotification(DarwinNotificationName.requestStartDictation)
+        isWaitingForResult = true
+        liveTextLabel.text = "正在聆听..."
+        startPulse()
 
-            // 2.5 秒超时兜底:如果主 App 没响应,降级到 URL
-            darwinFallbackTimer = Timer.scheduledTimer(
-                withTimeInterval: 2.5,
-                repeats: false
-            ) { [weak self] _ in
-                guard let self = self, self.isWaitingForResult else { return }
-                print("[KB] Darwin fallback: no response in 2.5s, trying URL")
-                self.launchViaURL(sessionId: sessionId)
-            }
+        // 麦克风按钮变声纹图标
+        let waveConfig = UIImage.SymbolConfiguration(pointSize: 34, weight: .bold)
+        micButton.setImage(UIImage(systemName: "waveform", withConfiguration: waveConfig), for: .normal)
+        micButton.backgroundColor = UIColor.systemRed
 
-            isWaitingForResult = true
-            liveTextLabel.text = "正在启动语音输入..."
-            startPulse()
-        } else {
-            // 路径 B: URL Scheme (主 App 已死,需要启动)
-            print("[KB] Path B: URL Scheme (main app not alive)")
-            launchViaURL(sessionId: sessionId)
+        // 1.5s 超时降级: 主 App 没在 PiP 保活中,需要 URL Scheme 启动
+        darwinFallbackTimer = Timer.scheduledTimer(
+            withTimeInterval: 1.5,
+            repeats: false
+        ) { [weak self] _ in
+            guard let self = self, self.isWaitingForResult else { return }
+            print("[KB] No Darwin response in 1.5s, falling back to URL Scheme")
+            self.launchViaURL(sessionId: sessionId)
         }
     }
 
@@ -529,9 +527,20 @@ class KeyboardViewController: UIInputViewController {
 
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
-            self.liveTextLabel.text = "正在聆听...可以滑回之前的App"
+            self.liveTextLabel.text = "正在聆听..."
+            // 声纹波浪图标 + 红色背景
+            let waveConfig = UIImage.SymbolConfiguration(pointSize: 34, weight: .bold)
+            self.micButton.setImage(UIImage(systemName: "waveform", withConfiguration: waveConfig), for: .normal)
             self.micButton.backgroundColor = UIColor.systemRed
         }
+    }
+
+    /// 恢复麦克风按钮到默认状态 (录音结束/结果插入后调用)
+    private func restoreMicButton() {
+        let config = UIImage.SymbolConfiguration(pointSize: 34, weight: .bold)
+        micButton.setImage(UIImage(systemName: "mic.fill", withConfiguration: config), for: .normal)
+        micButton.backgroundColor = UIColor.systemBlue
+        stopPulse()
     }
 
     // MARK: - 处理识别结果
@@ -552,8 +561,7 @@ class KeyboardViewController: UIInputViewController {
         isWaitingForResult = false
         darwinFallbackTimer?.invalidate()
         darwinFallbackTimer = nil
-        stopPulse()
-        micButton.backgroundColor = UIColor.systemBlue
+        restoreMicButton()
 
         if let text = result.text {
             insertResult(text, deleteSelected: result.deleteSelected)
@@ -579,15 +587,13 @@ class KeyboardViewController: UIInputViewController {
             isWaitingForResult = false
             darwinFallbackTimer?.invalidate()
             darwinFallbackTimer = nil
-            stopPulse()
-            micButton.backgroundColor = UIColor.systemBlue
+            restoreMicButton()
             insertResult(text, deleteSelected: result.deleteSelected)
         } else if let error = result.error {
             isWaitingForResult = false
             darwinFallbackTimer?.invalidate()
             darwinFallbackTimer = nil
-            stopPulse()
-            micButton.backgroundColor = UIColor.systemBlue
+            restoreMicButton()
             liveTextLabel.text = error
         }
     }
@@ -615,7 +621,7 @@ class KeyboardViewController: UIInputViewController {
 
         let preview = text.prefix(30)
         liveTextLabel.text = "已输入 ✓  \(preview)\(text.count > 30 ? "…" : "")"
-        micButton.backgroundColor = UIColor.systemBlue
+        restoreMicButton()
     }
 
     // MARK: - 脉冲动画

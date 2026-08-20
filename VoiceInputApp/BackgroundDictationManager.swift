@@ -53,6 +53,11 @@ class BackgroundDictationManager: ObservableObject {
     // 心跳定时器:保活模式下每 2s 发一次
     private var heartbeatTimer: DispatchSourceTimer?
 
+    // ★ 静音音频播放器:持续播放无声音频,让 iOS 认为 App 在"播放音频"
+    // 只 setActive 不播放,iOS 会在几十秒后挂起 App → Darwin 通知丢失 → 跳 App
+    // 有了这个,App 在后台持续存活,键盘发 Darwin 通知即可直接触发录音
+    private let silentPlayer = SilentAudioPlayer()
+
     // Darwin 通知监听
     private var startDictationObserver: DarwinNotificationObserver?
     private var stopDictationObserver: DarwinNotificationObserver?
@@ -119,10 +124,11 @@ class BackgroundDictationManager: ObservableObject {
         // 持久化:用户只需要开启一次,以后 App 重启后自动恢复
         UserDefaults.standard.set(true, forKey: pipStandbyKey)
 
-        // ★ 关键: 立即激活后台音频会话并持续保持
-        // 这是保活的核心: audio session 持续激活 = iOS 不挂起/杀掉 App
-        // 麦克风仅在收到 Darwin 通知时才采集 (省电)
+        // ★ 关键: 激活音频会话 + 开始播放静音音频
+        // 只 setActive 不够! iOS 需要看到"正在播放"才不挂起 App
+        // silentPlayer 持续播放无声音频 = iOS 认为 App 在播放 = 进程不被挂起
         activateBackgroundAudioSession()
+        silentPlayer.start()
 
         // 启动心跳
         startHeartbeat()
@@ -158,6 +164,7 @@ class BackgroundDictationManager: ObservableObject {
         isPipStandbyEnabled = false
         UserDefaults.standard.set(false, forKey: pipStandbyKey)
         stopHeartbeat()
+        silentPlayer.stop()
 
         if state == .recording {
             stopRecording()
@@ -236,6 +243,9 @@ class BackgroundDictationManager: ObservableObject {
     private func startRecording(settings: DictationSettings) {
         recognizedText = ""
         state = .recording
+
+        // 暂停静音播放器,释放麦克风给 AVAudioEngine
+        silentPlayer.pause()
 
         // 更新 PiP 显示 + 确保 PiP 在运行
         PiPManager.shared.setRecordingMode()
@@ -373,6 +383,9 @@ class BackgroundDictationManager: ObservableObject {
 
             self.state = .idle
             self.cleanupAudio()
+
+            // 恢复静音播放器,继续后台保活
+            self.silentPlayer.resume()
 
             if self.isPipStandbyEnabled {
                 PiPManager.shared.setStandbyMode()
