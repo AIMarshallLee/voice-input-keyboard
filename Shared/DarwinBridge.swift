@@ -171,8 +171,13 @@ struct DarwinBridge {
 
     // MARK: - 写入转录结果(主 App 调用)
 
-    static func writeTranscription(_ text: String, session: String) {
-        let payload: [String: String] = ["status": "completed", "text": text, "session": session]
+    static func writeTranscription(_ text: String, session: String, deleteSelected: Bool = false) {
+        let payload: [String: String] = [
+            "status": "completed",
+            "text": text,
+            "session": session,
+            "deleteSelected": deleteSelected ? "1" : "0"
+        ]
         writeJSON(payload, to: .result)
         DarwinNotificationObserver.post(DarwinNotificationName.transcriptionReady)
         print("[DarwinBridge] Transcription written, session=" + String(session.prefix(8)))
@@ -189,12 +194,12 @@ struct DarwinBridge {
 
     // MARK: - 读取并消费结果(键盘扩展调用)
 
-    static func readAndConsumeResult() -> (text: String?, error: String?, session: String?) {
+    static func readAndConsumeResult() -> (text: String?, error: String?, session: String?, deleteSelected: Bool) {
         guard let pb = SharedClipboard.resultPasteboard,
               let json = pb.string,
               let data = json.data(using: .utf8),
               let dict = try? JSONSerialization.jsonObject(with: data) as? [String: String] else {
-            return (nil, nil, nil)
+            return (nil, nil, nil, false)
         }
 
         // 消费后清空剪贴板
@@ -202,11 +207,12 @@ struct DarwinBridge {
 
         let status = dict["status"] ?? ""
         if status == "completed" {
-            return (dict["text"], nil, dict["session"])
+            let del = dict["deleteSelected"] == "1"
+            return (dict["text"], nil, dict["session"], del)
         } else if status == "error" {
-            return (nil, dict["text"], dict["session"])
+            return (nil, dict["text"], dict["session"], false)
         }
-        return (nil, nil, nil)
+        return (nil, nil, nil, false)
     }
 
     // MARK: - 心跳机制

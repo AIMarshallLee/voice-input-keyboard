@@ -99,7 +99,7 @@ class KeyboardViewController: UIInputViewController {
 
         dictationStoppedObserver = DarwinNotificationObserver(
             name: DarwinNotificationName.dictationStopped
-        ) { [weak self] in
+        ) {
             print("[KB] Received dictationStopped")
         }
     }
@@ -556,7 +556,7 @@ class KeyboardViewController: UIInputViewController {
         micButton.backgroundColor = UIColor.systemBlue
 
         if let text = result.text {
-            handleDictationResult(text)
+            insertResult(text, deleteSelected: result.deleteSelected)
         } else if let error = result.error {
             liveTextLabel.text = error
         }
@@ -581,7 +581,7 @@ class KeyboardViewController: UIInputViewController {
             darwinFallbackTimer = nil
             stopPulse()
             micButton.backgroundColor = UIColor.systemBlue
-            handleDictationResult(text)
+            insertResult(text, deleteSelected: result.deleteSelected)
         } else if let error = result.error {
             isWaitingForResult = false
             darwinFallbackTimer?.invalidate()
@@ -592,47 +592,25 @@ class KeyboardViewController: UIInputViewController {
         }
     }
 
-    /// 处理识别结果:语音编辑 + 自我纠正 + 口水词 + LLM润色 + 翻译 + 自动格式化 + 自动标点
-    private func handleDictationResult(_ rawText: String) {
-        if rawText.isEmpty {
+    /// 插入识别结果到光标位置
+    /// 主 App 已完成所有文字处理 (LLM/翻译/格式化/语音编辑)
+    /// 键盘只负责插入,不跑任何 AI 模型
+    private func insertResult(_ text: String, deleteSelected: Bool) {
+        if text.isEmpty {
             liveTextLabel.text = "未识别到语音,请重试"
             return
         }
 
-        liveTextLabel.text = "正在处理..."
-        micButton.backgroundColor = UIColor.systemOrange
-
-        let selectedText = pendingSelectedText
-        let kbType = pendingKbType
-
-        Task { [weak self] in
-            guard let self = self else { return }
-            let processed = await TextProcessor.shared.process(
-                rawText,
-                selectedText: selectedText,
-                keyboardType: kbType
-            )
-
-            await MainActor.run {
-                if let selected = selectedText, !selected.isEmpty,
-                   TextProcessor.shared.voiceEditEnabled {
-                    self.textDocumentProxy.deleteBackward()
-                }
-
-                if !processed.isEmpty {
-                    self.textDocumentProxy.insertText(processed)
-                    let preview = processed.prefix(30)
-                    self.liveTextLabel.text = "已输入 ✓  \(preview)\(processed.count > 30 ? "…" : "")"
-                } else if selectedText != nil {
-                    self.liveTextLabel.text = "已删除选中文字 ✓"
-                } else {
-                    self.textDocumentProxy.insertText(rawText)
-                    self.liveTextLabel.text = "已输入 ✓"
-                }
-
-                self.micButton.backgroundColor = UIColor.systemBlue
-            }
+        // 如果有选中文本且主 App 标记了 deleteSelected,先删除选中文本
+        if deleteSelected {
+            textDocumentProxy.deleteBackward()
         }
+
+        textDocumentProxy.insertText(text)
+
+        let preview = text.prefix(30)
+        liveTextLabel.text = "已输入 ✓  \(preview)\(text.count > 30 ? "…" : "")"
+        micButton.backgroundColor = UIColor.systemBlue
     }
 
     // MARK: - 脉冲动画

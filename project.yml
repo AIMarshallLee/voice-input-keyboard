@@ -30,7 +30,7 @@ targets:
           - en
           - zh-Hans
         CFBundleShortVersionString: "1.0"
-        CFBundleVersion: "21"
+        CFBundleVersion: "22"
         LSRequiresIPhoneOS: true
         UIBackgroundModes:
           - audio
@@ -56,7 +56,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.daseanle.votype
         MARKETING_VERSION: "1.0"
-        CURRENT_PROJECT_VERSION: "21"
+        CURRENT_PROJECT_VERSION: "22"
         SWIFT_VERSION: "5.9"
         IPHONEOS_DEPLOYMENT_TARGET: "16.0"
         TARGETED_DEVICE_FAMILY: "1,2"
@@ -82,6 +82,10 @@ targets:
       - path: KeyboardExtension/zh-Hans.lproj
         type: folder
       - path: Shared
+        excludes:
+          - "TextProcessor.swift"
+          - "SmartFormatter.swift"
+          - "UsageTracker.swift"
     info:
       path: KeyboardExtension/Info.plist
       properties:
@@ -91,7 +95,7 @@ targets:
           - en
           - zh-Hans
         CFBundleShortVersionString: "1.0"
-        CFBundleVersion: "21"
+        CFBundleVersion: "22"
         NSMicrophoneUsageDescription: VoType needs microphone access for voice-to-text input
         NSSpeechRecognitionUsageDescription: VoType needs speech recognition to convert your voice to text
         NSExtension:

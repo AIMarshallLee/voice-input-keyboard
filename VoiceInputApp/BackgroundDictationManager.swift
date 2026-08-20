@@ -59,6 +59,7 @@ class BackgroundDictationManager: ObservableObject {
 
     // 当前会话
     private var currentSessionId = ""
+    private var currentSettings: DictationSettings?
 
     // MARK: - 初始化
 
@@ -220,6 +221,7 @@ class BackgroundDictationManager: ObservableObject {
         }
 
         currentSessionId = settings.session
+        currentSettings = settings
         print("[BGDictation] Path A: starting recording, session=\(currentSessionId.prefix(8))")
 
         // 通知键盘:已开始
@@ -255,9 +257,9 @@ class BackgroundDictationManager: ObservableObject {
         do {
             let session = AVAudioSession.sharedInstance()
             if settings.whisper {
-                try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.duckOthers, .allowBluetooth, .allowBluetoothA2DP, .mixWithOthers])
+                try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.duckOthers, .allowBluetoothHFP, .allowBluetoothA2DP, .mixWithOthers])
             } else {
-                try session.setCategory(.playAndRecord, mode: .default, options: [.duckOthers, .allowBluetooth, .allowBluetoothA2DP, .mixWithOthers])
+                try session.setCategory(.playAndRecord, mode: .default, options: [.duckOthers, .allowBluetoothHFP, .allowBluetoothA2DP, .mixWithOthers])
             }
             try session.setActive(true, options: .notifyOthersOnDeactivation)
 
@@ -325,36 +327,57 @@ class BackgroundDictationManager: ObservableObject {
         recognitionTask?.cancel()
 
         let resultText = recognizedText
-
-        if resultText.isEmpty {
-            DarwinBridge.writeError("未识别到语音", session: currentSessionId)
-        } else {
-            DarwinBridge.writeTranscription(resultText, session: currentSessionId)
-        }
+        let settings = currentSettings
 
         // 通知键盘:听写已停止
         DarwinBridge.postNotification(DarwinNotificationName.dictationStopped)
 
-        // PiP 显示完成状态
+        // PiP 显示处理中
         PiPManager.shared.setCompletedMode(text: resultText)
 
-        // 2s 后回到待命
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
-            guard let self = self else { return }
+        if resultText.isEmpty {
+            DarwinBridge.writeError("未识别到语音", session: currentSessionId)
+            finishRecording()
+        } else {
+            // 在主 App 中处理文字 (LLM/翻译/格式化/语音编辑)
+            // 键盘扩展内存太小,不能跑 LLM,所以处理必须在主 App 完成
+            let selectedText = settings?.selectedText
+            let keyboardType = settings?.keyboardType ?? 0
+            let hadSelectedText = selectedText != nil && !(selectedText?.isEmpty ?? true)
 
-            // ★ 不关闭 audio session!PiP 保活需要 session 保持 active
-            // 只清理录音资源
-            self.state = .idle
-            self.cleanupAudio()
+            Task { [weak self] in
+                guard let self = self else { return }
+                let processed = await TextProcessor.shared.process(
+                    resultText,
+                    selectedText: selectedText,
+                    keyboardType: keyboardType
+                )
 
-            if self.isPipStandbyEnabled {
-                // 回到待命状态,等待下一次触发
-                PiPManager.shared.setStandbyMode()
-                // 心跳一直在跑,不需要重启
+                let finalText = processed.isEmpty ? resultText : processed
+                DarwinBridge.writeTranscription(
+                    finalText,
+                    session: self.currentSessionId,
+                    deleteSelected: hadSelectedText && TextProcessor.shared.voiceEditEnabled
+                )
+                self.finishRecording()
             }
         }
 
         print("[BGDictation] Recording stopped, result length: \(resultText.count)")
+    }
+
+    private func finishRecording() {
+        // 2s 后回到待命
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+            guard let self = self else { return }
+
+            self.state = .idle
+            self.cleanupAudio()
+
+            if self.isPipStandbyEnabled {
+                PiPManager.shared.setStandbyMode()
+            }
+        }
     }
 
     // MARK: - 静音自动停止

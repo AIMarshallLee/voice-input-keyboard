@@ -28,10 +28,14 @@ jobs:
       # ---- 运行单元测试 ----
       - name: Run Unit Tests
         run: |
+          set -o pipefail
+          # 列出可用模拟器 (调试用)
+          xcrun simctl list devices available | grep iPhone || true
+
           xcodebuild test \
             -project VoType.xcodeproj \
             -scheme VoTypeTests \
-            -destination 'platform=iOS Simulator,name=iPhone 16,OS=latest' \
+            -destination 'generic/platform=iOS Simulator' \
             CODE_SIGNING_ALLOWED=NO \
             -derivedDataPath ./test_build 2>&1 | tee test_output.log
 

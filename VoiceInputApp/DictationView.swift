@@ -70,6 +70,7 @@ class DictationViewModel: ObservableObject {
     private var whisperMode = false
     private var selectedText: String?
     private var sessionId = ""
+    private var keyboardType: Int = 0
 
     // MARK: - 从 URL 加载设置
 
@@ -86,12 +87,14 @@ class DictationViewModel: ObservableObject {
             languageID = dict[DictationConstants.paramLang] ?? "zh-CN"
             whisperMode = dict[DictationConstants.paramWhisper] == "1"
             selectedText = dict[DictationConstants.paramSelectedText]
+            keyboardType = Int(dict[DictationConstants.paramKbType] ?? "0") ?? 0
         } else if let settings = DarwinBridge.readDictationSettings() {
             // Path A: Darwin 通知触发,设置从命名剪贴板读取
             sessionId = settings.session
             languageID = settings.language
             whisperMode = settings.whisper
             selectedText = settings.selectedText
+            keyboardType = settings.keyboardType
             print("[Dictation] Loaded settings from clipboard (Path A), session=\(sessionId.prefix(8))")
         } else {
             sessionId = UUID().uuidString
@@ -157,9 +160,9 @@ class DictationViewModel: ObservableObject {
             // playAndRecord + mixWithOthers: 录音同时不打断其他 App 的音频
             // 这是 PiP 后台保活的关键配置
             if whisperMode {
-                try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.duckOthers, .allowBluetooth, .allowBluetoothA2DP, .mixWithOthers])
+                try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.duckOthers, .allowBluetoothHFP, .allowBluetoothA2DP, .mixWithOthers])
             } else {
-                try session.setCategory(.playAndRecord, mode: .default, options: [.duckOthers, .allowBluetooth, .allowBluetoothA2DP, .mixWithOthers])
+                try session.setCategory(.playAndRecord, mode: .default, options: [.duckOthers, .allowBluetoothHFP, .allowBluetoothA2DP, .mixWithOthers])
             }
             try session.setActive(true, options: .notifyOthersOnDeactivation)
 
@@ -228,29 +231,48 @@ class DictationViewModel: ObservableObject {
         recognitionTask?.cancel()
 
         let resultText = recognizedText
-
-        if resultText.isEmpty {
-            DarwinBridge.writeError("未识别到语音", session: sessionId)
-            statusMessage = "未识别到语音"
-        } else {
-            DarwinBridge.writeTranscription(resultText, session: sessionId)
-            statusMessage = "识别完成 ✓"
-        }
-
-        hasResult = true
+        let hadSelectedText = selectedText != nil && !(selectedText?.isEmpty ?? true)
+        let kbType = keyboardType
 
         // 通知键盘:听写已停止
         DarwinBridge.postNotification(DarwinNotificationName.dictationStopped)
 
-        // ★ 核心:不停 PiP!转待命模式,保持 App 后台存活
-        // 这是 Typeless / 微信输入法的核心方案:
-        // 1. PiP 切换到"待命中"状态
-        // 2. 启动心跳(每 2s 发一次),让键盘知道主 App 存活
-        // 3. 启用 BackgroundDictationManager 处理后续 Path A 请求
-        // 4. 不关闭 audio session(保活必需)
-        // 5. Dismiss DictationView,但 App 通过 PiP 在后台保持存活
+        if resultText.isEmpty {
+            DarwinBridge.writeError("未识别到语音", session: sessionId)
+            statusMessage = "未识别到语音"
+            hasResult = true
+            transitionToStandby()
+        } else {
+            statusMessage = "正在处理文字..."
+            hasResult = true
 
-        PiPManager.shared.setCompletedMode(text: resultText)
+            // 在主 App 中处理文字 (LLM/翻译/格式化/语音编辑)
+            // 键盘扩展内存太小,不能跑 LLM
+            Task { [weak self] in
+                guard let self = self else { return }
+                let processed = await TextProcessor.shared.process(
+                    resultText,
+                    selectedText: self.selectedText,
+                    keyboardType: kbType
+                )
+
+                let finalText = processed.isEmpty ? resultText : processed
+                DarwinBridge.writeTranscription(
+                    finalText,
+                    session: self.sessionId,
+                    deleteSelected: hadSelectedText && TextProcessor.shared.voiceEditEnabled
+                )
+                self.statusMessage = "识别完成 ✓"
+                self.transitionToStandby()
+            }
+        }
+
+        print("[Dictation] Recording stopped, transitioning to PiP standby mode")
+    }
+
+    private func transitionToStandby() {
+        // ★ 核心:不停 PiP!转待命模式,保持 App 后台存活
+        PiPManager.shared.setCompletedMode(text: recognizedText)
 
         // 1s 后切换到待命状态 (配合 DictationView 2.5s auto-dismiss)
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
@@ -268,8 +290,6 @@ class DictationViewModel: ObservableObject {
             // 清理录音资源但保留 audio session
             self.cleanupAudioOnly()
         }
-
-        print("[Dictation] Recording stopped, transitioning to PiP standby mode")
     }
 
     /// 只清理录音资源,保留 audio session 和 PiP
