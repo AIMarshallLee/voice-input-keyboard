@@ -459,13 +459,14 @@ class KeyboardViewController: UIInputViewController {
         micButton.setImage(UIImage(systemName: "waveform", withConfiguration: waveConfig), for: .normal)
         micButton.backgroundColor = UIColor.systemRed
 
-        // 1.5s 超时降级: 主 App 没在 PiP 保活中,需要 URL Scheme 启动
+        // 2.5s 超时降级: 主 App 没在后台保活中，需要 URL Scheme 启动
+        // 给 Darwin 通知足够时间传递 + 主 App 从挂起状态恢复
         darwinFallbackTimer = Timer.scheduledTimer(
-            withTimeInterval: 1.5,
+            withTimeInterval: 2.5,
             repeats: false
         ) { [weak self] _ in
             guard let self = self, self.isWaitingForResult else { return }
-            print("[KB] No Darwin response in 1.5s, falling back to URL Scheme")
+            print("[KB] No Darwin response in 2.5s, falling back to URL Scheme")
             self.launchViaURL(sessionId: sessionId)
         }
     }

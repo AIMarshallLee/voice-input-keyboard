@@ -75,11 +75,29 @@ class BackgroundDictationManager: ObservableObject {
     /// App 启动时调用:如果用户之前开启过 PiP 保活,自动恢复
     /// 这样用户只需要开一次,以后每次打开 App 都自动进入待命模式
     func autoRestoreIfNeeded() {
-        let saved = UserDefaults.standard.bool(forKey: pipStandbyKey)
-        if saved && !isPipStandbyEnabled {
-            print("[BGDictation] Auto-restoring PiP standby from UserDefaults")
-            enablePipStandby()
+        // 检查权限是否已授权
+        let speechStatus = SFSpeechRecognizer.authorizationStatus()
+        let micStatus = AVAudioSession.sharedInstance().recordPermission
+
+        guard speechStatus == .authorized, micStatus == .granted else {
+            print("[BGDictation] Permissions not granted yet, skipping auto-restore")
+            return
         }
+
+        if isPipStandbyEnabled {
+            // 已经启用了
+            return
+        }
+
+        // 权限已授权，自动启用 PiP 保活
+        // 用户不需要手动开启开关
+        let saved = UserDefaults.standard.bool(forKey: pipStandbyKey)
+        if saved {
+            print("[BGDictation] Auto-restoring PiP standby from UserDefaults")
+        } else {
+            print("[BGDictation] First time: auto-enabling PiP standby (permissions granted)")
+        }
+        enablePipStandby()
     }
 
     deinit {
@@ -207,23 +225,36 @@ class BackgroundDictationManager: ObservableObject {
     // MARK: - 处理听写请求 (Path A: Darwin 通知触发)
 
     private func handleDictationRequest() {
-        guard isPipStandbyEnabled else {
-            print("[BGDictation] Received request but standby not enabled, ignoring")
-            return
-        }
-
+        // ★ 不检查 isPipStandbyEnabled！
+        // 只要主 App 在运行（前台或后台），就响应 Darwin 通知
+        // 这是 23 个版本跳转问题的根本原因：
+        // 之前 PiP 保活没启用时，主 App 收到通知也忽略，导致键盘超时跳转
         guard state != .recording else {
             print("[BGDictation] Already recording, ignoring duplicate request")
             return
         }
 
-        // ★ 确保 audio session 还活着 (App 可能被系统暂时挂起后恢复)
+        // 如果 PiP 保活没启用，自动启用（激活 audio session + silent player）
+        if !isPipStandbyEnabled {
+            print("[BGDictation] Standby not enabled, auto-enabling on first request")
+            isPipStandbyEnabled = true
+            UserDefaults.standard.set(true, forKey: pipStandbyKey)
+            activateBackgroundAudioSession()
+            silentPlayer.start()
+            startHeartbeat()
+        }
+
+        // 确保 audio session 还活着（App 可能被系统暂时挂起后恢复）
         try? AVAudioSession.sharedInstance().setActive(true, options: .notifyOthersOnDeactivation)
+
+        // 暂停静音播放器，释放麦克风给 AVAudioEngine
+        silentPlayer.pause()
 
         // 从命名剪贴板读取设置
         guard let settings = DarwinBridge.readDictationSettings() else {
             print("[BGDictation] No settings in clipboard, cannot start")
             DarwinBridge.writeError("设置读取失败", session: UUID().uuidString)
+            silentPlayer.resume()
             return
         }
 
@@ -231,7 +262,7 @@ class BackgroundDictationManager: ObservableObject {
         currentSettings = settings
         print("[BGDictation] Path A: starting recording, session=\(currentSessionId.prefix(8))")
 
-        // 通知键盘:已开始
+        // 立即通知键盘：已开始（让键盘取消超时 timer，不跳转！）
         DarwinBridge.postNotification(DarwinNotificationName.dictationStarted)
 
         // 开始录音
@@ -257,6 +288,7 @@ class BackgroundDictationManager: ObservableObject {
         guard let recognizer = speechRecognizer, recognizer.isAvailable else {
             DarwinBridge.writeError("语音识别不可用,请检查网络", session: currentSessionId)
             state = .idle
+            silentPlayer.resume()
             PiPManager.shared.setStandbyMode()
             return
         }
@@ -319,6 +351,7 @@ class BackgroundDictationManager: ObservableObject {
             print("[BGDictation] Failed to start recording: \(error.localizedDescription)")
             DarwinBridge.writeError("启动录音失败: \(error.localizedDescription)", session: currentSessionId)
             state = .idle
+            silentPlayer.resume()
             PiPManager.shared.setStandbyMode()
             cleanupAudio()
         }
