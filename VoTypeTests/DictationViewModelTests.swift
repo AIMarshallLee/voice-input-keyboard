@@ -1,6 +1,7 @@
 import XCTest
 @testable import VoiceInputApp
 
+@MainActor
 final class DictationViewModelTests: XCTestCase {
 
     func testLoadSettingsFromURL() {
