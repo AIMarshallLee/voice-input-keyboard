@@ -17,15 +17,20 @@ class PiPManager: NSObject, AVPictureInPictureSampleBufferPlaybackDelegate, AVPi
     private var pipController: AVPictureInPictureController?
     private weak var hostView: UIView?
     private var frameTimer: DispatchSourceTimer?
-    private var frameQueue = DispatchQueue(label: "com.daseanle.votype.pipframes", qos: .userInitiated)
+    private let frameQueue = DispatchQueue(label: "com.daseanle.votype.pipframes", qos: .userInitiated)
     private var recordingStartTime: Date?
     private var liveText: String = ""
     private var isSetupComplete = false
 
+    // 用于线程安全的锁
+    private let stateLock = NSLock()
+
     // MARK: - 状态
 
     var isPiPActive: Bool {
-        pipController?.isPictureInPictureActive ?? false
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return pipController?.isPictureInPictureActive ?? false
     }
 
     var canStartPiP: Bool {
@@ -44,6 +49,9 @@ class PiPManager: NSObject, AVPictureInPictureSampleBufferPlaybackDelegate, AVPi
             }
             return
         }
+
+        // 在锁内完成所有状态设置
+        stateLock.lock()
 
         hostView = view
 
@@ -67,66 +75,80 @@ class PiPManager: NSObject, AVPictureInPictureSampleBufferPlaybackDelegate, AVPi
         controller.delegate = self
         pipController = controller
 
-        // 推送 3 帧初始画面,确保 display layer 进入 rendering 状态
+        isSetupComplete = true
+        print("[PiP] Setup complete, layer status: \(layer.status.rawValue)")
+
+        stateLock.unlock()
+
+        // 在锁外推送初始帧 (pushFrame 内部会自己加锁)
         for _ in 0..<3 {
             pushFrame()
         }
-
-        isSetupComplete = true
-        print("[PiP] Setup complete, layer status: \(layer.status.rawValue)")
     }
 
     // MARK: - 开始 / 停止 PiP
 
     func startPiP() {
-        guard let controller = pipController else {
-            print("[PiP] No controller")
-            return
-        }
-
-        guard isSetupComplete else {
-            print("[PiP] Setup not complete yet, retrying in 0.5s")
+        stateLock.lock()
+        guard let controller = pipController, isSetupComplete else {
+            stateLock.unlock()
+            print("[PiP] Not ready, retrying in 0.5s")
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
                 self?.startPiP()
             }
             return
         }
+        stateLock.unlock()
 
         // 确保画面在持续推送
         startFrameTimer()
+
+        // 设置录音开始时间
+        stateLock.lock()
+        recordingStartTime = Date()
+        stateLock.unlock()
 
         // 尝试启动 PiP
         // 注意:在前台调用 startPictureInPicture 可能不会立即生效
         // 但 canStartPictureInPictureAutomaticallyFromInline = true 会在进入后台时自动启动
         if !controller.isPictureInPictureActive {
             controller.startPictureInPicture()
-            print("[PiP] startPictureInPicture() called, will auto-start when app goes to background")
+            print("[PiP] startPictureInPicture() called")
         }
-
-        recordingStartTime = Date()
     }
 
     func stopPiP() {
         stopFrameTimer()
+
+        stateLock.lock()
         recordingStartTime = nil
+        stateLock.unlock()
 
         // 推送最后一帧 (完成状态)
         pushFrame(isFinal: true)
 
         // 通知 PiP 控制器状态已变更
-        pipController?.invalidatePlaybackState()
+        stateLock.lock()
+        let controller = pipController
+        stateLock.unlock()
+        controller?.invalidatePlaybackState()
 
         // 延迟停止 PiP,让用户看到完成画面
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
-            guard let self = self else { return }
-            self.pipController?.stopPictureInPicture()
+            self?.stateLock.lock()
+            let ctrl = self?.pipController
+            self?.stateLock.unlock()
+            ctrl?.stopPictureInPicture()
             print("[PiP] stopPictureInPicture() called")
         }
     }
 
     /// 更新悬浮窗中显示的实时识别文本
     func updateLiveText(_ text: String) {
+        stateLock.lock()
         liveText = text
+        stateLock.unlock()
+
         // 在后台线程生成画面,避免阻塞主线程
         frameQueue.async { [weak self] in
             self?.pushFrame()
@@ -155,22 +177,40 @@ class PiPManager: NSObject, AVPictureInPictureSampleBufferPlaybackDelegate, AVPi
     // MARK: - 画面生成
 
     private func pushFrame(isFinal: Bool = false) {
-        guard let layer = displayLayer else { return }
+        stateLock.lock()
+        guard let layer = displayLayer else {
+            stateLock.unlock()
+            return
+        }
 
-        let image = generateRecordingImage(isFinal: isFinal)
+        // 检查 layer 状态,如果 failed 则 flush 后继续
+        if layer.status == .failed {
+            print("[PiP] Layer status failed, flushing...")
+            layer.flush()
+        }
+
+        let currentLiveText = liveText
+        let currentStartTime = recordingStartTime
+        stateLock.unlock()
+
+        // 在后台线程生成图片 (线程安全)
+        let image = generateRecordingImage(isFinal: isFinal, liveText: currentLiveText, startTime: currentStartTime)
         guard let buffer = createSampleBuffer(from: image) else {
             print("[PiP] Failed to create sample buffer")
             return
         }
 
         // enqueue 必须在主线程
-        DispatchQueue.main.async {
-            layer.enqueue(buffer)
+        DispatchQueue.main.async { [weak self] in
+            self?.stateLock.lock()
+            let layerToEnqueue = self?.displayLayer
+            self?.stateLock.unlock()
+            layerToEnqueue?.enqueue(buffer)
         }
     }
 
-    /// 生成录音状态画面
-    private func generateRecordingImage(isFinal: Bool) -> UIImage {
+    /// 生成录音状态画面 (纯函数,线程安全)
+    private func generateRecordingImage(isFinal: Bool, liveText: String, startTime: Date?) -> UIImage {
         let size = CGSize(width: 640, height: 360)
         let renderer = UIGraphicsImageRenderer(size: size)
 
@@ -218,7 +258,7 @@ class PiPManager: NSObject, AVPictureInPictureSampleBufferPlaybackDelegate, AVPi
 
                 // 录音时长
                 var duration = ""
-                if let start = recordingStartTime {
+                if let start = startTime {
                     let elapsed = Int(Date().timeIntervalSince(start))
                     let mins = elapsed / 60
                     let secs = elapsed % 60
@@ -364,14 +404,21 @@ class PiPManager: NSObject, AVPictureInPictureSampleBufferPlaybackDelegate, AVPi
 
     func cleanup() {
         stopFrameTimer()
+
+        stateLock.lock()
         recordingStartTime = nil
-        DispatchQueue.main.async { [weak self] in
-            self?.displayLayer?.removeFromSuperlayer()
-            self?.displayLayer = nil
-        }
+        liveText = ""
+        isSetupComplete = false
+        let layerToRemove = displayLayer
         pipController = nil
         hostView = nil
-        isSetupComplete = false
+        displayLayer = nil
+        stateLock.unlock()
+
+        // 在主线程移除 layer
+        DispatchQueue.main.async {
+            layerToRemove?.removeFromSuperlayer()
+        }
     }
 
     // MARK: - AVPictureInPictureSampleBufferPlaybackDelegate
@@ -380,20 +427,17 @@ class PiPManager: NSObject, AVPictureInPictureSampleBufferPlaybackDelegate, AVPi
         _ pictureInPictureController: AVPictureInPictureController,
         setPlaying playing: Bool
     ) {
-        // 不需要控制播放/暂停
     }
 
     @objc func pictureInPictureControllerTimeRangeForPlayback(
         _ pictureInPictureController: AVPictureInPictureController
     ) -> CMTimeRange {
-        // 返回从0开始的无限时长,让 PiP 持续保持活跃
         return CMTimeRange(start: .zero, duration: .positiveInfinity)
     }
 
     @objc func pictureInPictureControllerIsPlaybackPaused(
         _ pictureInPictureController: AVPictureInPictureController
     ) -> Bool {
-        // 永远不在暂停状态,保持 PiP 活跃
         return false
     }
 
@@ -401,7 +445,6 @@ class PiPManager: NSObject, AVPictureInPictureSampleBufferPlaybackDelegate, AVPi
         _ pictureInPictureController: AVPictureInPictureController,
         didTransitionToRenderSize newRenderSize: CMVideoDimensions
     ) {
-        // 渲染尺寸变化时重新推送画面
         pushFrame()
     }
 
@@ -434,7 +477,6 @@ class PiPManager: NSObject, AVPictureInPictureSampleBufferPlaybackDelegate, AVPi
     ) {
         print("[PiP] Failed to start: \(error.localizedDescription)")
         print("[PiP] Error code: \((error as NSError).code)")
-        print("[PiP] Will retry when app goes to background (auto-start)")
     }
 
     func pictureInPictureControllerWillStopPictureInPicture(
@@ -454,7 +496,6 @@ class PiPManager: NSObject, AVPictureInPictureSampleBufferPlaybackDelegate, AVPi
         _ pictureInPictureController: AVPictureInPictureController,
         restoreUserInterfaceForPictureInPictureStopWithCompletionHandler completionHandler: @escaping (Bool) -> Void
     ) {
-        // 用户点击了 PiP 的还原按钮,回到全屏 App
         NotificationCenter.default.post(name: .pipDidRestore, object: nil)
         completionHandler(true)
     }

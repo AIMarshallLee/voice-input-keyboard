@@ -25,6 +25,23 @@ jobs:
       - name: Generate Xcode Project
         run: xcodegen generate
 
+      # ---- 运行单元测试 ----
+      - name: Run Unit Tests
+        run: |
+          xcodebuild test \
+            -project VoType.xcodeproj \
+            -scheme VoTypeTests \
+            -destination 'platform=iOS Simulator,name=iPhone 16,OS=latest' \
+            CODE_SIGNING_ALLOWED=NO \
+            -derivedDataPath ./test_build 2>&1 | tee test_output.log
+
+          # 检查测试结果
+          if grep -q "Test Suite.*failed" test_output.log; then
+            echo "❌ 测试失败!"
+            exit 1
+          fi
+          echo "✅ 所有测试通过"
+
       # ---- 检查是否有签名 secrets ----
       - name: Check Signing Secrets
         id: check_secrets
