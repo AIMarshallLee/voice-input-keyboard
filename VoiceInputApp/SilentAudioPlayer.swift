@@ -137,9 +137,12 @@ class SilentAudioPlayer {
         data.append("data".data(using: .ascii)!)
         appendUInt32(&data, UInt32(dataSize))
 
-        // 生成极低振幅噪声 (振幅 1，范围 -1 到 1，16bit 满量程是 -32768~32767)
+        // 生成低振幅噪声 (振幅 500，满量程 32767 的约 1.5%)
+        // volume=0.03 → 实际播放音量约满量程的 0.045%，人耳几乎听不见
+        // 但 iOS 不会判定为静音，不会暂停播放器
+        // 之前振幅只有 1，iOS 检测到低能量后暂停 player → app 被挂起
         for _ in 0..<numSamples {
-            let noise = Int16.random(in: -1...1)
+            let noise = Int16.random(in: -500...500)
             appendUInt16(&data, UInt16(bitPattern: noise))
         }
 

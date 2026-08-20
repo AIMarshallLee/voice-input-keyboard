@@ -446,7 +446,7 @@ class KeyboardViewController: UIInputViewController {
 
         // ★ 总是先走 Darwin 通知,不检查心跳!
         // 后台保活中: 主 App 几百毫秒内响应 → 不跳转
-        // 主 App 不在保活中: 5s 超时 → 降级 URL Scheme
+        // 主 App 不在保活中: 8s 超时 → 降级 URL Scheme
         print("[KB] Sending Darwin notification (always Path A first)")
         DarwinBridge.postNotification(DarwinNotificationName.requestStartDictation)
 
@@ -459,15 +459,15 @@ class KeyboardViewController: UIInputViewController {
         micButton.setImage(UIImage(systemName: "waveform", withConfiguration: waveConfig), for: .normal)
         micButton.backgroundColor = UIColor.systemRed
 
-        // 5s 超时降级: 主 App 没在后台保活中，需要 URL Scheme 启动
-        // 给 Darwin 通知足够时间传递 + 主 App 从挂起状态恢复
-        // Build 28: 从 2.5s 增加到 5s，减少误触发 URL Scheme 跳转
+        // 8s 超时降级: 主 App 没在后台保活中，需要 URL Scheme 启动
+        // Build 30: 从 5s 增加到 8s，给被挂起的 App 更多恢复时间
+        // Darwin 通知唤醒挂起的 App 可能需要几秒
         darwinFallbackTimer = Timer.scheduledTimer(
-            withTimeInterval: 5.0,
+            withTimeInterval: 8.0,
             repeats: false
         ) { [weak self] _ in
             guard let self = self, self.isWaitingForResult else { return }
-            print("[KB] No Darwin response in 5s, falling back to URL Scheme")
+            print("[KB] No Darwin response in 8s, falling back to URL Scheme")
             self.launchViaURL(sessionId: sessionId)
         }
     }

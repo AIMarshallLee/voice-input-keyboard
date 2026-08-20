@@ -402,16 +402,19 @@ class BackgroundDictationManager: ObservableObject {
     }
 
     private func finishRecording() {
-        // ★ 立即恢复，不要 2 秒延迟！
-        // 延迟期间没有音频活动，iOS 会挂起 App
+        // ★ 立即恢复，不要延迟！
         state = .idle
         cleanupAudio()
 
         // 重置 audio session 为后台保活模式
         activateBackgroundAudioSession()
-        silentPlayer.resume()
 
-        print("[BGDictation] Finished, back to standby immediately")
+        // ★ 完全重启 silentPlayer，而不是 resume
+        // 录音期间 player 可能被系统暂停，resume 不够
+        silentPlayer.stop()
+        silentPlayer.start()
+
+        print("[BGDictation] Finished, silent player restarted, back to standby")
     }
 
     // MARK: - 静音自动停止
