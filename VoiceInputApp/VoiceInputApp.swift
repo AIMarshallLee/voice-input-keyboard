@@ -38,22 +38,14 @@ struct VoiceInputApp: App {
                     DictationView(url: coordinator.dictationURL)
                 }
                 .onOpenURL { url in
-                    // Path B: URL Scheme 降级路径 (仅当 BackgroundDictationManager 未启用时)
+                    // ★ Build 33: 永远显示 DictationView！
+                    // 之前: isPipStandbyEnabled=true 时重定向到 BackgroundDictationManager
+                    //       后台 SFSpeechRecognizer 必定失败 (Apple 不支持后台语音识别)
+                    // 现在: 永远走前台 DictationView，前台识别可靠
                     if url.scheme == DictationConstants.urlScheme {
-                        if bgDictation.isPipStandbyEnabled {
-                            // PiP保活已开启,不应该走 URL Scheme
-                            // 但如果 Darwin 通知没送达,键盘会降级到 URL
-                            // 这种情况下让 BackgroundDictationManager 处理
-                            print("[App] URL Scheme received but standby enabled - redirecting to BG manager")
-                            if DarwinBridge.readDictationSettings() != nil {
-                                // 通知 BG manager 处理
-                                DarwinBridge.postNotification(DarwinNotificationName.requestStartDictation)
-                            }
-                        } else {
-                            // PiP保活未开启,走传统 DictationView
-                            coordinator.dictationURL = url
-                            coordinator.showDictation = true
-                        }
+                        print("[App] URL Scheme received → showing DictationView (foreground recognition)")
+                        coordinator.dictationURL = url
+                        coordinator.showDictation = true
                     }
                 }
         }

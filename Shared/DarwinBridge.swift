@@ -31,6 +31,8 @@ enum DarwinNotificationName {
     static let transcriptionReady = "com.daseanle.votype.transcriptionReady"
     /// 主 App -> 键盘:出错
     static let transcriptionError = "com.daseanle.votype.transcriptionError"
+    /// 主 App -> 键盘:后台识别失败,降级到前台 URL Scheme
+    static let dictationFailed = "com.daseanle.votype.dictationFailed"
     /// 主 App -> 键盘:心跳 (每 0.5s 发一次,表示主 App 存活)
     static let heartbeat = "com.daseanle.votype.heartbeat"
 }

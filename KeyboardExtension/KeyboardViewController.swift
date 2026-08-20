@@ -31,6 +31,7 @@ class KeyboardViewController: UIInputViewController {
     private var transcriptionErrorObserver: DarwinNotificationObserver?
     private var dictationStartedObserver: DarwinNotificationObserver?
     private var dictationStoppedObserver: DarwinNotificationObserver?
+    private var dictationFailedObserver: DarwinNotificationObserver?
 
     // MARK: - 通信状态
     private var isWaitingForResult = false
@@ -101,6 +102,13 @@ class KeyboardViewController: UIInputViewController {
             name: DarwinNotificationName.dictationStopped
         ) {
             print("[KB] Received dictationStopped")
+        }
+
+        dictationFailedObserver = DarwinNotificationObserver(
+            name: DarwinNotificationName.dictationFailed
+        ) { [weak self] in
+            print("[KB] Received dictationFailed → falling back to URL Scheme")
+            self?.onDictationFailed()
         }
     }
 
@@ -415,11 +423,11 @@ class KeyboardViewController: UIInputViewController {
 
     /// 无跳转触发 (Typeless / 微信输入法同款方案):
     /// 1. 总是先发 Darwin 通知给主 App (不切 App!)
-    /// 2. 主 App 在后台保活中 → 几百毫秒内响应 dictationStarted → 不跳转
-    /// 3. 主 App 不在保活中 → 4s 超时降级到 URL Scheme (首次使用)
-    ///
-    /// 之前的问题: 先检查心跳,但键盘重启后心跳丢失,导致误判主 App 不存活
-    /// 现在: 不依赖心跳,直接发通知,让主 App 自己响应
+    /// 2. 主 App 在后台保活中 → 立即响应 dictationStarted → 不跳转
+    /// 3. 主 App 尝试后台识别:
+    ///    a) 识别成功 → transcriptionReady → 插入文字，全程不跳转！
+    ///    b) 识别失败 → dictationFailed → 立即降级 URL Scheme → 前台识别
+    /// 4. 主 App 不在保活中 → 1.5s 超时降级到 URL Scheme (首次使用)
     private func launchDictation() {
         guard hasFullAccess else {
             liveTextLabel.text = "请到设置→键盘→VoType→开启「允许完全访问」"
@@ -446,7 +454,7 @@ class KeyboardViewController: UIInputViewController {
 
         // ★ 总是先走 Darwin 通知,不检查心跳!
         // 后台保活中: 主 App 几百毫秒内响应 → 不跳转
-        // 主 App 不在保活中: 4s 超时 → 降级 URL Scheme
+        // 主 App 不在保活中: 1.5s 超时 → 降级 URL Scheme
         print("[KB] Sending Darwin notification (always Path A first)")
         DarwinBridge.postNotification(DarwinNotificationName.requestStartDictation)
 
@@ -459,16 +467,15 @@ class KeyboardViewController: UIInputViewController {
         micButton.setImage(UIImage(systemName: "waveform", withConfiguration: waveConfig), for: .normal)
         micButton.backgroundColor = UIColor.systemRed
 
-        // 4s 超时降级: 主 App 没在后台保活中，需要 URL Scheme 启动
-        // Build 32: 从 8s 缩短到 4s
-        // 主 App 在保活中 → 几百毫秒内响应 dictationStarted
-        // 主 App 不在保活中 → 4s 足够判断，快速降级到 URL Scheme
+        // 1.5s 超时: 主 App 不在后台保活中 (首次使用/被系统杀掉)
+        // 收到 dictationStarted 会取消此 timer
+        // 收到 dictationFailed 也会取消此 timer 并降级
         darwinFallbackTimer = Timer.scheduledTimer(
-            withTimeInterval: 4.0,
+            withTimeInterval: 1.5,
             repeats: false
         ) { [weak self] _ in
             guard let self = self, self.isWaitingForResult else { return }
-            print("[KB] No Darwin response in 4s, falling back to URL Scheme")
+            print("[KB] No Darwin response in 1.5s, falling back to URL Scheme")
             self.launchViaURL(sessionId: sessionId)
         }
     }
@@ -536,6 +543,17 @@ class KeyboardViewController: UIInputViewController {
             self.micButton.setImage(UIImage(systemName: "waveform", withConfiguration: waveConfig), for: .normal)
             self.micButton.backgroundColor = UIColor.systemRed
         }
+    }
+
+    /// 主 App 后台识别失败 → 立即降级到 URL Scheme (前台识别)
+    private func onDictationFailed() {
+        guard isWaitingForResult, let sessionId = currentSessionId else { return }
+        print("[KB] Background recognition failed, launching URL Scheme fallback")
+        isWaitingForResult = false
+        darwinFallbackTimer?.invalidate()
+        darwinFallbackTimer = nil
+        liveTextLabel.text = "正在启动语音输入..."
+        launchViaURL(sessionId: sessionId)
     }
 
     /// 恢复麦克风按钮到默认状态 (录音结束/结果插入后调用)

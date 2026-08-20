@@ -243,43 +243,65 @@ class BackgroundDictationManager: ObservableObject {
     // MARK: - 处理听写请求
 
     private func handleDictationRequest() {
-        guard state != .recording else {
-            print("[BGDictation] Already recording, ignoring")
-            return
-        }
+        // ★ Build 33: 尝试后台识别，失败则快速降级到前台
+        // 1. 立即发 dictationStarted → 键盘不跳转
+        // 2. 尝试后台 SFSpeechRecognizer
+        // 3. 3s 内无结果 → 发 dictationFailed → 键盘降级 URL Scheme → 前台识别
+        // 4. 识别成功 → 发 transcriptionReady → 不跳转！
 
-        // ★ 第一时间通知键盘:已收到请求！取消超时 timer，不跳转！
-        // 放在最前面，即使后续步骤失败也不会跳转
+        // 立即通知键盘：开始听写（取消键盘超时）
         DarwinBridge.postNotification(DarwinNotificationName.dictationStarted)
         print("[BGDictation] dictationStarted sent immediately")
 
-        // 如果保活没启用，自动启用（但不启动 silentPlayer，因为马上要录音）
-        if !isPipStandbyEnabled {
-            print("[BGDictation] Auto-enabling standby (no silentPlayer yet, recording imminent)")
-            isPipStandbyEnabled = true
-            UserDefaults.standard.set(true, forKey: pipStandbyKey)
-            activateBackgroundAudioSession()
-            // ★ 不启动 silentPlayer！录音本身会保持 audio session active
-            // silentPlayer 会在 finishRecording() 中启动
-            startHeartbeat()
-        }
-
-        // 确保 audio session 活着
-        try? AVAudioSession.sharedInstance().setActive(true, options: .notifyOthersOnDeactivation)
-
-        // 从命名剪贴板读取设置
+        // 从剪贴板读取设置
         guard let settings = DarwinBridge.readDictationSettings() else {
-            print("[BGDictation] ERROR: Failed to read settings from clipboard")
-            DarwinBridge.writeError("设置读取失败", session: UUID().uuidString)
+            print("[BGDictation] No settings in clipboard, sending dictationFailed")
+            cleanupForFallback()
             return
         }
 
         currentSessionId = settings.session
         currentSettings = settings
-        print("[BGDictation] Starting recording, session=\(currentSessionId.prefix(8)), lang=\(settings.language)")
 
-        // 开始录音
+        print("[BGDictation] Starting background recognition, session=\(settings.session.prefix(8))")
+
+        // 开始录音（内部会停止 SilentAudioPlayer）
         startRecording(settings: settings)
+
+        // 3s 识别超时：如果 3s 内没有识别到任何文字，认为后台识别失败
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
+            guard let self = self else { return }
+            guard self.state == .recording, self.recognizedText.isEmpty else { return }
+            print("[BGDictation] 3s timeout - no recognition result, falling back to foreground")
+            self.cleanupForFallback()
+        }
+    }
+
+    /// 后台识别失败时清理并发送 dictationFailed
+    /// 键盘收到后立即降级到 URL Scheme → 前台 DictationView 识别
+    private func cleanupForFallback() {
+        print("[BGDictation] Cleaning up for foreground fallback")
+
+        // 停止录音相关资源
+        silenceTimer?.cancel()
+        silenceTimer = nil
+        audioEngine?.stop()
+        audioEngine?.inputNode.removeTap(onBus: 0)
+        recognitionRequest?.endAudio()
+        recognitionTask?.cancel()
+
+        state = .idle
+        cleanupAudio()
+
+        // 重置 audio session 为后台保活模式
+        activateBackgroundAudioSession()
+        silentPlayer.stop()
+        silentPlayer.start()
+
+        // 通知键盘：后台识别失败，降级到前台
+        DarwinBridge.postNotification(DarwinNotificationName.dictationFailed)
+
+        print("[BGDictation] dictationFailed sent, keyboard will fall back to URL Scheme")
     }
 
     // MARK: - 录音
@@ -297,10 +319,8 @@ class BackgroundDictationManager: ObservableObject {
         speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: settings.language))
 
         guard let recognizer = speechRecognizer, recognizer.isAvailable else {
-            print("[BGDictation] ERROR: Speech recognizer not available")
-            DarwinBridge.writeError("语音识别不可用,请检查网络", session: currentSessionId)
-            state = .idle
-            finishRecording()
+            print("[BGDictation] Speech recognizer not available, falling back to foreground")
+            cleanupForFallback()
             return
         }
 
@@ -320,10 +340,8 @@ class BackgroundDictationManager: ObservableObject {
 
             recognitionRequest = SFSpeechAudioBufferRecognitionRequest()
             guard let req = recognitionRequest else {
-                print("[BGDictation] ERROR: Failed to create recognition request")
-                DarwinBridge.writeError("创建识别请求失败", session: currentSessionId)
-                state = .idle
-                finishRecording()
+                print("[BGDictation] Failed to create recognition request, falling back")
+                cleanupForFallback()
                 return
             }
             req.shouldReportPartialResults = true
@@ -340,7 +358,13 @@ class BackgroundDictationManager: ObservableObject {
                     }
                     if let error = error as? NSError, error.code != 203 {
                         print("[BGDictation] Recognition error: \(error.code) - \(error.localizedDescription)")
-                        self.stopRecording()
+                        if self.recognizedText.isEmpty {
+                            // 没识别到文字，降级到前台
+                            self.cleanupForFallback()
+                        } else {
+                            // 有部分文字，发送已有结果
+                            self.stopRecording()
+                        }
                     }
                     if result?.isFinal == true {
                         print("[BGDictation] Recognition final")
@@ -354,10 +378,8 @@ class BackgroundDictationManager: ObservableObject {
 
             // ★ 安全检查：音频格式必须有效
             guard recordingFormat.sampleRate > 0 else {
-                print("[BGDictation] ERROR: Invalid audio format (sampleRate=0)")
-                DarwinBridge.writeError("音频格式错误", session: currentSessionId)
-                state = .idle
-                finishRecording()
+                print("[BGDictation] Invalid audio format (sampleRate=0), falling back")
+                cleanupForFallback()
                 return
             }
 
@@ -375,10 +397,8 @@ class BackgroundDictationManager: ObservableObject {
             print("[BGDictation] Recording started, format: \(recordingFormat.sampleRate)Hz, \(recordingFormat.channelCount)ch")
 
         } catch {
-            print("[BGDictation] Failed to start recording: \(error.localizedDescription)")
-            DarwinBridge.writeError("启动录音失败", session: currentSessionId)
-            state = .idle
-            finishRecording()
+            print("[BGDictation] Failed to start recording: \(error.localizedDescription), falling back")
+            cleanupForFallback()
         }
     }
 

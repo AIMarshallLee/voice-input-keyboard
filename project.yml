@@ -30,7 +30,7 @@ targets:
           - en
           - zh-Hans
         CFBundleShortVersionString: "1.0"
-        CFBundleVersion: "32"
+        CFBundleVersion: "33"
         LSRequiresIPhoneOS: true
         UIBackgroundModes:
           - audio
@@ -56,7 +56,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.daseanle.votype
         MARKETING_VERSION: "1.0"
-        CURRENT_PROJECT_VERSION: "32"
+        CURRENT_PROJECT_VERSION: "33"
         SWIFT_VERSION: "5.9"
         IPHONEOS_DEPLOYMENT_TARGET: "16.0"
         TARGETED_DEVICE_FAMILY: "1,2"
@@ -95,7 +95,7 @@ targets:
           - en
           - zh-Hans
         CFBundleShortVersionString: "1.0"
-        CFBundleVersion: "32"
+        CFBundleVersion: "33"
         NSMicrophoneUsageDescription: VoType needs microphone access for voice-to-text input
         NSSpeechRecognitionUsageDescription: VoType needs speech recognition to convert your voice to text
         NSExtension:
@@ -110,7 +110,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.daseanle.votype.keyboard
         MARKETING_VERSION: "1.0"
-        CURRENT_PROJECT_VERSION: "32"
+        CURRENT_PROJECT_VERSION: "33"
         SWIFT_VERSION: "5.9"
         IPHONEOS_DEPLOYMENT_TARGET: "16.0"
         GENERATE_INFOPLIST_FILE: NO
