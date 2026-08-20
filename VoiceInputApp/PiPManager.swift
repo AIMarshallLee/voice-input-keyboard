@@ -22,6 +22,14 @@ class PiPManager: NSObject, AVPictureInPictureSampleBufferPlaybackDelegate, AVPi
     private var liveText: String = ""
     private var isSetupComplete = false
 
+    // PiP 显示状态
+    enum DisplayState {
+        case standby       // 待命中 (PiP保活)
+        case recording     // 正在录音
+        case completed     // 完成 (短暂显示后回到 standby)
+    }
+    private var displayState: DisplayState = .standby
+
     // 用于线程安全的锁
     private let stateLock = NSLock()
 
@@ -41,6 +49,7 @@ class PiPManager: NSObject, AVPictureInPictureSampleBufferPlaybackDelegate, AVPi
 
     /// 在指定 view 上设置 PiP 显示层
     /// 必须在 view 已添加到 window 后调用
+    /// 幂等:如果已 setup 过,只把 layer 重新挂载到新 view
     func setup(in view: UIView) {
         guard view.window != nil else {
             // view 还没挂到 window 上,延迟重试
@@ -50,13 +59,22 @@ class PiPManager: NSObject, AVPictureInPictureSampleBufferPlaybackDelegate, AVPi
             return
         }
 
-        // 在锁内完成所有状态设置
         stateLock.lock()
 
-        hostView = view
+        // 幂等:已 setup 过,只把现有 layer 挂到新 view
+        if isSetupComplete, let existingLayer = displayLayer {
+            existingLayer.removeFromSuperlayer()
+            existingLayer.frame = view.bounds
+            view.layer.insertSublayer(existingLayer, at: 0)
+            hostView = view
+            stateLock.unlock()
+            print("[PiP] Re-hosted existing layer to new view")
+            pushFrame()
+            return
+        }
 
-        // 移除旧 layer
-        displayLayer?.removeFromSuperlayer()
+        // 首次 setup
+        hostView = view
 
         let layer = AVSampleBufferDisplayLayer()
         layer.frame = view.bounds
@@ -64,13 +82,11 @@ class PiPManager: NSObject, AVPictureInPictureSampleBufferPlaybackDelegate, AVPi
         view.layer.insertSublayer(layer, at: 0)
         displayLayer = layer
 
-        // 创建 PiP 控制器
         let source = AVPictureInPictureController.ContentSource(
             sampleBufferDisplayLayer: layer,
             playbackDelegate: self
         )
         let controller = AVPictureInPictureController(contentSource: source)
-        // 关键:设置为 true 后,当 App 进入后台时 PiP 会自动启动
         controller.canStartPictureInPictureAutomaticallyFromInline = true
         controller.delegate = self
         pipController = controller
@@ -80,10 +96,43 @@ class PiPManager: NSObject, AVPictureInPictureSampleBufferPlaybackDelegate, AVPi
 
         stateLock.unlock()
 
-        // 在锁外推送初始帧 (pushFrame 内部会自己加锁)
         for _ in 0..<3 {
             pushFrame()
         }
+    }
+
+    // MARK: - 状态切换 (供 BackgroundDictationManager 调用)
+
+    /// 设置为待命状态
+    func setStandbyMode() {
+        stateLock.lock()
+        displayState = .standby
+        recordingStartTime = nil
+        liveText = ""
+        stateLock.unlock()
+        startFrameTimer()
+        pushFrame()
+        print("[PiP] State -> standby")
+    }
+
+    /// 设置为录音状态
+    func setRecordingMode() {
+        stateLock.lock()
+        displayState = .recording
+        recordingStartTime = Date()
+        liveText = ""
+        stateLock.unlock()
+        print("[PiP] State -> recording")
+    }
+
+    /// 设置为完成状态
+    func setCompletedMode(text: String) {
+        stateLock.lock()
+        displayState = .completed
+        liveText = text
+        stateLock.unlock()
+        pushFrame()
+        print("[PiP] State -> completed")
     }
 
     // MARK: - 开始 / 停止 PiP
@@ -209,7 +258,7 @@ class PiPManager: NSObject, AVPictureInPictureSampleBufferPlaybackDelegate, AVPi
         }
     }
 
-    /// 生成录音状态画面 (纯函数,线程安全)
+    /// 生成画面 (根据 displayState 选择不同画面)
     private func generateRecordingImage(isFinal: Bool, liveText: String, startTime: Date?) -> UIImage {
         let size = CGSize(width: 640, height: 360)
         let renderer = UIGraphicsImageRenderer(size: size)
@@ -223,100 +272,163 @@ class PiPManager: NSObject, AVPictureInPictureSampleBufferPlaybackDelegate, AVPi
             let gradient = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: colors as CFArray, locations: [0, 1])!
             ctx.cgContext.drawLinearGradient(gradient, start: .zero, end: CGPoint(x: 0, y: size.height), options: [])
 
-            if isFinal {
-                // 完成状态
-                let checkConfig = UIImage.SymbolConfiguration(pointSize: 80, weight: .bold)
-                let checkImage = UIImage(systemName: "checkmark.circle.fill", withConfiguration: checkConfig)
-                checkImage?.withTintColor(.systemGreen).draw(in: CGRect(x: 280, y: 100, width: 80, height: 80))
+            let currentDisplayState: DisplayState = {
+                stateLock.lock()
+                defer { stateLock.unlock() }
+                return displayState
+            }()
 
-                let attrs: [NSAttributedString.Key: Any] = [
-                    .font: UIFont.systemFont(ofSize: 28, weight: .semibold),
-                    .foregroundColor: UIColor.white
-                ]
-                let text = "识别完成"
-                let textSize = (text as NSString).size(withAttributes: attrs)
-                (text as NSString).draw(
-                    at: CGPoint(x: (size.width - textSize.width) / 2, y: 200),
-                    withAttributes: attrs
-                )
-
-                let subAttrs: [NSAttributedString.Key: Any] = [
-                    .font: UIFont.systemFont(ofSize: 18),
-                    .foregroundColor: UIColor.lightGray
-                ]
-                let subText = "请返回键盘,文字已就绪"
-                let subSize = (subText as NSString).size(withAttributes: subAttrs)
-                (subText as NSString).draw(
-                    at: CGPoint(x: (size.width - subSize.width) / 2, y: 250),
-                    withAttributes: subAttrs
-                )
-            } else {
-                // 录音中状态
-                let micConfig = UIImage.SymbolConfiguration(pointSize: 60, weight: .bold)
-                let micImage = UIImage(systemName: "mic.fill", withConfiguration: micConfig)
-                micImage?.withTintColor(.systemRed).draw(in: CGRect(x: 290, y: 60, width: 60, height: 60))
-
-                // 录音时长
-                var duration = ""
-                if let start = startTime {
-                    let elapsed = Int(Date().timeIntervalSince(start))
-                    let mins = elapsed / 60
-                    let secs = elapsed % 60
-                    duration = String(format: "%02d:%02d", mins, secs)
-                }
-
-                let attrs: [NSAttributedString.Key: Any] = [
-                    .font: UIFont.monospacedDigitSystemFont(ofSize: 36, weight: .bold),
-                    .foregroundColor: UIColor.white
-                ]
-                let textSize = (duration as NSString).size(withAttributes: attrs)
-                (duration as NSString).draw(
-                    at: CGPoint(x: (size.width - textSize.width) / 2, y: 140),
-                    withAttributes: attrs
-                )
-
-                // 副标题
-                let subAttrs: [NSAttributedString.Key: Any] = [
-                    .font: UIFont.systemFont(ofSize: 20),
-                    .foregroundColor: UIColor.lightGray
-                ]
-                let subText = "正在聆听..."
-                let subSize = (subText as NSString).size(withAttributes: subAttrs)
-                (subText as NSString).draw(
-                    at: CGPoint(x: (size.width - subSize.width) / 2, y: 200),
-                    withAttributes: subAttrs
-                )
-
-                // 实时识别文本
-                if !liveText.isEmpty {
-                    let textAttrs: [NSAttributedString.Key: Any] = [
-                        .font: UIFont.systemFont(ofSize: 18),
-                        .foregroundColor: UIColor.white
-                    ]
-                    let displayText = String(liveText.prefix(60))
-                    let rect = CGRect(x: 40, y: 235, width: size.width - 80, height: 60)
-                    (displayText as NSString).draw(in: rect, withAttributes: textAttrs)
-                }
-
-                // 波形动画
-                let wavePath = UIBezierPath()
-                let waveY: CGFloat = 280
-                let waveWidth: CGFloat = 400
-                let waveX: CGFloat = (size.width - waveWidth) / 2
-                let phase = Date().timeIntervalSince1970 * 3
-
-                wavePath.move(to: CGPoint(x: waveX, y: waveY))
-                for i in 0...Int(waveWidth) {
-                    let x = waveX + CGFloat(i)
-                    let relX = CGFloat(i) / waveWidth
-                    let amp = 25 * sin(relX * .pi * 6 + phase) * (0.5 + 0.5 * sin(phase + relX * .pi * 2))
-                    wavePath.addLine(to: CGPoint(x: x, y: waveY + amp))
-                }
-                UIColor.systemBlue.setStroke()
-                wavePath.lineWidth = 3
-                wavePath.lineCapStyle = .round
-                wavePath.stroke()
+            switch currentDisplayState {
+            case .standby:
+                drawStandbyImage(ctx: ctx, size: size)
+            case .recording:
+                drawRecordingImage(ctx: ctx, size: size, liveText: liveText, startTime: startTime)
+            case .completed:
+                drawCompletedImage(ctx: ctx, size: size, liveText: liveText)
             }
+        }
+    }
+
+    // MARK: - 待命画面
+
+    private func drawStandbyImage(ctx: UIGraphicsImageRendererContext, size: CGSize) {
+        // 麦克风图标 (蓝色,表示待命)
+        let micConfig = UIImage.SymbolConfiguration(pointSize: 50, weight: .medium)
+        let micImage = UIImage(systemName: "mic.circle", withConfiguration: micConfig)
+        micImage?.withTintColor(.systemBlue).draw(in: CGRect(x: 295, y: 70, width: 50, height: 50))
+
+        // "VoType 待命中"
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: UIFont.systemFont(ofSize: 24, weight: .semibold),
+            .foregroundColor: UIColor.white
+        ]
+        let text = "VoType 待命中"
+        let textSize = (text as NSString).size(withAttributes: attrs)
+        (text as NSString).draw(
+            at: CGPoint(x: (size.width - textSize.width) / 2, y: 140),
+            withAttributes: attrs
+        )
+
+        // 副标题
+        let subAttrs: [NSAttributedString.Key: Any] = [
+            .font: UIFont.systemFont(ofSize: 16),
+            .foregroundColor: UIColor.lightGray
+        ]
+        let subText = "在键盘上点麦克风即可说话"
+        let subSize = (subText as NSString).size(withAttributes: subAttrs)
+        (subText as NSString).draw(
+            at: CGPoint(x: (size.width - subSize.width) / 2, y: 180),
+            withAttributes: subAttrs
+        )
+
+        // 脉冲圆环动画
+        let phase = Date().timeIntervalSince1970 * 2
+        let alpha = 0.3 + 0.2 * (sin(phase) * 0.5 + 0.5)
+        let ringColor = UIColor.systemBlue.withAlphaComponent(alpha)
+        let ringPath = UIBezierPath(ovalIn: CGRect(x: 275, y: 50, width: 90, height: 90))
+        ringColor.setStroke()
+        ringPath.lineWidth = 3
+        ringPath.stroke()
+    }
+
+    // MARK: - 录音画面
+
+    private func drawRecordingImage(ctx: UIGraphicsImageRendererContext, size: CGSize, liveText: String, startTime: Date?) {
+        // 麦克风图标 (红色)
+        let micConfig = UIImage.SymbolConfiguration(pointSize: 60, weight: .bold)
+        let micImage = UIImage(systemName: "mic.fill", withConfiguration: micConfig)
+        micImage?.withTintColor(.systemRed).draw(in: CGRect(x: 290, y: 60, width: 60, height: 60))
+
+        // 录音时长
+        var duration = ""
+        if let start = startTime {
+            let elapsed = Int(Date().timeIntervalSince(start))
+            let mins = elapsed / 60
+            let secs = elapsed % 60
+            duration = String(format: "%02d:%02d", mins, secs)
+        }
+
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: UIFont.monospacedDigitSystemFont(ofSize: 36, weight: .bold),
+            .foregroundColor: UIColor.white
+        ]
+        let textSize = (duration as NSString).size(withAttributes: attrs)
+        (duration as NSString).draw(
+            at: CGPoint(x: (size.width - textSize.width) / 2, y: 140),
+            withAttributes: attrs
+        )
+
+        // 副标题
+        let subAttrs: [NSAttributedString.Key: Any] = [
+            .font: UIFont.systemFont(ofSize: 20),
+            .foregroundColor: UIColor.lightGray
+        ]
+        let subText = "正在聆听..."
+        let subSize = (subText as NSString).size(withAttributes: subAttrs)
+        (subText as NSString).draw(
+            at: CGPoint(x: (size.width - subSize.width) / 2, y: 200),
+            withAttributes: subAttrs
+        )
+
+        // 实时识别文本
+        if !liveText.isEmpty {
+            let textAttrs: [NSAttributedString.Key: Any] = [
+                .font: UIFont.systemFont(ofSize: 18),
+                .foregroundColor: UIColor.white
+            ]
+            let displayText = String(liveText.prefix(60))
+            let rect = CGRect(x: 40, y: 235, width: size.width - 80, height: 60)
+            (displayText as NSString).draw(in: rect, withAttributes: textAttrs)
+        }
+
+        // 波形动画
+        let wavePath = UIBezierPath()
+        let waveY: CGFloat = 280
+        let waveWidth: CGFloat = 400
+        let waveX: CGFloat = (size.width - waveWidth) / 2
+        let phase = Date().timeIntervalSince1970 * 3
+
+        wavePath.move(to: CGPoint(x: waveX, y: waveY))
+        for i in 0...Int(waveWidth) {
+            let x = waveX + CGFloat(i)
+            let relX = CGFloat(i) / waveWidth
+            let amp = 25 * sin(relX * .pi * 6 + phase) * (0.5 + 0.5 * sin(phase + relX * .pi * 2))
+            wavePath.addLine(to: CGPoint(x: x, y: waveY + amp))
+        }
+        UIColor.systemBlue.setStroke()
+        wavePath.lineWidth = 3
+        wavePath.lineCapStyle = .round
+        wavePath.stroke()
+    }
+
+    // MARK: - 完成画面
+
+    private func drawCompletedImage(ctx: UIGraphicsImageRendererContext, size: CGSize, liveText: String) {
+        // 完成图标
+        let checkConfig = UIImage.SymbolConfiguration(pointSize: 80, weight: .bold)
+        let checkImage = UIImage(systemName: "checkmark.circle.fill", withConfiguration: checkConfig)
+        checkImage?.withTintColor(.systemGreen).draw(in: CGRect(x: 280, y: 100, width: 80, height: 80))
+
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: UIFont.systemFont(ofSize: 28, weight: .semibold),
+            .foregroundColor: UIColor.white
+        ]
+        let text = "识别完成"
+        let textSize = (text as NSString).size(withAttributes: attrs)
+        (text as NSString).draw(
+            at: CGPoint(x: (size.width - textSize.width) / 2, y: 200),
+            withAttributes: attrs
+        )
+
+        // 显示识别结果预览
+        if !liveText.isEmpty {
+            let subAttrs: [NSAttributedString.Key: Any] = [
+                .font: UIFont.systemFont(ofSize: 16),
+                .foregroundColor: UIColor.lightGray
+            ]
+            let preview = String(liveText.prefix(40))
+            let rect = CGRect(x: 40, y: 250, width: size.width - 80, height: 40)
+            (preview as NSString).draw(in: rect, withAttributes: subAttrs)
         }
     }
 

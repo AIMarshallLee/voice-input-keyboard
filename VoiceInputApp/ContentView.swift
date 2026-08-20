@@ -34,10 +34,19 @@ struct ContentView: View {
     @State private var showBatchImport = false
     @State private var batchImportText = ""
 
+    // PiP 待命状态
+    @ObservedObject private var bgDictation = BackgroundDictationManager.shared
+
     private let sharedDefaults = UserDefaults.standard as UserDefaults?
 
     var body: some View {
-        NavigationView {
+        ZStack {
+            // PiP 容器层 (透明,在所有内容下方)
+            // 当 DictationView dismiss 后,PiP layer 会挂载到这里
+            PiPContainerView()
+                .ignoresSafeArea()
+
+            NavigationView {
             ScrollView {
                 VStack(spacing: 20) {
 
@@ -298,6 +307,52 @@ struct ContentView: View {
                         .cornerRadius(16)
                     }
 
+                    // PiP 待命状态 (Typeless/微信输入法核心功能)
+                    VStack(alignment: .leading, spacing: 14) {
+                        HStack {
+                            Text("PiP 后台待命").font(.headline)
+                            Spacer()
+                            if bgDictation.isPipStandbyEnabled {
+                                Image(systemName: "pip.fill")
+                                    .foregroundColor(.green)
+                            }
+                        }
+
+                        if bgDictation.isPipStandbyEnabled {
+                            HStack(spacing: 12) {
+                                Image(systemName: "pip.fill")
+                                    .font(.title2)
+                                    .foregroundColor(.green)
+
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("待命中")
+                                        .font(.subheadline.bold())
+                                        .foregroundColor(.green)
+                                    Text("App 在后台保活,键盘点麦克风直接录音,不切 App")
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+                                }
+                                Spacer()
+
+                                Button(role: .destructive) {
+                                    bgDictation.disablePipStandby()
+                                } label: {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .font(.title3)
+                                        .foregroundColor(.red)
+                                }
+                            }
+                            .padding(.vertical, 4)
+                        } else {
+                            Text("首次使用语音输入后,App 会自动进入 PiP 待命模式\n后续按麦克风不需要切换 App,和 Typeless / 微信输入法一样")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    .padding()
+                    .background(Color(.systemGray6))
+                    .cornerRadius(16)
+
                     // 使用说明
                     VStack(alignment: .leading, spacing: 12) {
                         Text("使用方法").font(.headline)
@@ -371,8 +426,9 @@ struct ContentView: View {
                     onSave: batchImportEntries
                 )
             }
+            }
+            .navigationViewStyle(.stack)
         }
-        .navigationViewStyle(.stack)
     }
 
     // MARK: - 设置

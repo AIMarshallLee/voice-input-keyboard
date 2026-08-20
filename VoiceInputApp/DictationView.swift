@@ -8,17 +8,32 @@ import AVKit
 /// 桥接 UIKit view 给 PiPManager
 /// AVSampleBufferDisplayLayer 必须挂载在一个有 window 的 UIView 上
 struct PiPContainerView: UIViewRepresentable {
+
+    /// 当前持有的 view,供 rehost() 使用
+    static weak var currentView: UIView?
+
     func makeUIView(context: Context) -> UIView {
         let view = UIView()
-        view.backgroundColor = .black
-        // setup 会在 view 有 window 后自动执行 (PiPManager 内部处理了重试)
+        view.backgroundColor = .clear
+        PiPContainerView.currentView = view
         DispatchQueue.main.async {
             PiPManager.shared.setup(in: view)
         }
         return view
     }
 
-    func updateUIView(_ uiView: UIView, context: Context) {}
+    func updateUIView(_ uiView: UIView, context: Context) {
+        PiPContainerView.currentView = uiView
+    }
+
+    /// 把 PiP layer 重新挂载到 ContentView 的 view
+    /// DictationView dismiss 后调用,确保 PiP 不丢失
+    static func rehost() {
+        guard let view = currentView else { return }
+        DispatchQueue.main.async {
+            PiPManager.shared.setup(in: view)
+        }
+    }
 }
 
 // MARK: - ViewModel
@@ -202,7 +217,6 @@ class DictationViewModel: ObservableObject {
 
         silenceTimer?.invalidate()
         silenceTimer = nil
-        stopHeartbeat()
 
         audioEngine?.stop()
         audioEngine?.inputNode.removeTap(onBus: 0)
@@ -224,16 +238,43 @@ class DictationViewModel: ObservableObject {
         // 通知键盘:听写已停止
         DarwinBridge.postNotification(DarwinNotificationName.dictationStopped)
 
-        // 关键:先停 PiP,等 PiP 停止后再关闭 audio session
-        // 如果先关 audio session,App 会被系统杀掉 (因为 UIBackgroundModes: audio 靠 audio session 保活)
-        PiPManager.shared.stopPiP()
+        // ★ 核心:不停 PiP!转待命模式,保持 App 后台存活
+        // 这是 Typeless / 微信输入法的核心方案:
+        // 1. PiP 切换到"待命中"状态
+        // 2. 启动心跳(每 2s 发一次),让键盘知道主 App 存活
+        // 3. 启用 BackgroundDictationManager 处理后续 Path A 请求
+        // 4. 不关闭 audio session(保活必需)
+        // 5. Dismiss DictationView,但 App 通过 PiP 在后台保持存活
 
-        // 延迟 2 秒再关闭 audio session,确保 PiP 完全停止
+        PiPManager.shared.setCompletedMode(text: resultText)
+
+        // 2s 后切换到待命状态
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
-            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
-            print("[Dictation] Audio session deactivated after PiP stop")
-            _ = self
+            guard let self = self else { return }
+
+            // 停掉 ViewModel 自己的心跳,BG manager 会接管
+            self.stopHeartbeat()
+
+            // 启用后台待命
+            BackgroundDictationManager.shared.enablePipStandby()
+
+            // PiP 切到待命画面
+            PiPManager.shared.setStandbyMode()
+
+            // 清理录音资源但保留 audio session
+            self.cleanupAudioOnly()
         }
+
+        print("[Dictation] Recording stopped, transitioning to PiP standby mode")
+    }
+
+    /// 只清理录音资源,保留 audio session 和 PiP
+    private func cleanupAudioOnly() {
+        recognitionRequest = nil
+        recognitionTask = nil
+        audioEngine = nil
+        // 不调 AVAudioSession.setActive(false) - 保活需要 session 保持 active
+        print("[Dictation] Audio resources cleaned, session kept active for PiP standby")
     }
 
     // MARK: - 静音自动停止
@@ -358,12 +399,12 @@ struct DictationView: View {
                 // 底部操作按钮
                 VStack(spacing: 16) {
                     if viewModel.hasResult {
-                        Text("请返回键盘,文字已就绪")
+                        Text("文字已就绪,返回键盘即可\nPiP 已进入待命模式")
                             .font(.subheadline)
                             .foregroundColor(.blue)
+                            .multilineTextAlignment(.center)
 
                         Button("完成") {
-                            viewModel.cleanup()
                             dismiss()
                         }
                         .buttonStyle(.borderedProminent)
@@ -421,6 +462,14 @@ struct DictationView: View {
                 print("[Dictation] App going inactive (about to background)")
             }
         }
+        .onChange(of: viewModel.hasResult) { hasResult in
+            if hasResult {
+                // 录音完成后,4s 后自动 dismiss (2s 完成画面 + 2s 待命过渡)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) {
+                    dismiss()
+                }
+            }
+        }
         .onReceive(NotificationCenter.default.publisher(for: .pipDidRestore)) { _ in
             // 用户点击了 PiP 的还原按钮,回到全屏 App
         }
@@ -433,7 +482,9 @@ struct DictationView: View {
             print("[Dictation] PiP stopped notification received")
         }
         .onDisappear {
-            viewModel.cleanup()
+            // 不调 cleanup!PiP 需要保持存活
+            // 把 PiP layer 重新挂载到 ContentView 的 view 上
+            PiPContainerView.rehost()
         }
     }
 }
