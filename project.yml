@@ -30,7 +30,7 @@ targets:
           - en
           - zh-Hans
         CFBundleShortVersionString: "1.0"
-        CFBundleVersion: "14"
+        CFBundleVersion: "15"
         LSRequiresIPhoneOS: true
         UIBackgroundModes:
           - audio
@@ -61,7 +61,8 @@ targets:
         TARGETED_DEVICE_FAMILY: "1,2"
         GENERATE_INFOPLIST_FILE: NO
         CODE_SIGN_ENTITLEMENTS: VoiceInputApp/VoiceInputApp.entitlements
-        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: R765X25892
     dependencies:
       - target: KeyboardExtension
 
@@ -89,7 +90,7 @@ targets:
           - en
           - zh-Hans
         CFBundleShortVersionString: "1.0"
-        CFBundleVersion: "14"
+        CFBundleVersion: "15"
         NSMicrophoneUsageDescription: VoType needs microphone access for voice-to-text input
         NSSpeechRecognitionUsageDescription: VoType needs speech recognition to convert your voice to text
         NSExtension:
@@ -107,7 +108,8 @@ targets:
         IPHONEOS_DEPLOYMENT_TARGET: "16.0"
         GENERATE_INFOPLIST_FILE: NO
         CODE_SIGN_ENTITLEMENTS: KeyboardExtension/KeyboardExtension.entitlements
-        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: R765X25892
 
   # 单元测试:CI 自动运行,编译前验证代码逻辑
   VoTypeTests:
