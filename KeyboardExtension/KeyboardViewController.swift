@@ -37,6 +37,8 @@ class KeyboardViewController: UIInputViewController {
     private var isWaitingForResult = false
     private var currentSessionId: String?
     private var darwinFallbackTimer: Timer?
+    private var resultTimeoutTimer: Timer?
+    private var recoveredPendingSessionId: String?
 
     // 暂存启动时的设置,处理结果时使用
     private var pendingSelectedText: String?
@@ -53,6 +55,7 @@ class KeyboardViewController: UIInputViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        hasDictationKey = true
         setupUI()
         setupDarwinObservers()
     }
@@ -62,9 +65,7 @@ class KeyboardViewController: UIInputViewController {
         // 同步设置(用户可能在宿主 App 中修改了设置)
         updateTranslateButton()
         updateLangButton()
-        // 无条件检查剪贴板中是否有待处理结果
-        // (键盘扩展可能被系统杀掉后重启,内存状态丢失,但剪贴板数据还在)
-        checkAndProcessResult()
+        checkForPendingResult()
     }
 
     override func viewDidDisappear(_ animated: Bool) {
@@ -91,25 +92,29 @@ class KeyboardViewController: UIInputViewController {
             self?.processPendingResult()
         }
 
-        dictationStartedObserver = DarwinNotificationObserver(
-            name: DarwinNotificationName.dictationStarted
-        ) { [weak self] in
-            print("[KB] Received dictationStarted")
-            self?.onDictationStarted()
-        }
-
         dictationStoppedObserver = DarwinNotificationObserver(
             name: DarwinNotificationName.dictationStopped
         ) {
             print("[KB] Received dictationStopped")
         }
+    }
 
-        dictationFailedObserver = DarwinNotificationObserver(
-            name: DarwinNotificationName.dictationFailed
-        ) { [weak self] in
-            print("[KB] Received dictationFailed → falling back to URL Scheme")
-            self?.onDictationFailed()
+    private func configureSessionObservers(for sessionId: String) -> Bool {
+        guard let startedName = DarwinBridge.sessionNotificationName(
+            base: DarwinNotificationName.dictationStarted,
+            session: sessionId
+        ), let failedName = DarwinBridge.sessionNotificationName(
+            base: DarwinNotificationName.dictationFailed,
+            session: sessionId
+        ) else { return false }
+
+        dictationStartedObserver = DarwinNotificationObserver(name: startedName) { [weak self] in
+            self?.onDictationStarted(sessionId: sessionId)
         }
+        dictationFailedObserver = DarwinNotificationObserver(name: failedName) { [weak self] in
+            self?.onDictationFailed(sessionId: sessionId)
+        }
+        return true
     }
 
     // MARK: - UI
@@ -379,6 +384,11 @@ class KeyboardViewController: UIInputViewController {
         let impact = UIImpactFeedbackGenerator(style: .medium)
         impact.impactOccurred()
 
+        if recoveredPendingSessionId != nil {
+            confirmRecoveredResult()
+            return
+        }
+
         if isWaitingForResult {
             liveTextLabel.text = "正在等待语音结果..."
             return
@@ -450,17 +460,20 @@ class KeyboardViewController: UIInputViewController {
             keyboardType: pendingKbType,
             session: sessionId
         )
-        DarwinBridge.writeDictationSettings(settings)
-
-        // ★ 总是先走 Darwin 通知,不检查心跳!
-        // 后台保活中: 主 App 几百毫秒内响应 → 不跳转
-        // 主 App 不在保活中: 1.5s 超时 → 降级 URL Scheme
-        print("[KB] Sending Darwin notification (always Path A first)")
-        DarwinBridge.postNotification(DarwinNotificationName.requestStartDictation)
+        guard DarwinBridge.writeDictationSettings(settings) else {
+            resetWaitingState(message: "无法访问共享数据，请检查 App Group 配置")
+            return
+        }
+        guard configureSessionObservers(for: sessionId) else {
+            resetWaitingState(message: "无法创建安全的语音会话")
+            return
+        }
 
         isWaitingForResult = true
+        recoveredPendingSessionId = nil
         liveTextLabel.text = "正在聆听..."
         startPulse()
+        startResultTimeout(for: sessionId)
 
         // 麦克风按钮变声纹图标
         let waveConfig = UIImage.SymbolConfiguration(pointSize: 34, weight: .bold)
@@ -478,6 +491,9 @@ class KeyboardViewController: UIInputViewController {
             print("[KB] No Darwin response in 1.5s, falling back to URL Scheme")
             self.launchViaURL(sessionId: sessionId)
         }
+
+        // 观察者、状态和超时都就绪后再通知宿主 App，避免快速响应丢失。
+        DarwinBridge.postNotification(DarwinNotificationName.requestStartDictation)
     }
 
     /// URL Scheme 降级路径
@@ -485,19 +501,13 @@ class KeyboardViewController: UIInputViewController {
         darwinFallbackTimer?.invalidate()
         darwinFallbackTimer = nil
 
-        // 通过 URL 参数传递设置给容器 App
-        guard let url = DictationConstants.buildDictationURL(
-            language: LanguageManager.shared.currentLanguage.id,
-            whisper: isWhisperMode,
-            translateEnabled: TranslationManager.shared.translationEnabled,
-            translateTarget: TranslationManager.shared.targetLanguageID,
-            selectedText: selectedTextBeforeRecording,
-            keyboardType: pendingKbType,
-            session: sessionId
-        ) else {
-            liveTextLabel.text = "无法创建语音输入URL"
+        // URL 只传会话 UUID；设置和选中文本只保存在 App Group 中。
+        guard let url = DictationConstants.buildDictationURL(session: sessionId) else {
+            resetWaitingState(message: "无法创建语音输入 URL")
             return
         }
+
+        isWaitingForResult = true
 
         // 通过 responder chain 启动容器 App
         var responder: UIResponder? = self
@@ -512,7 +522,10 @@ class KeyboardViewController: UIInputViewController {
                             self.liveTextLabel.text = "正在启动语音输入..."
                             self.startPulse()
                         } else {
-                            self.liveTextLabel.text = "无法启动语音输入,请确保App已安装"
+                            self.resetWaitingState(
+                                message: "无法启动语音输入，请在一分钟内手动打开 VoType",
+                                discardPendingSettings: false
+                            )
                         }
                     }
                 }
@@ -523,14 +536,18 @@ class KeyboardViewController: UIInputViewController {
         }
 
         if !launched {
-            liveTextLabel.text = "无法启动语音输入"
+            resetWaitingState(
+                message: "无法启动语音输入，请在一分钟内手动打开 VoType",
+                discardPendingSettings: false
+            )
         }
     }
 
     // MARK: - Darwin 通知回调
 
     /// 主 App 确认开始录音
-    private func onDictationStarted() {
+    private func onDictationStarted(sessionId: String) {
+        guard currentSessionId == sessionId, isWaitingForResult else { return }
         darwinFallbackTimer?.invalidate()
         darwinFallbackTimer = nil
         isWaitingForResult = true
@@ -546,8 +563,8 @@ class KeyboardViewController: UIInputViewController {
     }
 
     /// 主 App 后台识别失败 → 立即降级到 URL Scheme (前台识别)
-    private func onDictationFailed() {
-        guard isWaitingForResult, let sessionId = currentSessionId else { return }
+    private func onDictationFailed(sessionId: String) {
+        guard isWaitingForResult, currentSessionId == sessionId else { return }
         print("[KB] Background recognition failed, launching URL Scheme fallback")
         isWaitingForResult = false
         darwinFallbackTimer?.invalidate()
@@ -566,56 +583,95 @@ class KeyboardViewController: UIInputViewController {
 
     // MARK: - 处理识别结果
 
-    /// 无条件检查剪贴板中是否有结果(viewWillAppear 调用)
-    /// 键盘扩展被系统杀掉后重启时,内存状态丢失,但剪贴板数据还在
-    /// 此方法不依赖 isWaitingForResult 状态,直接读剪贴板
-    private func checkAndProcessResult() {
-        let result = DarwinBridge.readAndConsumeResult()
-
-        // 剪贴板为空,说明没有待处理结果
-        guard result.text != nil || result.error != nil else { return }
-
-        // 有结果,恢复 session 并处理
-        if let session = result.session {
-            currentSessionId = session
+    /// 同一内存会话可自动接收；扩展重启后只能提示，必须再次点击麦克风确认。
+    private func checkForPendingResult() {
+        if isWaitingForResult, currentSessionId != nil {
+            processPendingResult()
+            return
         }
+        guard let pending = DarwinBridge.peekResult() else { return }
+        recoveredPendingSessionId = pending.session
+        liveTextLabel.text = pending.status == .completed
+            ? "检测到待插入结果，再点麦克风确认"
+            : "检测到语音输入状态，再点麦克风查看"
+        restoreMicButton()
+        micButton.backgroundColor = .systemGreen
+    }
+
+    private func confirmRecoveredResult() {
+        guard let session = recoveredPendingSessionId else { return }
+        guard let result = DarwinBridge.readAndConsumeResult(expectedSession: session) else {
+            recoveredPendingSessionId = nil
+            restoreMicButton()
+            liveTextLabel.text = "待插入结果已过期，请重新录音"
+            return
+        }
+        DarwinBridge.discardResults(through: result.timestamp)
+        currentSessionId = session
+        recoveredPendingSessionId = nil
+        finishWaitingState()
+        handle(result)
+    }
+
+    private func processPendingResult() {
+        guard isWaitingForResult, let session = currentSessionId else { return }
+        guard let result = DarwinBridge.readAndConsumeResult(expectedSession: session) else {
+            // session 不匹配或尚未写完时绝不消费现有文件。
+            return
+        }
+        finishWaitingState()
+        handle(result)
+    }
+
+    private func handle(_ result: DictationIPCResult) {
+        if let text = result.transcription {
+            insertResult(text, deleteSelected: result.deleteSelected)
+        } else if let error = result.error {
+            liveTextLabel.text = error
+        }
+        pendingSelectedText = nil
+        currentSessionId = nil
+    }
+
+    private func finishWaitingState() {
         isWaitingForResult = false
         darwinFallbackTimer?.invalidate()
         darwinFallbackTimer = nil
+        resultTimeoutTimer?.invalidate()
+        resultTimeoutTimer = nil
+        dictationStartedObserver = nil
+        dictationFailedObserver = nil
         restoreMicButton()
-
-        if let text = result.text {
-            insertResult(text, deleteSelected: result.deleteSelected)
-        } else if let error = result.error {
-            liveTextLabel.text = error
-        }
     }
 
-    /// 读取命名剪贴板中的结果
-    /// 在 Darwin 通知回调中调用(需要 isWaitingForResult 为 true)
-    private func processPendingResult() {
-        guard isWaitingForResult else { return }
-
-        let result = DarwinBridge.readAndConsumeResult()
-
-        // 验证 session ID (防止过期结果串台)
-        if let session = result.session, session != currentSessionId {
-            print("[KB] Session mismatch: expected \(currentSessionId?.prefix(8) ?? "nil"), got \(session.prefix(8))")
-            return
+    private func resetWaitingState(
+        message: String,
+        discardPendingSettings: Bool = true
+    ) {
+        if discardPendingSettings, let session = currentSessionId {
+            DarwinBridge.discardPendingDictationSettings(expectedSession: session)
         }
+        finishWaitingState()
+        currentSessionId = nil
+        recoveredPendingSessionId = nil
+        pendingSelectedText = nil
+        liveTextLabel.text = message
+    }
 
-        if let text = result.text {
-            isWaitingForResult = false
-            darwinFallbackTimer?.invalidate()
-            darwinFallbackTimer = nil
-            restoreMicButton()
-            insertResult(text, deleteSelected: result.deleteSelected)
-        } else if let error = result.error {
-            isWaitingForResult = false
-            darwinFallbackTimer?.invalidate()
-            darwinFallbackTimer = nil
-            restoreMicButton()
-            liveTextLabel.text = error
+    private func startResultTimeout(for session: String) {
+        resultTimeoutTimer?.invalidate()
+        resultTimeoutTimer = Timer.scheduledTimer(
+            withTimeInterval: 90,
+            repeats: false
+        ) { [weak self] _ in
+            guard let self,
+                  self.isWaitingForResult,
+                  self.currentSessionId == session else { return }
+            DarwinBridge.postSessionNotification(
+                base: DarwinNotificationName.requestStopDictation,
+                session: session
+            )
+            self.resetWaitingState(message: "语音输入超时，请重试")
         }
     }
 
@@ -623,9 +679,15 @@ class KeyboardViewController: UIInputViewController {
     /// 主 App 已完成所有文字处理 (LLM/翻译/格式化/语音编辑)
     /// 键盘只负责插入,不跑任何 AI 模型
     private func insertResult(_ text: String, deleteSelected: Bool) {
-        // ★ 先处理 deleteSelected,即使 text 为空也要删除选中文本
-        // 语音编辑的"删除"模式: text 为空但 deleteSelected 为 true
+        // 语音编辑结果只能作用于发起会话时的同一选区。切换 App 或扩展重启
+        // 可能使选区丢失；此时宁可放弃结果，也不能误删光标前一个字符。
         if deleteSelected {
+            guard let expectedSelection = pendingSelectedText,
+                  !expectedSelection.isEmpty,
+                  textDocumentProxy.selectedText == expectedSelection else {
+                liveTextLabel.text = "选区已变化，请重新选择后录音"
+                return
+            }
             textDocumentProxy.deleteBackward()
         }
 

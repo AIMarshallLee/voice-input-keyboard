@@ -1,133 +1,117 @@
 # VoType · 声入
 
-iOS 语音输入键盘 — 语音转文字、AI 润色、实时翻译、语音编辑、场景感知、20 语言支持。PiP 悬浮窗录音,和 Typeless / 微信输入法同款方案。
+VoType 是一个 iOS 语音转文字键盘原型，由宿主 App 负责录音与文字处理，键盘扩展负责发起会话和插入结果。
 
-## 品牌名称
+当前仓库的目标是得到一个可重复构建、可真机验收的 1.0 稳定版。源码可以在 Xcode 26 上构建；App Store 发布仍需完成真机测试、App Group 描述文件更新和真实商店截图，详见 [发布验收清单](docs/release-checklist.md)。
 
-- **English**: VoType (Voice + Type)
-- **中文**: 声入 (声 = voice, 入 = input, echoes "声入人心")
+## 已实现能力
 
-## 核心功能
+- Apple Speech 语音转文字；设备支持时优先使用设备端识别，否则识别请求可能由 Apple 服务处理
+- 中文、英语、日语、韩语、德语、法语、西班牙语等 20 个固定识别语言
+- 自动标点、口水词过滤、口语自我纠正和编号列表格式化
+- 个人词典、语言偏好和本地使用统计
+- 选中文字后的替换、追加和删除指令
+- iOS 26+ 的设备端 Foundation Models 润色与翻译（仅在模型可用时）
+- 深色模式、常用符号、空格、删除、回车和输入法切换键
 
-| 功能 | 说明 |
-|------|------|
-| 语音转文字 | Apple Speech Framework,支持在线/离线识别 |
-| PiP 悬浮窗 | 录音时悬浮窗显示,可滑回宿主 App 继续操作 |
-| AI 文字润色 | iOS 26+ 设备端 LLM (Foundation Models) |
-| 智能自我纠正 | 7 种口语纠正模式检测 |
-| 自动标点 | 按语言规则自动添加 |
-| 口水词过滤 | 中英文口水词自动去除 |
-| 智能自动格式化 | 检测列表/步骤模式转编号列表 |
-| 实时翻译 | 说中文输出英文 (iOS 26+) |
-| 场景感知 | 邮件/URL/社交自动调整风格 |
-| 语音编辑 | 选中文字说话即可替换/追加/删除 |
-| 耳语模式 | 安静环境增强语音捕获 |
-| 20 语言支持 | 中英日韩德法西俄等 |
-| 使用统计 | 字数/会话/语言分布/连续天数 |
-| 个人词典 | 自定义替换词 + 批量导入 |
+“20 个语言”表示可手动选择 20 个识别 locale，不表示自动语言检测或任意语言混输。翻译与 LLM 润色在不支持 Foundation Models 的设备上会安全跳过。
 
-## 技术架构
+## 架构
 
-### iOS 键盘扩展录音限制
+iOS 不允许自定义键盘扩展直接访问麦克风，因此录音必须由宿主 App 完成：
 
-iOS 平台禁止键盘扩展直接录音 (`Client was NOT allowed to start recording because it is an extension and doesn't have entitlements to record audio`)。VoType 采用 **容器 App + PiP 悬浮窗** 方案绕过此限制:
+1. 键盘创建带唯一 session ID 的听写请求。
+2. 请求写入 App Group 共享容器，并用 Darwin notification 通知宿主 App。
+3. 宿主 App 使用 `SFSpeechRecognizer` 和 `AVAudioEngine` 录音、识别并处理文本。
+4. 结果原子写回共享容器；键盘只消费 session 匹配且未过期的结果。
+5. 键盘扩展被系统重建时，不会把无法确认目标输入框的旧结果自动插入；需要用户再次确认。
 
-1. 用户在键盘中点击麦克风按钮
-2. 键盘通过 URL Scheme (`votype://dictation?lang=zh-CN`) 启动容器 App
-3. 容器 App 开始录音 + 启动 PiP 悬浮窗
-4. 用户可以向上滑回宿主 App (如微信),录音在悬浮窗中继续
-5. 识别完成后,文字通过 Named Pasteboard 传回键盘
-6. 用户回到键盘,文字自动插入到输入框
+共享容器标识为：
 
-### PiP 悬浮窗实现
+```text
+group.com.daseanle.votype.shared
+```
 
-使用 Apple 公开 API 实现,与 Typeless 和微信输入法同款方案:
+主 App 与键盘扩展的 App ID、开发描述文件和分发描述文件都必须启用这个 App Group。没有正确 entitlement 时，进程间设置与结果传递不会工作。
 
-- `AVPictureInPictureController` + `AVSampleBufferDisplayLayer`
-- `AVPictureInPictureSampleBufferPlaybackDelegate` 协议
-- `UIBackgroundModes: audio` 保持 App 后台存活
-- `AVAudioSession` 配置 `.mixWithOthers` 不打断其他 App 音频
-- 悬浮窗实时显示录音时长 + 识别文本 + 波形动画
+### 平台限制
 
-### 关键文件
+- 键盘扩展不能直接录音。
+- 从键盘扩展启动宿主 App 的 responder-chain 兼容路径不属于 Apple 支持的扩展 API，不能作为 App Store 版的可靠前提。
+- 可靠的前台流程是：在键盘发起请求后打开 VoType 完成听写，再手动返回原 App。
+- “实验性后台待命”默认关闭。它依赖 iOS 后台音频状态，系统仍可能暂停进程，而且不应被视为已经通过 App Store 审核的能力。
+- Apple Speech 的可用性、时长和离线能力由设备、语言与系统状态决定；本项目不承诺无限时长或所有语言离线。
 
-| 文件 | 说明 |
-|------|------|
-| `PiPManager.swift` | PiP 悬浮窗管理器 (AVPictureInPictureController) |
-| `DictationView.swift` | 容器 App 录音页面 (自动录音 + PiP 集成) |
-| `KeyboardViewController.swift` | 键盘扩展主控制器 (URL Scheme 触发 + Pasteboard 读取) |
-| `DictationConstants.swift` | URL 参数 + Named Pasteboard 通信 |
-| `TextProcessor.swift` | AI 文字处理核心 |
-| `TranslationManager.swift` | 翻译管理 (iOS 26+ Translation Framework) |
-| `LanguageManager.swift` | 20 语言管理 |
-| `SmartFormatter.swift` | 智能格式化 |
-| `UsageTracker.swift` | 使用统计 |
+Apple 平台边界可参考 [Custom Keyboard Programming Guide](https://developer.apple.com/library/archive/documentation/General/Conceptual/ExtensibilityPG/CustomKeyboard.html) 与 [App Review Guidelines](https://developer.apple.com/app-store/review/guidelines/)。
 
 ## 项目结构
 
-```
-VoType/
-├── project.yml                    # XcodeGen 配置
-├── .github/workflows/build.yml    # GitHub Actions 云端编译 + 自动上传 TestFlight
-├── VoiceInputApp/                 # 主 App (设置 + 录音 + PiP)
-│   ├── VoiceInputApp.swift         # App 入口 + URL Scheme 处理
-│   ├── ContentView.swift           # 设置页面
-│   ├── DictationView.swift         # 录音页面 + PiP 集成
-│   ├── PiPManager.swift            # PiP 悬浮窗管理器
-│   ├── en.lproj/InfoPlist.strings
-│   └── zh-Hans.lproj/InfoPlist.strings
-├── KeyboardExtension/             # 键盘扩展
-│   ├── KeyboardViewController.swift
-│   ├── TextProcessor.swift
-│   ├── WaveformView.swift
-│   ├── en.lproj/InfoPlist.strings
-│   └── zh-Hans.lproj/InfoPlist.strings
-└── Shared/                        # 共享文件
-    ├── DictationConstants.swift
-    ├── LanguageManager.swift
-    ├── SmartFormatter.swift
-    ├── TranslationManager.swift
-    └── UsageTracker.swift
+```text
+.
+├── project.yml                         # XcodeGen 唯一项目配置源
+├── VoiceInputApp/                      # 宿主 App、录音与设置
+├── KeyboardExtension/                  # 键盘 UI、会话触发与结果插入
+├── Shared/                             # IPC、语言、处理、翻译和统计
+├── VoTypeTests/                        # XCTest 回归测试
+├── .github/workflows/build.yml         # CI 与手动发布
+├── fastlane/metadata/                  # App Store 元数据
+└── docs/                               # 隐私政策与发布清单
 ```
 
-## 云端编译
+仓库中历史生成的 Xcode 工程不是权威配置。修改目标、Info.plist、版本或签名设置时只改 `project.yml`，然后重新运行 XcodeGen。
 
-项目使用 GitHub Actions 在 `macos-26` runner (Xcode 26) 上自动编译:
+## 本地构建
 
-- 推送到 `main` 分支自动触发
-- 配置签名 Secrets 后自动产出签名 IPA
-- 自动上传到 App Store Connect (TestFlight)
-- 自动上传元数据和截图
+需要 macOS、Xcode 26 和 XcodeGen：
 
-### 必需的 GitHub Secrets
+```bash
+brew install xcodegen
+xcodegen generate
+open VoType.xcodeproj
+```
 
-| Secret | 说明 |
-|--------|------|
-| `CERTIFICATE_P12` | 开发证书 (base64) |
-| `CERTIFICATE_PASSWORD` | 证书密码 |
-| `PROVISIONING_PROFILE_APP` | App 描述文件 (base64) |
-| `PROVISIONING_PROFILE_KEYBOARD` | 键盘扩展描述文件 (base64) |
-| `DIST_CERTIFICATE_P12` | 发布证书 (base64) |
-| `DIST_CERTIFICATE_PASSWORD` | 发布证书密码 |
-| `DIST_PP_APP` | App 发布描述文件 (base64) |
-| `DIST_PP_KEYBOARD` | 键盘发布描述文件 (base64) |
-| `ASC_KEY_ID` | App Store Connect API Key ID |
-| `ASC_ISSUER_ID` | App Store Connect Issuer ID |
-| `ASC_KEY_CONTENT` | App Store Connect API Key (base64) |
+列出可用模拟器并运行测试：
 
-## 安装配置
+```bash
+xcrun simctl list devices available
+xcodebuild test \
+  -project VoType.xcodeproj \
+  -scheme VoTypeTests \
+  -destination 'platform=iOS Simulator,id=<SIMULATOR_UDID>' \
+  CODE_SIGNING_ALLOWED=NO
+```
 
-1. 安装 IPA 到设备 (需签名) 或通过 TestFlight 安装
-2. 设置 → 通用 → 键盘 → 键盘 → 添加新键盘 → 选择 VoType
-3. 点击 VoType → 开启「允许完全访问」
-4. 打开 VoType App 授权语音识别和麦克风
-5. 在任意 App 中切换到 VoType 键盘,点击麦克风开始语音输入
+真机构建前，在 Apple Developer 后台完成以下配置：
+
+1. 为 `com.daseanle.votype` 和 `com.daseanle.votype.keyboard` 启用 `group.com.daseanle.votype.shared`。
+2. 重新生成开发与 App Store 分发描述文件。
+3. 在 Xcode 中确认两个 target 的签名团队和 App Group entitlement 一致。
+4. 在设备设置中添加 VoType 键盘并按需开启“允许完全访问”。
+
+## CI 与发布
+
+- Pull Request 和 `main` push 只运行测试、构建并上传 CI 产物，不会上传 App Store Connect。
+- App Store 上传只能从 `workflow_dispatch` 手动触发，并显式设置 `publish=true`。
+- CI build number 使用 GitHub Actions run number，避免重复上传同一个 `CFBundleVersion`。
+- 签名描述文件缺少 App Group 时，普通 CI 会安全回退为无签名构建；发布任务则应失败，不能生成一个跨进程功能失效的 IPA。
+
+仓库不保存证书、私钥、描述文件或 App Store Connect API Key。相关值只应放在 GitHub Actions Secrets 中。
+
+## 隐私
+
+- 应用不包含广告、第三方分析或追踪 SDK。
+- 音频仅在用户发起听写时交给 Apple Speech；设备不支持本地识别时可能使用 Apple 的在线识别服务。
+- 会话设置、选中文本和识别结果会暂存在 App Group 共享容器，用于宿主 App 与键盘扩展交换；结果在匹配消费或过期后删除。
+- 个人词典、功能设置和聚合使用次数保存在设备本地，不上传到开发者服务器。
+- iOS 26+ 的 Foundation Models 处理在设备端完成。
+
+完整说明见 [隐私政策](docs/privacy-policy.html)。
 
 ## 系统要求
 
-- iOS 16.0+ (LLM/翻译功能需 iOS 26+)
-- 支持 iPhone 和 iPad
-- 语音识别需网络连接 (Apple 服务器识别)
+- iOS / iPadOS 16.0+
+- iOS 26+ 才可能使用 Foundation Models 润色与翻译
+- 部分语言或设备需要网络连接才能使用 Apple Speech
 
 ## License
 

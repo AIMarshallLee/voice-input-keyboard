@@ -15,12 +15,16 @@ import FoundationModels
 /// - LLM 模式下智能格式化(iOS 26+)
 class SmartFormatter {
 
-    static let shared = SmartFormatter()
+    static let shared = SmartFormatter(defaults: SharedDefaults.shared)
 
-    private let sharedDefaults = UserDefaults.standard as UserDefaults?
+    private let sharedDefaults: UserDefaults
+
+    init(defaults: UserDefaults = SharedDefaults.shared) {
+        self.sharedDefaults = defaults
+    }
 
     var autoFormatEnabled: Bool {
-        sharedDefaults?.object(forKey: "autoFormat") as? Bool ?? true
+        sharedDefaults.object(forKey: "autoFormat") as? Bool ?? true
     }
 
     // MARK: - 中文编号列表模式
@@ -69,12 +73,15 @@ class SmartFormatter {
 
     /// 检测文本中是否包含列表模式，如果包含则格式化
     func formatIfList(_ text: String) -> String {
+        formatIfList(text, languageID: LanguageManager.shared.currentLanguageID)
+    }
+
+    /// 使用本次听写会话的语言检测并格式化列表。
+    func formatIfList(_ text: String, languageID lang: String) -> String {
         guard autoFormatEnabled else { return text }
 
-        let lang = LanguageManager.shared.currentLanguageID
-
         // 检测是否有列表触发词
-        if hasListTrigger(text, lang: lang) || detectListCount(text) >= 2 {
+        if hasListTrigger(text, lang: lang) || detectListCount(text, languageID: lang) >= 2 {
             return formatAsList(text, lang: lang)
         }
 
@@ -106,7 +113,11 @@ class SmartFormatter {
 
     /// 检测文本中包含多少个序数标记
     func detectListCount(_ text: String) -> Int {
-        let patterns = getAllOrdinalPatterns()
+        detectListCount(text, languageID: LanguageManager.shared.currentLanguageID)
+    }
+
+    func detectListCount(_ text: String, languageID: String) -> Int {
+        let patterns = getAllOrdinalPatterns(languageID: languageID)
         var count = 0
         let lower = text.lowercased()
 
@@ -118,9 +129,8 @@ class SmartFormatter {
         return count
     }
 
-    private func getAllOrdinalPatterns() -> [(String, Int)] {
-        let lang = LanguageManager.shared.currentLanguageID
-        switch lang.prefix(2) {
+    private func getAllOrdinalPatterns(languageID: String) -> [(String, Int)] {
+        switch languageID.lowercased().prefix(2) {
         case "zh":
             return chineseOrdinals + chineseSequence
         case "en":
@@ -137,7 +147,7 @@ class SmartFormatter {
     // MARK: - 格式化为列表
 
     func formatAsList(_ text: String, lang: String) -> String {
-        let patterns = getAllOrdinalPatterns()
+        let patterns = getAllOrdinalPatterns(languageID: lang)
         var items: [(index: Int, content: String)] = []
 
         // 按序数词分割文本
@@ -204,9 +214,14 @@ class SmartFormatter {
     #if canImport(FoundationModels)
     @available(iOS 26, *)
     func llmFormat(_ text: String) async -> String? {
+        await llmFormat(text, languageID: LanguageManager.shared.currentLanguageID)
+    }
+
+    @available(iOS 26, *)
+    func llmFormat(_ text: String, languageID: String) async -> String? {
         guard SystemLanguageModel.default.isAvailable else { return nil }
 
-        let lang = LanguageManager.shared.currentLanguage.name
+        let lang = LanguageManager.language(for: languageID).name
 
         let instructions = """
         You are a voice-to-text formatting assistant. The input language is \(lang).

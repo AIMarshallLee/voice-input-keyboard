@@ -1,1 +1,1 @@
-voice input,keyboard,dictation,speech to text,voice typing,transcription,offline
+voice input,keyboard,dictation,speech to text,voice typing,transcription,accessibility

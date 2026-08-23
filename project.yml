@@ -15,11 +15,14 @@ targets:
         excludes:
           - "Info.plist"
           - "VoiceInputApp.entitlements"
+          - "PrivacyInfo.xcprivacy"
           - "*.lproj"
       - path: VoiceInputApp/en.lproj
         type: folder
       - path: VoiceInputApp/zh-Hans.lproj
         type: folder
+      - path: VoiceInputApp/PrivacyInfo.xcprivacy
+        buildPhase: resources
       - path: Shared
     info:
       path: VoiceInputApp/Info.plist
@@ -29,8 +32,8 @@ targets:
         CFBundleLocalizations:
           - en
           - zh-Hans
-        CFBundleShortVersionString: "1.0"
-        CFBundleVersion: "33"
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         LSRequiresIPhoneOS: true
         UIBackgroundModes:
           - audio
@@ -56,7 +59,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.daseanle.votype
         MARKETING_VERSION: "1.0"
-        CURRENT_PROJECT_VERSION: "33"
+        CURRENT_PROJECT_VERSION: "34"
         SWIFT_VERSION: "5.9"
         IPHONEOS_DEPLOYMENT_TARGET: "16.0"
         TARGETED_DEVICE_FAMILY: "1,2"
@@ -76,11 +79,14 @@ targets:
         excludes:
           - "Info.plist"
           - "KeyboardExtension.entitlements"
+          - "PrivacyInfo.xcprivacy"
           - "*.lproj"
       - path: KeyboardExtension/en.lproj
         type: folder
       - path: KeyboardExtension/zh-Hans.lproj
         type: folder
+      - path: KeyboardExtension/PrivacyInfo.xcprivacy
+        buildPhase: resources
       - path: Shared
         excludes:
           - "TextProcessor.swift"
@@ -94,8 +100,8 @@ targets:
         CFBundleLocalizations:
           - en
           - zh-Hans
-        CFBundleShortVersionString: "1.0"
-        CFBundleVersion: "33"
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         NSMicrophoneUsageDescription: VoType needs microphone access for voice-to-text input
         NSSpeechRecognitionUsageDescription: VoType needs speech recognition to convert your voice to text
         NSExtension:
@@ -110,7 +116,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.daseanle.votype.keyboard
         MARKETING_VERSION: "1.0"
-        CURRENT_PROJECT_VERSION: "33"
+        CURRENT_PROJECT_VERSION: "34"
         SWIFT_VERSION: "5.9"
         IPHONEOS_DEPLOYMENT_TARGET: "16.0"
         GENERATE_INFOPLIST_FILE: NO

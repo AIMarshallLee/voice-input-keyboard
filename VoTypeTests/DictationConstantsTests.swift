@@ -3,18 +3,33 @@ import XCTest
 
 final class DictationConstantsTests: XCTestCase {
 
+    private var ipcDirectory: URL!
+
+    override func setUpWithError() throws {
+        try super.setUpWithError()
+        ipcDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("VoTypeTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: ipcDirectory,
+            withIntermediateDirectories: true
+        )
+        DarwinBridge.setContainerDirectoryForTesting(ipcDirectory)
+    }
+
+    override func tearDownWithError() throws {
+        DarwinBridge.clearIPCFilesForTesting()
+        DarwinBridge.resetContainerDirectoryAfterTesting()
+        if let ipcDirectory {
+            try? FileManager.default.removeItem(at: ipcDirectory)
+        }
+        try super.tearDownWithError()
+    }
+
     // MARK: - URL 构建 (Path B 降级路径)
 
     func testBuildDictationURL() {
-        let url = DictationConstants.buildDictationURL(
-            language: "zh-CN",
-            whisper: false,
-            translateEnabled: false,
-            translateTarget: "en",
-            selectedText: nil,
-            keyboardType: 0,
-            session: "test-session-123"
-        )
+        let session = "5B6D67A5-5C34-4EB8-BB2D-9113A8E7BD18"
+        let url = DictationConstants.buildDictationURL(session: session)
 
         XCTAssertNotNil(url)
         XCTAssertEqual(url?.scheme, "votype")
@@ -26,39 +41,11 @@ final class DictationConstantsTests: XCTestCase {
             return (item.name, value)
         } ?? [], uniquingKeysWith: { _, last in last })
 
-        XCTAssertEqual(queryDict["lang"], "zh-CN")
-        XCTAssertEqual(queryDict["whisper"], "0")
-        XCTAssertEqual(queryDict["translate"], "0")
-        XCTAssertEqual(queryDict["translateTarget"], "en")
-        XCTAssertEqual(queryDict["kbType"], "0")
-        XCTAssertEqual(queryDict["session"], "test-session-123")
-        XCTAssertNil(queryDict["selectedText"])
+        XCTAssertEqual(queryDict, ["session": session])
     }
 
-    func testBuildDictationURLWithSelectedText() {
-        let url = DictationConstants.buildDictationURL(
-            language: "en-US",
-            whisper: true,
-            translateEnabled: true,
-            translateTarget: "zh-Hans",
-            selectedText: "hello world",
-            keyboardType: 1,
-            session: "session-456"
-        )
-
-        XCTAssertNotNil(url)
-        let comps = URLComponents(url: url!, resolvingAgainstBaseURL: false)
-        let queryDict = Dictionary(comps?.queryItems?.compactMap { item -> (String, String)? in
-            guard let value = item.value else { return nil }
-            return (item.name, value)
-        } ?? [], uniquingKeysWith: { _, last in last })
-
-        XCTAssertEqual(queryDict["lang"], "en-US")
-        XCTAssertEqual(queryDict["whisper"], "1")
-        XCTAssertEqual(queryDict["translate"], "1")
-        XCTAssertEqual(queryDict["translateTarget"], "zh-Hans")
-        XCTAssertEqual(queryDict["selectedText"], "hello world")
-        XCTAssertEqual(queryDict["session"], "session-456")
+    func testBuildDictationURLRejectsNonUUIDSession() {
+        XCTAssertNil(DictationConstants.buildDictationURL(session: "not-a-uuid"))
     }
 
     // MARK: - DarwinBridge IPC (命名剪贴板)
@@ -69,10 +56,10 @@ final class DictationConstantsTests: XCTestCase {
 
         DarwinBridge.writeTranscription(testText, session: testSession)
 
-        let result = DarwinBridge.readAndConsumeResult()
-        XCTAssertEqual(result.text, testText)
-        XCTAssertEqual(result.session, testSession)
-        XCTAssertNil(result.error)
+        let result = DarwinBridge.readAndConsumeResult(expectedSession: testSession)
+        XCTAssertEqual(result?.transcription, testText)
+        XCTAssertEqual(result?.session, testSession)
+        XCTAssertNil(result?.error)
     }
 
     func testDarwinBridgeWriteAndReadError() {
@@ -81,10 +68,10 @@ final class DictationConstantsTests: XCTestCase {
 
         DarwinBridge.writeError(testError, session: testSession)
 
-        let result = DarwinBridge.readAndConsumeResult()
-        XCTAssertNil(result.text)
-        XCTAssertEqual(result.error, testError)
-        XCTAssertEqual(result.session, testSession)
+        let result = DarwinBridge.readAndConsumeResult(expectedSession: testSession)
+        XCTAssertNil(result?.transcription)
+        XCTAssertEqual(result?.error, testError)
+        XCTAssertEqual(result?.session, testSession)
     }
 
     func testDarwinBridgeReadAfterConsumeReturnsNil() {
@@ -92,13 +79,11 @@ final class DictationConstantsTests: XCTestCase {
         let testSession = UUID().uuidString
 
         DarwinBridge.writeTranscription(testText, session: testSession)
-        _ = DarwinBridge.readAndConsumeResult()
+        _ = DarwinBridge.readAndConsumeResult(expectedSession: testSession)
 
         // 第二次读应该返回 nil (剪贴板已被消费清空)
-        let result = DarwinBridge.readAndConsumeResult()
-        XCTAssertNil(result.text)
-        XCTAssertNil(result.error)
-        XCTAssertNil(result.session)
+        let result = DarwinBridge.readAndConsumeResult(expectedSession: testSession)
+        XCTAssertNil(result)
     }
 
     func testDarwinBridgeSessionMismatch() {
@@ -108,13 +93,99 @@ final class DictationConstantsTests: XCTestCase {
         // 写入 session1 的结果
         DarwinBridge.writeTranscription("结果1", session: session1)
 
-        // 读取时验证 session
-        let result = DarwinBridge.readAndConsumeResult()
-        XCTAssertEqual(result.session, session1)
-        XCTAssertEqual(result.text, "结果1")
+        // session2 不匹配时必须拒绝且不能消费 session1 的结果
+        XCTAssertNil(DarwinBridge.readAndConsumeResult(expectedSession: session2))
+        XCTAssertEqual(DarwinBridge.peekResult()?.session, session1)
 
-        // session2 不匹配,应被拒绝
-        XCTAssertNotEqual(result.session, session2)
+        let result = DarwinBridge.readAndConsumeResult(expectedSession: session1)
+        XCTAssertEqual(result?.session, session1)
+        XCTAssertEqual(result?.transcription, "结果1")
+        XCTAssertNil(DarwinBridge.peekResult())
+    }
+
+    func testResultsForDifferentSessionsDoNotOverwriteEachOther() {
+        let now = Date().timeIntervalSince1970
+        let sessionA = UUID().uuidString
+        let sessionB = UUID().uuidString
+        DarwinBridge.writeTranscription("A", session: sessionA, timestamp: now)
+        DarwinBridge.writeTranscription("B", session: sessionB, timestamp: now + 1)
+
+        XCTAssertEqual(DarwinBridge.peekResult(now: now + 1)?.session, sessionB)
+        XCTAssertEqual(
+            DarwinBridge.readAndConsumeResult(
+                expectedSession: sessionB,
+                now: now + 1
+            )?.transcription,
+            "B"
+        )
+        XCTAssertEqual(
+            DarwinBridge.readAndConsumeResult(
+                expectedSession: sessionA,
+                now: now + 1
+            )?.transcription,
+            "A"
+        )
+    }
+
+    func testDiscardRecoveredResultAlsoRemovesOlderResults() {
+        let now = Date().timeIntervalSince1970
+        let olderSession = UUID().uuidString
+        let confirmedSession = UUID().uuidString
+        let newerSession = UUID().uuidString
+        DarwinBridge.writeTranscription("older", session: olderSession, timestamp: now)
+        DarwinBridge.writeTranscription("confirmed", session: confirmedSession, timestamp: now + 1)
+        DarwinBridge.writeTranscription("newer", session: newerSession, timestamp: now + 2)
+
+        let confirmed = DarwinBridge.readAndConsumeResult(
+            expectedSession: confirmedSession,
+            now: now + 2
+        )
+        DarwinBridge.discardResults(through: confirmed?.timestamp ?? 0, now: now + 2)
+
+        XCTAssertNil(
+            DarwinBridge.readAndConsumeResult(
+                expectedSession: olderSession,
+                now: now + 2
+            )
+        )
+        XCTAssertEqual(
+            DarwinBridge.readAndConsumeResult(
+                expectedSession: newerSession,
+                now: now + 2
+            )?.transcription,
+            "newer"
+        )
+    }
+
+    func testSessionNotificationNamesAreScopedAndDeterministic() {
+        let sessionA = UUID().uuidString
+        let sessionB = UUID().uuidString
+        let first = DarwinBridge.sessionNotificationName(
+            base: DarwinNotificationName.dictationStarted,
+            session: sessionA
+        )
+        XCTAssertEqual(
+            first,
+            DarwinBridge.sessionNotificationName(
+                base: DarwinNotificationName.dictationStarted,
+                session: sessionA
+            )
+        )
+        XCTAssertNotEqual(
+            first,
+            DarwinBridge.sessionNotificationName(
+                base: DarwinNotificationName.dictationStarted,
+                session: sessionB
+            )
+        )
+    }
+
+    func testExpiredResultIsRemoved() {
+        let now = Date().timeIntervalSince1970
+        DarwinBridge.writeTranscription("过期", session: "old", timestamp: now - 301)
+
+        XCTAssertNil(DarwinBridge.peekResult(now: now, maxAge: 300))
+        XCTAssertNil(DarwinBridge.readAndConsumeResult(expectedSession: "old", now: now))
     }
 
     func testDarwinBridgeHeartbeat() {
@@ -150,7 +221,12 @@ final class DictationConstantsTests: XCTestCase {
 
         DarwinBridge.writeDictationSettings(settings)
 
-        let read = DarwinBridge.readDictationSettings()
+        let pending = DarwinBridge.peekPendingDictationSettings()
+        XCTAssertEqual(pending?.session, "test-settings-session")
+
+        let read = DarwinBridge.readAndConsumeDictationSettings(
+            expectedSession: "test-settings-session"
+        )
         XCTAssertNotNil(read)
         XCTAssertEqual(read?.language, "zh-CN")
         XCTAssertEqual(read?.whisper, true)
@@ -159,5 +235,59 @@ final class DictationConstantsTests: XCTestCase {
         XCTAssertEqual(read?.selectedText, "选中文本")
         XCTAssertEqual(read?.keyboardType, 1)
         XCTAssertEqual(read?.session, "test-settings-session")
+        XCTAssertNil(DarwinBridge.peekPendingDictationSettings())
+    }
+
+    func testExpiredSettingsAreRemoved() {
+        let now = Date().timeIntervalSince1970
+        let settings = DictationSettings(
+            language: "zh-CN",
+            whisper: false,
+            translateEnabled: false,
+            translateTarget: "en-US",
+            selectedText: nil,
+            keyboardType: 0,
+            session: "expired-settings",
+            timestamp: now - 61
+        )
+        DarwinBridge.writeDictationSettings(settings)
+
+        XCTAssertNil(DarwinBridge.peekPendingDictationSettings(now: now, maxAge: 60))
+        XCTAssertNil(
+            DarwinBridge.readAndConsumeDictationSettings(
+                expectedSession: "expired-settings",
+                now: now
+            )
+        )
+    }
+
+    func testRequeueDoesNotOverwriteNewerSession() {
+        let now = Date().timeIntervalSince1970
+        let old = DictationSettings(
+            language: "zh-CN",
+            whisper: false,
+            translateEnabled: false,
+            translateTarget: "en-US",
+            selectedText: nil,
+            keyboardType: 0,
+            session: UUID().uuidString,
+            timestamp: now
+        )
+        let newer = DictationSettings(
+            language: "en-US",
+            whisper: true,
+            translateEnabled: true,
+            translateTarget: "zh-CN",
+            selectedText: "keep me",
+            keyboardType: 7,
+            session: UUID().uuidString,
+            timestamp: now + 1
+        )
+        DarwinBridge.writeDictationSettings(newer)
+
+        XCTAssertFalse(
+            DarwinBridge.requeueDictationSettingsIfNotSuperseded(old, now: now + 1)
+        )
+        XCTAssertEqual(DarwinBridge.peekPendingDictationSettings(now: now + 1), newer)
     }
 }

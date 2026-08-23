@@ -1,7 +1,7 @@
-Major update: PiP background standby + auto-restore!
-• PiP standby auto-enables after first voice input, no manual toggle needed
-• App auto-restores PiP standby state on relaunch
-• Subsequent voice input works without switching apps, like Typeless / WeChat Input
-• Faster Darwin response timeout (5s→2.5s) for snappier feel
-• Added haptic feedback on keyboard mic button
-• Corrected privacy description accuracy
+Version 1.0 stability candidate:
+• Reliable App Group exchange for dictation settings and results
+• Session validation and expired-result cleanup
+• Correct per-session language, punctuation, and translation settings
+• Fixes for voice deletion, spoken correction, and permission errors
+• Requests on-device Apple Speech recognition when supported
+• Adds privacy manifests and accurate privacy disclosures

@@ -16,6 +16,8 @@ class SilentAudioPlayer {
 
     private var player: AVAudioPlayer?
     private var healthTimer: DispatchSourceTimer?
+    private let healthLock = NSLock()
+    private var healthGeneration: UInt = 0
 
     /// 开始播放无声音频 (无限循环)
     func start() {
@@ -47,8 +49,8 @@ class SilentAudioPlayer {
 
     /// 暂停 (仅在需要麦克风独占时调用)
     func pause() {
-        player?.pause()
         stopHealthCheck()
+        player?.pause()
         print("[SilentAudio] Paused")
     }
 
@@ -67,9 +69,10 @@ class SilentAudioPlayer {
 
     /// 完全停止
     func stop() {
+        // 先使所有已排队的健康检查失效，避免 stop 后旧回调重新创建播放器。
+        stopHealthCheck()
         player?.stop()
         player = nil
-        stopHealthCheck()
         print("[SilentAudio] Stopped")
     }
 
@@ -79,29 +82,50 @@ class SilentAudioPlayer {
     /// 如果被 iOS 暂停了，立即重启
     private func startHealthCheck() {
         stopHealthCheck()
+        healthLock.lock()
+        healthGeneration &+= 1
+        let generation = healthGeneration
+        healthLock.unlock()
+
         let timer = DispatchSource.makeTimerSource(queue: .global(qos: .background))
         timer.schedule(deadline: .now() + 2.0, repeating: 2.0)
         timer.setEventHandler { [weak self] in
             guard let self = self else { return }
-            if self.player?.isPlaying != true {
+            DispatchQueue.main.async {
+                guard self.isCurrentHealthGeneration(generation) else { return }
+                guard self.player?.isPlaying != true else { return }
                 print("[SilentAudio] Player stopped! Restarting...")
-                DispatchQueue.main.async {
-                    self.player?.play()
-                    if self.player?.isPlaying != true {
-                        // 播放器可能已失效，重新创建
-                        self.player = nil
-                        self.start()
-                    }
+                self.player?.play()
+                if self.player?.isPlaying != true,
+                   self.isCurrentHealthGeneration(generation) {
+                    self.player = nil
+                    self.start()
                 }
             }
         }
         timer.resume()
-        healthTimer = timer
+        healthLock.lock()
+        if healthGeneration == generation {
+            healthTimer = timer
+        } else {
+            timer.cancel()
+        }
+        healthLock.unlock()
     }
 
     private func stopHealthCheck() {
-        healthTimer?.cancel()
+        healthLock.lock()
+        healthGeneration &+= 1
+        let timer = healthTimer
         healthTimer = nil
+        healthLock.unlock()
+        timer?.cancel()
+    }
+
+    private func isCurrentHealthGeneration(_ generation: UInt) -> Bool {
+        healthLock.lock()
+        defer { healthLock.unlock() }
+        return healthGeneration == generation && healthTimer != nil
     }
 
     // MARK: - 生成极低音量噪声 WAV

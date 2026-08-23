@@ -35,6 +35,7 @@ class BackgroundDictationManager: ObservableObject {
     @Published var isPipStandbyEnabled = false  // 后台保活是否开启
 
     private let pipStandbyKey = "pipStandbyEnabled"
+    private let sharedDefaults = SharedDefaults.shared
 
     // MARK: - 录音相关
 
@@ -59,6 +60,7 @@ class BackgroundDictationManager: ObservableObject {
     // 当前会话
     private var currentSessionId = ""
     private var currentSettings: DictationSettings?
+    private var sessionGeneration: UInt = 0
 
     // MARK: - 初始化
 
@@ -69,6 +71,10 @@ class BackgroundDictationManager: ObservableObject {
 
     /// App 启动时调用:权限已授权就自动启用后台保活
     func autoRestoreIfNeeded() {
+        guard sharedDefaults.bool(forKey: pipStandbyKey) else {
+            isPipStandbyEnabled = false
+            return
+        }
         let speechStatus = SFSpeechRecognizer.authorizationStatus()
         let micStatus = AVAudioSession.sharedInstance().recordPermission
 
@@ -135,6 +141,12 @@ class BackgroundDictationManager: ObservableObject {
     private func recoverFromInterruption() {
         guard isPipStandbyEnabled else { return }
 
+        // 录音中的 audio engine/route 已不可假定有效，不能启动噪声播放器污染输入。
+        guard state != .recording else {
+            cleanupForFallback()
+            return
+        }
+
         activateBackgroundAudioSession()
         silentPlayer.stop()
         silentPlayer.start()
@@ -153,11 +165,20 @@ class BackgroundDictationManager: ObservableObject {
             }
         }
 
-        stopDictationObserver = DarwinNotificationObserver(
-            name: DarwinNotificationName.requestStopDictation
-        ) { [weak self] in
+    }
+
+    private func observeStopRequest(for session: String) {
+        guard let name = DarwinBridge.sessionNotificationName(
+            base: DarwinNotificationName.requestStopDictation,
+            session: session
+        ) else {
+            stopDictationObserver = nil
+            return
+        }
+        stopDictationObserver = DarwinNotificationObserver(name: name) { [weak self] in
             Task { @MainActor in
-                self?.stopRecording()
+                guard let self, self.currentSessionId == session else { return }
+                self.stopRecording()
             }
         }
     }
@@ -171,7 +192,7 @@ class BackgroundDictationManager: ObservableObject {
         guard !isPipStandbyEnabled else { return }
         isPipStandbyEnabled = true
 
-        UserDefaults.standard.set(true, forKey: pipStandbyKey)
+        sharedDefaults.set(true, forKey: pipStandbyKey)
 
         // 激活音频会话 + 开始播放极低音量噪声
         activateBackgroundAudioSession()
@@ -179,9 +200,6 @@ class BackgroundDictationManager: ObservableObject {
 
         // 启动心跳
         startHeartbeat()
-
-        // 通知键盘:准备好了
-        DarwinBridge.postNotification(DarwinNotificationName.dictationStarted)
 
         print("[BGDictation] Background standby enabled (no PiP, audio-only keep-alive)")
     }
@@ -204,7 +222,7 @@ class BackgroundDictationManager: ObservableObject {
     /// 关闭后台保活
     func disablePipStandby() {
         isPipStandbyEnabled = false
-        UserDefaults.standard.set(false, forKey: pipStandbyKey)
+        sharedDefaults.set(false, forKey: pipStandbyKey)
         stopHeartbeat()
         silentPlayer.stop()
 
@@ -219,6 +237,23 @@ class BackgroundDictationManager: ObservableObject {
         }
 
         print("[BGDictation] Background standby disabled")
+    }
+
+    /// 录音结束后只恢复用户明确开启过的待命模式。
+    func resumeStandbyIfEnabled() {
+        guard sharedDefaults.bool(forKey: pipStandbyKey) else {
+            isPipStandbyEnabled = false
+            silentPlayer.stop()
+            return
+        }
+        if !isPipStandbyEnabled {
+            enablePipStandby()
+        } else {
+            activateBackgroundAudioSession()
+            silentPlayer.stop()
+            silentPlayer.start()
+            startHeartbeat()
+        }
     }
 
     // MARK: - 心跳
@@ -249,19 +284,35 @@ class BackgroundDictationManager: ObservableObject {
         // 3. 3s 内无结果 → 发 dictationFailed → 键盘降级 URL Scheme → 前台识别
         // 4. 识别成功 → 发 transcriptionReady → 不跳转！
 
-        // 立即通知键盘：开始听写（取消键盘超时）
-        DarwinBridge.postNotification(DarwinNotificationName.dictationStarted)
-        print("[BGDictation] dictationStarted sent immediately")
+        guard let pending = DarwinBridge.peekPendingDictationSettings() else {
+            print("[BGDictation] No fresh settings request")
+            return
+        }
 
-        // 从剪贴板读取设置
-        guard let settings = DarwinBridge.readDictationSettings() else {
-            print("[BGDictation] No settings in clipboard, sending dictationFailed")
-            cleanupForFallback()
+        if state != .idle {
+            print("[BGDictation] New request supersedes the active session")
+            cancelCurrentSessionForSupersedingRequest()
+        }
+
+        // 先查看 session，再只消费完全匹配且未过期的请求。
+        guard let settings = DarwinBridge.readAndConsumeDictationSettings(
+                expectedSession: pending.session
+              ) else {
+            print("[BGDictation] Pending settings changed before consume")
             return
         }
 
         currentSessionId = settings.session
         currentSettings = settings
+        sessionGeneration &+= 1
+        observeStopRequest(for: settings.session)
+
+        // 只有成功取得会话后才确认开始，避免键盘取消 URL 降级却没有录音。
+        DarwinBridge.postSessionNotification(
+            base: DarwinNotificationName.dictationStarted,
+            session: settings.session
+        )
+        print("[BGDictation] dictationStarted sent")
 
         print("[BGDictation] Starting background recognition, session=\(settings.session.prefix(8))")
 
@@ -269,18 +320,72 @@ class BackgroundDictationManager: ObservableObject {
         startRecording(settings: settings)
 
         // 3s 识别超时：如果 3s 内没有识别到任何文字，认为后台识别失败
+        let requestSession = settings.session
+        let requestGeneration = sessionGeneration
         DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
             guard let self = self else { return }
-            guard self.state == .recording, self.recognizedText.isEmpty else { return }
+            guard self.state == .recording,
+                  self.currentSessionId == requestSession,
+                  self.sessionGeneration == requestGeneration,
+                  self.recognizedText.isEmpty else { return }
             print("[BGDictation] 3s timeout - no recognition result, falling back to foreground")
             self.cleanupForFallback()
         }
+    }
+
+    /// 键盘扩展重建后可能在旧会话尚未完成时创建新会话。最新请求接管时，
+    /// 使旧异步处理失效并释放音频资源；旧任务之后不得重配 audio session。
+    private func cancelCurrentSessionForSupersedingRequest() {
+        let supersededSession = currentSessionId
+        sessionGeneration &+= 1
+        silenceTimer?.cancel()
+        silenceTimer = nil
+        audioEngine?.stop()
+        audioEngine?.inputNode.removeTap(onBus: 0)
+        recognitionRequest?.endAudio()
+        recognitionTask?.cancel()
+        cleanupAudio()
+
+        state = .idle
+        currentSettings = nil
+        currentSessionId = ""
+        recognizedText = ""
+        stopDictationObserver = nil
+        silentPlayer.stop()
+        if !supersededSession.isEmpty {
+            DarwinBridge.writeError(
+                "语音会话已被新的请求替代",
+                session: supersededSession
+            )
+        }
+        DarwinBridge.postNotification(DarwinNotificationName.dictationStopped)
     }
 
     /// 后台识别失败时清理并发送 dictationFailed
     /// 键盘收到后立即降级到 URL Scheme → 前台 DictationView 识别
     private func cleanupForFallback() {
         print("[BGDictation] Cleaning up for foreground fallback")
+
+        // Path A 已经消费了设置。先把同一会话刷新后写回 App Group，确保
+        // responder-chain 无法启动宿主 App 时，用户手动打开仍能继续请求。
+        // currentSettings 同时充当幂等门：取消 recognitionTask 后的迟到回调
+        // 不会重复发送 dictationFailed 或覆盖后续会话。
+        guard let settings = currentSettings,
+              !currentSessionId.isEmpty,
+              settings.session == currentSessionId else { return }
+        let failedSession = settings.session
+        let refreshedSettings = DictationSettings(
+            language: settings.language,
+            whisper: settings.whisper,
+            translateEnabled: settings.translateEnabled,
+            translateTarget: settings.translateTarget,
+            selectedText: settings.selectedText,
+            keyboardType: settings.keyboardType,
+            session: settings.session
+        )
+        if !DarwinBridge.requeueDictationSettingsIfNotSuperseded(refreshedSettings) {
+            print("[BGDictation] Request was superseded or could not be requeued")
+        }
 
         // 停止录音相关资源
         silenceTimer?.cancel()
@@ -293,13 +398,24 @@ class BackgroundDictationManager: ObservableObject {
         state = .idle
         cleanupAudio()
 
-        // 重置 audio session 为后台保活模式
-        activateBackgroundAudioSession()
-        silentPlayer.stop()
-        silentPlayer.start()
+        currentSettings = nil
+        currentSessionId = ""
+        recognizedText = ""
+        stopDictationObserver = nil
+
+        if isPipStandbyEnabled && sharedDefaults.bool(forKey: pipStandbyKey) {
+            activateBackgroundAudioSession()
+            silentPlayer.stop()
+            silentPlayer.start()
+        } else {
+            silentPlayer.stop()
+        }
 
         // 通知键盘：后台识别失败，降级到前台
-        DarwinBridge.postNotification(DarwinNotificationName.dictationFailed)
+        DarwinBridge.postSessionNotification(
+            base: DarwinNotificationName.dictationFailed,
+            session: failedSession
+        )
 
         print("[BGDictation] dictationFailed sent, keyboard will fall back to URL Scheme")
     }
@@ -309,6 +425,8 @@ class BackgroundDictationManager: ObservableObject {
     private func startRecording(settings: DictationSettings) {
         recognizedText = ""
         state = .recording
+        let recordingSession = settings.session
+        let recordingGeneration = sessionGeneration
 
         // ★ 关键修复：停止 SilentAudioPlayer！
         // 之前不暂停，导致播放器的噪声被麦克风录进去，干扰语音识别
@@ -344,12 +462,15 @@ class BackgroundDictationManager: ObservableObject {
                 cleanupForFallback()
                 return
             }
-            req.shouldReportPartialResults = true
-            req.requiresOnDeviceRecognition = false
+            req.shouldReportPartialResults = TextProcessor.shared.livePreviewEnabled
+            req.requiresOnDeviceRecognition = recognizer.supportsOnDeviceRecognition
 
             recognitionTask = recognizer.recognitionTask(with: req) { [weak self] result, error in
                 Task { @MainActor in
                     guard let self = self else { return }
+                    guard self.state == .recording,
+                          self.currentSessionId == recordingSession,
+                          self.sessionGeneration == recordingGeneration else { return }
                     if let result = result {
                         let text = result.bestTranscription.formattedString
                         self.recognizedText = text
@@ -377,7 +498,7 @@ class BackgroundDictationManager: ObservableObject {
             let recordingFormat = inputNode.outputFormat(forBus: 0)
 
             // ★ 安全检查：音频格式必须有效
-            guard recordingFormat.sampleRate > 0 else {
+            guard recordingFormat.sampleRate > 0, recordingFormat.channelCount > 0 else {
                 print("[BGDictation] Invalid audio format (sampleRate=0), falling back")
                 cleanupForFallback()
                 return
@@ -392,7 +513,10 @@ class BackgroundDictationManager: ObservableObject {
             try engine.start()
 
             lastTextUpdateTime = CFAbsoluteTimeGetCurrent()
-            startSilenceTimer()
+            startSilenceTimer(
+                session: recordingSession,
+                generation: recordingGeneration
+            )
 
             print("[BGDictation] Recording started, format: \(recordingFormat.sampleRate)Hz, \(recordingFormat.channelCount)ch")
 
@@ -416,64 +540,104 @@ class BackgroundDictationManager: ObservableObject {
 
         let resultText = recognizedText
         let settings = currentSettings
+        let generation = sessionGeneration
 
         DarwinBridge.postNotification(DarwinNotificationName.dictationStopped)
 
         if resultText.isEmpty {
             DarwinBridge.writeError("未识别到语音", session: currentSessionId)
-            finishRecording()
+            finishRecording(expectedSession: currentSessionId, generation: generation)
         } else {
             let selectedText = settings?.selectedText
             let keyboardType = settings?.keyboardType ?? 0
             let hadSelectedText = selectedText != nil && !(selectedText?.isEmpty ?? true)
+            let language = settings?.language ?? "zh-CN"
+            let translateEnabled = settings?.translateEnabled ?? false
+            let translateTarget = settings?.translateTarget ?? "en-US"
+            let session = currentSessionId
+            let voiceEditEnabled = TextProcessor.shared.voiceEditEnabled
 
             Task { [weak self] in
                 guard let self = self else { return }
                 let processed = await TextProcessor.shared.process(
                     resultText,
                     selectedText: selectedText,
-                    keyboardType: keyboardType
+                    keyboardType: keyboardType,
+                    language: language,
+                    translateEnabled: translateEnabled,
+                    translateTarget: translateTarget
                 )
 
-                let finalText = processed.isEmpty ? resultText : processed
-                DarwinBridge.writeTranscription(
-                    finalText,
-                    session: self.currentSessionId,
-                    deleteSelected: hadSelectedText && TextProcessor.shared.voiceEditEnabled
-                )
-                self.finishRecording()
+                guard self.currentSessionId == session,
+                      self.sessionGeneration == generation else {
+                    print("[BGDictation] Dropping superseded session result")
+                    return
+                }
+
+                switch processed {
+                case .insert(let text):
+                    DarwinBridge.writeTranscription(
+                        text,
+                        session: session,
+                        deleteSelected: hadSelectedText && voiceEditEnabled
+                    )
+                case .deleteSelection:
+                    DarwinBridge.writeTranscription(
+                        "",
+                        session: session,
+                        deleteSelected: true
+                    )
+                case .failure(let reason):
+                    let message = reason == .emptyInput ? "未识别到语音" : "文字处理后没有可输入内容"
+                    DarwinBridge.writeError(message, session: session)
+                }
+                self.finishRecording(expectedSession: session, generation: generation)
             }
         }
 
         print("[BGDictation] Recording stopped, result: \(resultText.count) chars")
     }
 
-    private func finishRecording() {
+    private func finishRecording(expectedSession: String, generation: UInt) {
+        guard currentSessionId == expectedSession,
+              sessionGeneration == generation else { return }
         // ★ 立即恢复，不要延迟！
         state = .idle
         cleanupAudio()
 
-        // 重置 audio session 为后台保活模式
-        activateBackgroundAudioSession()
+        currentSettings = nil
+        currentSessionId = ""
+        recognizedText = ""
+        stopDictationObserver = nil
 
-        // ★ 完全重启 silentPlayer，而不是 resume
-        // 录音期间 player 可能被系统暂停，resume 不够
-        silentPlayer.stop()
-        silentPlayer.start()
+        if isPipStandbyEnabled && sharedDefaults.bool(forKey: pipStandbyKey) {
+            activateBackgroundAudioSession()
+            silentPlayer.stop()
+            silentPlayer.start()
+        } else {
+            silentPlayer.stop()
+            try? AVAudioSession.sharedInstance().setActive(
+                false,
+                options: .notifyOthersOnDeactivation
+            )
+        }
 
         print("[BGDictation] Finished, silent player restarted, back to standby")
     }
 
     // MARK: - 静音自动停止
 
-    private func startSilenceTimer() {
+    private func startSilenceTimer(session: String, generation: UInt) {
         silenceTimer?.cancel()
 
         let timer = DispatchSource.makeTimerSource(queue: .global(qos: .background))
         timer.schedule(deadline: .now() + 1.0, repeating: 1.0)
         timer.setEventHandler { [weak self] in
             Task { @MainActor in
-                guard let self = self, self.state == .recording else { return }
+                guard let self = self,
+                      self.state == .recording,
+                      self.currentSessionId == session,
+                      self.sessionGeneration == generation else { return }
 
                 let silence = CFAbsoluteTimeGetCurrent() - self.lastTextUpdateTime
                 if silence > 3.0 && !self.recognizedText.isEmpty {

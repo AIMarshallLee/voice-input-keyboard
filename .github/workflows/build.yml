@@ -1,12 +1,30 @@
 name: Build IPA
 
 on:
-  workflow_dispatch:
+  pull_request:
   push:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Build and upload a distribution IPA to App Store Connect
+        required: true
+        default: false
+        type: boolean
+      upload_metadata:
+        description: Upload App Store metadata and screenshots (publish must also be true)
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
 
 env:
   TEAM_ID: R765X25892
+  APP_GROUP: group.com.daseanle.votype.shared
+  APP_VERSION: "1.0"
+  CI_BUILD_NUMBER: ${{ github.run_number }}
 
 jobs:
   build:
@@ -16,7 +34,7 @@ jobs:
 
       - name: Select latest Xcode
         run: |
-          sudo xcode-select -s $(ls -d /Applications/Xcode*.app | sort -V | tail -1)
+          sudo xcode-select -s "$(ls -d /Applications/Xcode*.app | sort -V | tail -1)"
           xcodebuild -version
 
       - name: Install XcodeGen
@@ -25,118 +43,306 @@ jobs:
       - name: Generate Xcode Project
         run: xcodegen generate
 
-      # ---- 运行单元测试 ----
       - name: Run Unit Tests
         run: |
           set -o pipefail
 
-          # 动态查找第一个可用的 iPhone 模拟器
           SIM_ID=$(xcrun simctl list devices available -j | python3 -c "
           import json, sys
           data = json.load(sys.stdin)
           for runtime, devices in data['devices'].items():
-              for d in devices:
-                  if 'iPhone' in d['name'] and d['isAvailable']:
-                      print(d['udid'])
+              for device in devices:
+                  if 'iPhone' in device['name'] and device['isAvailable']:
+                      print(device['udid'])
                       sys.exit(0)
           " 2>/dev/null)
 
           if [ -z "$SIM_ID" ]; then
-            echo "⚠️ 没有可用的 iPhone 模拟器,跳过测试"
-            exit 0
+            echo "No available iPhone simulator; tests are required."
+            exit 1
           fi
 
           echo "Using simulator UDID: $SIM_ID"
-
           xcodebuild test \
             -project VoType.xcodeproj \
             -scheme VoTypeTests \
             -destination "platform=iOS Simulator,id=$SIM_ID" \
             CODE_SIGNING_ALLOWED=NO \
+            CURRENT_PROJECT_VERSION="$CI_BUILD_NUMBER" \
             -derivedDataPath ./test_build 2>&1 | tee test_output.log
 
-          # 检查测试结果
-          if grep -q "Test Suite.*failed" test_output.log; then
-            echo "❌ 测试失败!"
-            exit 1
-          fi
-          echo "✅ 所有测试通过"
-
-      # ---- 检查是否有签名 secrets ----
-      - name: Check Signing Secrets
-        id: check_secrets
-        env:
-          PP_APP: ${{ secrets.PROVISIONING_PROFILE_APP }}
-          PP_KEYBOARD: ${{ secrets.PROVISIONING_PROFILE_KEYBOARD }}
-        run: |
-          if [ -n "$PP_APP" ] && [ -n "$PP_KEYBOARD" ]; then
-            echo "has_signing=true" >> $GITHUB_OUTPUT
-            echo "✅ 签名 secrets 已配置"
-          else
-            echo "has_signing=false" >> $GITHUB_OUTPUT
-            echo "⚠️ 签名 secrets 未配置,使用无签名构建"
-          fi
-
-      # ---- 签名:导入证书 ----
-      - name: Import Certificate
-        if: steps.check_secrets.outputs.has_signing == 'true'
+      - name: Check Development Signing Secrets
+        id: check_signing
+        if: github.event_name != 'pull_request'
         env:
           P12_BASE64: ${{ secrets.CERTIFICATE_P12 }}
           P12_PASSWORD: ${{ secrets.CERTIFICATE_PASSWORD }}
+          PP_APP: ${{ secrets.PROVISIONING_PROFILE_APP }}
+          PP_KEYBOARD: ${{ secrets.PROVISIONING_PROFILE_KEYBOARD }}
         run: |
-          CERT_FILE="/tmp/$(uuidgen).p12"
-          KEYCHAIN_FILE="/tmp/$(uuidgen).keychain-db"
-          KEYCHAIN_PASS="$(uuidgen)"
+          set -uo pipefail
 
-          echo "$P12_BASE64" | base64 --decode > "$CERT_FILE"
+          p12_is_valid() {
+            local encoded="$1"
+            local password="$2"
+            local cert_file
+            cert_file=$(mktemp)
+            if ! printf '%s' "$encoded" | base64 --decode > "$cert_file"; then
+              rm -f "$cert_file"
+              return 1
+            fi
+            if ! P12_CHECK_PASSWORD="$password" openssl pkcs12 \
+              -in "$cert_file" \
+              -passin env:P12_CHECK_PASSWORD \
+              -noout >/dev/null 2>&1; then
+              rm -f "$cert_file"
+              return 1
+            fi
+            rm -f "$cert_file"
+          }
+
+          profile_has_app_group() {
+            local encoded="$1"
+            local label="$2"
+            local work_dir profile_file plist_file groups
+            work_dir=$(mktemp -d)
+            profile_file="$work_dir/profile.mobileprovision"
+            plist_file="$work_dir/profile.plist"
+
+            if ! printf '%s' "$encoded" | base64 --decode > "$profile_file"; then
+              echo "$label is not valid base64"
+              rm -rf "$work_dir"
+              return 1
+            fi
+            if ! security cms -D -i "$profile_file" > "$plist_file" 2>/dev/null; then
+              echo "$label is not a valid provisioning profile"
+              rm -rf "$work_dir"
+              return 1
+            fi
+            groups=$(/usr/libexec/PlistBuddy \
+              -c 'Print :Entitlements:com.apple.security.application-groups' \
+              "$plist_file" 2>/dev/null || true)
+            rm -rf "$work_dir"
+
+            if ! printf '%s\n' "$groups" | grep -Fq "$APP_GROUP"; then
+              echo "$label does not contain required App Group: $APP_GROUP"
+              return 1
+            fi
+          }
+
+          has_signing=true
+          for required_name in P12_BASE64 P12_PASSWORD PP_APP PP_KEYBOARD; do
+            if [ -z "${!required_name:-}" ]; then
+              echo "Missing development signing secret: $required_name"
+              has_signing=false
+            fi
+          done
+
+          if [ "$has_signing" = true ] && \
+             ! p12_is_valid "$P12_BASE64" "$P12_PASSWORD"; then
+            echo "Development certificate or password is invalid"
+            has_signing=false
+          fi
+          if [ "$has_signing" = true ] && \
+             ! profile_has_app_group "$PP_APP" "App development profile"; then
+            has_signing=false
+          fi
+          if [ "$has_signing" = true ] && \
+             ! profile_has_app_group "$PP_KEYBOARD" "Keyboard development profile"; then
+            has_signing=false
+          fi
+
+          echo "has_signing=$has_signing" >> "$GITHUB_OUTPUT"
+          if [ "$has_signing" = true ]; then
+            echo "Development signing configuration is valid"
+          else
+            echo "Development signing is unavailable; using an unsigned build"
+          fi
+
+      - name: Check Distribution Secrets
+        id: check_dist
+        if: github.event_name == 'workflow_dispatch' && inputs.publish == true
+        env:
+          DIST_P12: ${{ secrets.DIST_CERTIFICATE_P12 }}
+          DIST_PASSWORD: ${{ secrets.DIST_CERTIFICATE_PASSWORD }}
+          DIST_PP_APP: ${{ secrets.DIST_PP_APP }}
+          DIST_PP_KEYBOARD: ${{ secrets.DIST_PP_KEYBOARD }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_CONTENT: ${{ secrets.ASC_KEY_CONTENT }}
+        run: |
+          set -uo pipefail
+
+          p12_is_valid() {
+            local encoded="$1"
+            local password="$2"
+            local cert_file
+            cert_file=$(mktemp)
+            if ! printf '%s' "$encoded" | base64 --decode > "$cert_file"; then
+              rm -f "$cert_file"
+              return 1
+            fi
+            if ! P12_CHECK_PASSWORD="$password" openssl pkcs12 \
+              -in "$cert_file" \
+              -passin env:P12_CHECK_PASSWORD \
+              -noout >/dev/null 2>&1; then
+              rm -f "$cert_file"
+              return 1
+            fi
+            rm -f "$cert_file"
+          }
+
+          asc_key_is_valid() {
+            local decoded_key
+            if ! decoded_key=$(printf '%s' "$1" | base64 --decode 2>/dev/null); then
+              return 1
+            fi
+            printf '%s\n' "$decoded_key" | grep -Eq \
+              '^-----BEGIN (EC )?PRIVATE KEY-----$'
+          }
+
+          profile_has_app_group() {
+            local encoded="$1"
+            local label="$2"
+            local work_dir profile_file plist_file groups
+            work_dir=$(mktemp -d)
+            profile_file="$work_dir/profile.mobileprovision"
+            plist_file="$work_dir/profile.plist"
+
+            if ! printf '%s' "$encoded" | base64 --decode > "$profile_file"; then
+              echo "$label is not valid base64"
+              rm -rf "$work_dir"
+              return 1
+            fi
+            if ! security cms -D -i "$profile_file" > "$plist_file" 2>/dev/null; then
+              echo "$label is not a valid provisioning profile"
+              rm -rf "$work_dir"
+              return 1
+            fi
+            groups=$(/usr/libexec/PlistBuddy \
+              -c 'Print :Entitlements:com.apple.security.application-groups' \
+              "$plist_file" 2>/dev/null || true)
+            rm -rf "$work_dir"
+
+            if ! printf '%s\n' "$groups" | grep -Fq "$APP_GROUP"; then
+              echo "$label does not contain required App Group: $APP_GROUP"
+              return 1
+            fi
+          }
+
+          has_dist=true
+          for required_name in \
+            DIST_P12 DIST_PASSWORD DIST_PP_APP DIST_PP_KEYBOARD \
+            ASC_KEY_ID ASC_ISSUER_ID ASC_KEY_CONTENT; do
+            if [ -z "${!required_name:-}" ]; then
+              echo "Missing distribution secret: $required_name"
+              has_dist=false
+            fi
+          done
+
+          if [ "$has_dist" = true ] && \
+             ! p12_is_valid "$DIST_P12" "$DIST_PASSWORD"; then
+            echo "Distribution certificate or password is invalid"
+            has_dist=false
+          fi
+          if [ "$has_dist" = true ] && \
+             ! asc_key_is_valid "$ASC_KEY_CONTENT"; then
+            echo "App Store Connect API key is not valid base64-encoded private key content"
+            has_dist=false
+          fi
+          if [ "$has_dist" = true ] && \
+             ! profile_has_app_group "$DIST_PP_APP" "App distribution profile"; then
+            has_dist=false
+          fi
+          if [ "$has_dist" = true ] && \
+             ! profile_has_app_group "$DIST_PP_KEYBOARD" "Keyboard distribution profile"; then
+            has_dist=false
+          fi
+
+          echo "has_dist=$has_dist" >> "$GITHUB_OUTPUT"
+          if [ "$has_dist" = true ]; then
+            echo "Distribution configuration is valid"
+          else
+            echo "Distribution configuration is incomplete or invalid"
+          fi
+
+      - name: Require Valid Distribution Configuration
+        if: >-
+          github.event_name == 'workflow_dispatch' &&
+          inputs.publish == true &&
+          steps.check_dist.outputs.has_dist != 'true'
+        run: |
+          echo "Publishing was requested, but distribution configuration is invalid."
+          exit 1
+
+      - name: Create Temporary Keychain
+        if: >-
+          steps.check_signing.outputs.has_signing == 'true' ||
+          steps.check_dist.outputs.has_dist == 'true'
+        run: |
+          KEYCHAIN_FILE="$RUNNER_TEMP/votype-$(uuidgen).keychain-db"
+          KEYCHAIN_PASS="$(uuidgen)"
+          echo "::add-mask::$KEYCHAIN_PASS"
 
           security create-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN_FILE"
           security set-keychain-settings -lut 21600 "$KEYCHAIN_FILE"
           security unlock-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN_FILE"
-
-          security import "$CERT_FILE" -P "$P12_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_FILE"
           security list-keychains -d user -s "$KEYCHAIN_FILE" login.keychain-db
 
-          echo "KEYCHAIN_FILE=$KEYCHAIN_FILE" >> $GITHUB_ENV
-          rm -f "$CERT_FILE"
+          echo "KEYCHAIN_FILE=$KEYCHAIN_FILE" >> "$GITHUB_ENV"
+          echo "KEYCHAIN_PASS=$KEYCHAIN_PASS" >> "$GITHUB_ENV"
 
-      # ---- 签名:安装描述文件 ----
-      - name: Install Provisioning Profiles
-        if: steps.check_secrets.outputs.has_signing == 'true'
+      - name: Import Development Certificate
+        if: steps.check_signing.outputs.has_signing == 'true'
+        env:
+          P12_BASE64: ${{ secrets.CERTIFICATE_P12 }}
+          P12_PASSWORD: ${{ secrets.CERTIFICATE_PASSWORD }}
+        run: |
+          CERT_FILE=$(mktemp "$RUNNER_TEMP/votype-dev.XXXXXX")
+          trap 'rm -f "$CERT_FILE"' EXIT
+          printf '%s' "$P12_BASE64" | base64 --decode > "$CERT_FILE"
+          security import "$CERT_FILE" \
+            -P "$P12_PASSWORD" \
+            -A -t cert -f pkcs12 \
+            -k "$KEYCHAIN_FILE"
+          security set-key-partition-list \
+            -S apple-tool:,apple: \
+            -s -k "$KEYCHAIN_PASS" \
+            "$KEYCHAIN_FILE"
+
+      - name: Install Development Provisioning Profiles
+        if: steps.check_signing.outputs.has_signing == 'true'
         env:
           PP_APP: ${{ secrets.PROVISIONING_PROFILE_APP }}
           PP_KEYBOARD: ${{ secrets.PROVISIONING_PROFILE_KEYBOARD }}
         run: |
-          set -ex
+          set -euo pipefail
           PP_DIR="$HOME/Library/MobileDevice/Provisioning Profiles"
           mkdir -p "$PP_DIR"
 
-          # App 主目标
-          echo "$PP_APP" | base64 --decode > "$PP_DIR/app.mobileprovision"
-          ls -la "$PP_DIR/app.mobileprovision"
-          PP_UUID_APP=$(security cms -D -i "$PP_DIR/app.mobileprovision" 2>/dev/null | plutil -extract UUID raw -)
-          echo "App PP UUID: $PP_UUID_APP"
-          mv "$PP_DIR/app.mobileprovision" "$PP_DIR/$PP_UUID_APP.mobileprovision"
-          echo "PP_UUID_APP=$PP_UUID_APP" >> $GITHUB_ENV
+          install_profile() {
+            local encoded="$1"
+            local output_name="$2"
+            local temp_file uuid
+            temp_file=$(mktemp "$RUNNER_TEMP/votype-profile.XXXXXX")
+            printf '%s' "$encoded" | base64 --decode > "$temp_file"
+            uuid=$(security cms -D -i "$temp_file" 2>/dev/null | plutil -extract UUID raw -)
+            if [ -z "$uuid" ]; then
+              echo "Unable to read provisioning profile UUID"
+              rm -f "$temp_file"
+              exit 1
+            fi
+            mv "$temp_file" "$PP_DIR/$uuid.mobileprovision"
+            echo "$output_name=$uuid" >> "$GITHUB_ENV"
+          }
 
-          # 键盘扩展
-          echo "$PP_KEYBOARD" | base64 --decode > "$PP_DIR/keyboard.mobileprovision"
-          ls -la "$PP_DIR/keyboard.mobileprovision"
-          PP_UUID_KB=$(security cms -D -i "$PP_DIR/keyboard.mobileprovision" 2>/dev/null | plutil -extract UUID raw -)
-          echo "Keyboard PP UUID: $PP_UUID_KB"
-          mv "$PP_DIR/keyboard.mobileprovision" "$PP_DIR/$PP_UUID_KB.mobileprovision"
-          echo "PP_UUID_KB=$PP_UUID_KB" >> $GITHUB_ENV
+          install_profile "$PP_APP" PP_UUID_APP
+          install_profile "$PP_KEYBOARD" PP_UUID_KB
 
-      # ---- 签名构建 ----
-      - name: Build App (signed)
-        if: steps.check_secrets.outputs.has_signing == 'true'
+      - name: Build App (signed development)
+        if: steps.check_signing.outputs.has_signing == 'true'
         run: |
-          # 用 Python 脚本注入 PROVISIONING_PROFILE UUID
           python3 inject_pp.py
-
-          # 验证注入结果
-          grep -c "PROVISIONING_PROFILE" VoType.xcodeproj/project.pbxproj || true
-
           xcodebuild \
             -project VoType.xcodeproj \
             -scheme VoiceInputApp \
@@ -147,12 +353,12 @@ jobs:
             CODE_SIGN_IDENTITY="Apple Development" \
             DEVELOPMENT_TEAM="$TEAM_ID" \
             CODE_SIGN_STYLE="Manual" \
+            CURRENT_PROJECT_VERSION="$CI_BUILD_NUMBER" \
             -derivedDataPath ./build \
             OTHER_CODE_SIGN_FLAGS="--keychain $KEYCHAIN_FILE"
 
-      # ---- 无签名回退构建 ----
-      - name: Build App (unsigned)
-        if: steps.check_secrets.outputs.has_signing != 'true'
+      - name: Build App (unsigned fallback)
+        if: steps.check_signing.outputs.has_signing != 'true'
         run: |
           xcodebuild \
             -project VoType.xcodeproj \
@@ -164,79 +370,91 @@ jobs:
             CODE_SIGN_IDENTITY="" \
             CODE_SIGN_ENTITLEMENTS="" \
             DEVELOPMENT_TEAM="" \
+            CURRENT_PROJECT_VERSION="$CI_BUILD_NUMBER" \
             -derivedDataPath ./build
 
-      - name: Package Dev IPA
+      - name: Package Development IPA
         run: |
-          APP_PATH=$(find ./build -name "VoiceInputApp.app" -path "*/Release-iphoneos/*" | head -1)
-          echo "Found: $APP_PATH"
+          APP_PATH=$(find ./build -name 'VoiceInputApp.app' -path '*/Release-iphoneos/*' | head -1)
+          if [ -z "$APP_PATH" ] || [ ! -d "$APP_PATH" ]; then
+            echo "VoiceInputApp.app was not produced"
+            exit 1
+          fi
+          rm -rf Payload VoType.ipa
           mkdir -p Payload
-          cp -r "$APP_PATH" Payload/
-          zip -r VoType.ipa Payload
-          ls -la VoType.ipa
+          cp -R "$APP_PATH" Payload/
+          zip -qry VoType.ipa Payload
 
-      - name: Upload IPA
+      - name: Upload Development IPA
         uses: actions/upload-artifact@v4
         with:
           name: VoType-IPA
           path: VoType.ipa
           retention-days: 30
 
-      # ---- App Store 发布构建 ----
-      - name: Check Distribution Secrets
-        id: check_dist
+      - name: Import Distribution Certificate
+        if: >-
+          github.event_name == 'workflow_dispatch' &&
+          inputs.publish == true &&
+          steps.check_dist.outputs.has_dist == 'true'
         env:
           DIST_P12: ${{ secrets.DIST_CERTIFICATE_P12 }}
-          DIST_PP_APP: ${{ secrets.DIST_PP_APP }}
-          DIST_PP_KB: ${{ secrets.DIST_PP_KEYBOARD }}
+          DIST_PASSWORD: ${{ secrets.DIST_CERTIFICATE_PASSWORD }}
         run: |
-          if [ -n "$DIST_P12" ] && [ -n "$DIST_PP_APP" ] && [ -n "$DIST_PP_KB" ]; then
-            echo "has_dist=true" >> $GITHUB_OUTPUT
-            echo "✅ 发布 secrets 已配置"
-          else
-            echo "has_dist=false" >> $GITHUB_OUTPUT
-            echo "⚠️ 发布 secrets 未配置"
-          fi
+          CERT_FILE=$(mktemp "$RUNNER_TEMP/votype-dist.XXXXXX")
+          trap 'rm -f "$CERT_FILE"' EXIT
+          printf '%s' "$DIST_P12" | base64 --decode > "$CERT_FILE"
+          security import "$CERT_FILE" \
+            -P "$DIST_PASSWORD" \
+            -A -t cert -f pkcs12 \
+            -k "$KEYCHAIN_FILE"
+          security set-key-partition-list \
+            -S apple-tool:,apple: \
+            -s -k "$KEYCHAIN_PASS" \
+            "$KEYCHAIN_FILE"
 
-      - name: Import Distribution Certificate
-        if: steps.check_dist.outputs.has_dist == 'true'
-        env:
-          P12_BASE64: ${{ secrets.DIST_CERTIFICATE_P12 }}
-          P12_PASSWORD: ${{ secrets.DIST_CERTIFICATE_PASSWORD }}
-        run: |
-          CERT_FILE="/tmp/dist_cert.p12"
-          echo "$P12_BASE64" | base64 --decode > "$CERT_FILE"
-          security import "$CERT_FILE" -P "$P12_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_FILE"
-          rm -f "$CERT_FILE"
-          echo "Distribution cert imported"
-
-      - name: Install Distribution Profiles
-        if: steps.check_dist.outputs.has_dist == 'true'
+      - name: Install Distribution Provisioning Profiles
+        if: >-
+          github.event_name == 'workflow_dispatch' &&
+          inputs.publish == true &&
+          steps.check_dist.outputs.has_dist == 'true'
         env:
           DIST_PP_APP: ${{ secrets.DIST_PP_APP }}
-          DIST_PP_KB: ${{ secrets.DIST_PP_KEYBOARD }}
+          DIST_PP_KEYBOARD: ${{ secrets.DIST_PP_KEYBOARD }}
         run: |
-          set -ex
+          set -euo pipefail
           PP_DIR="$HOME/Library/MobileDevice/Provisioning Profiles"
+          mkdir -p "$PP_DIR"
 
-          echo "$DIST_PP_APP" | base64 --decode > "$PP_DIR/dist_app.mobileprovision"
-          DIST_PP_UUID_APP=$(security cms -D -i "$PP_DIR/dist_app.mobileprovision" 2>/dev/null | plutil -extract UUID raw -)
-          mv "$PP_DIR/dist_app.mobileprovision" "$PP_DIR/$DIST_PP_UUID_APP.mobileprovision"
-          echo "DIST_PP_UUID_APP=$DIST_PP_UUID_APP" >> $GITHUB_ENV
+          install_profile() {
+            local encoded="$1"
+            local output_name="$2"
+            local temp_file uuid
+            temp_file=$(mktemp "$RUNNER_TEMP/votype-profile.XXXXXX")
+            printf '%s' "$encoded" | base64 --decode > "$temp_file"
+            uuid=$(security cms -D -i "$temp_file" 2>/dev/null | plutil -extract UUID raw -)
+            if [ -z "$uuid" ]; then
+              echo "Unable to read provisioning profile UUID"
+              rm -f "$temp_file"
+              exit 1
+            fi
+            mv "$temp_file" "$PP_DIR/$uuid.mobileprovision"
+            echo "$output_name=$uuid" >> "$GITHUB_ENV"
+          }
 
-          echo "$DIST_PP_KB" | base64 --decode > "$PP_DIR/dist_keyboard.mobileprovision"
-          DIST_PP_UUID_KB=$(security cms -D -i "$PP_DIR/dist_keyboard.mobileprovision" 2>/dev/null | plutil -extract UUID raw -)
-          mv "$PP_DIR/dist_keyboard.mobileprovision" "$PP_DIR/$DIST_PP_UUID_KB.mobileprovision"
-          echo "DIST_PP_UUID_KB=$DIST_PP_UUID_KB" >> $GITHUB_ENV
+          install_profile "$DIST_PP_APP" DIST_PP_UUID_APP
+          install_profile "$DIST_PP_KEYBOARD" DIST_PP_UUID_KB
 
       - name: Build App Store IPA
-        if: steps.check_dist.outputs.has_dist == 'true'
+        if: >-
+          github.event_name == 'workflow_dispatch' &&
+          inputs.publish == true &&
+          steps.check_dist.outputs.has_dist == 'true'
         run: |
-          # 重新生成干净的 Xcode 项目
           xcodegen generate
-
-          # 用 Python 注入 Distribution PP UUID
-          PP_UUID_APP="$DIST_PP_UUID_APP" PP_UUID_KB="$DIST_PP_UUID_KB" python3 inject_pp.py
+          PP_UUID_APP="$DIST_PP_UUID_APP" \
+            PP_UUID_KB="$DIST_PP_UUID_KB" \
+            python3 inject_pp.py
 
           xcodebuild \
             -project VoType.xcodeproj \
@@ -248,92 +466,93 @@ jobs:
             CODE_SIGN_IDENTITY="Apple Distribution" \
             DEVELOPMENT_TEAM="$TEAM_ID" \
             CODE_SIGN_STYLE="Manual" \
+            CURRENT_PROJECT_VERSION="$CI_BUILD_NUMBER" \
             -derivedDataPath ./build_dist \
             OTHER_CODE_SIGN_FLAGS="--keychain $KEYCHAIN_FILE"
 
-          # 打包 App Store IPA
-          APP_PATH=$(find ./build_dist -name "VoiceInputApp.app" -path "*/Release-iphoneos/*" | head -1)
-          rm -rf Payload_dist && mkdir -p Payload_dist/Payload
-          cp -r "$APP_PATH" Payload_dist/Payload/
-          cd Payload_dist && zip -r ../VoType-AppStore.ipa Payload && cd ..
+          APP_PATH=$(find ./build_dist -name 'VoiceInputApp.app' -path '*/Release-iphoneos/*' | head -1)
+          if [ -z "$APP_PATH" ] || [ ! -d "$APP_PATH" ]; then
+            echo "Distribution VoiceInputApp.app was not produced"
+            exit 1
+          fi
+          rm -rf Payload_dist VoType-AppStore.ipa
+          mkdir -p Payload_dist/Payload
+          cp -R "$APP_PATH" Payload_dist/Payload/
+          (cd Payload_dist && zip -qry ../VoType-AppStore.ipa Payload)
 
-      - name: Upload App Store IPA
-        if: steps.check_dist.outputs.has_dist == 'true'
+      - name: Upload App Store IPA Artifact
+        if: >-
+          github.event_name == 'workflow_dispatch' &&
+          inputs.publish == true &&
+          steps.check_dist.outputs.has_dist == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: VoType-AppStore-IPA
           path: VoType-AppStore.ipa
           retention-days: 30
 
-      - name: Upload to App Store Connect
-        if: steps.check_dist.outputs.has_dist == 'true'
+      - name: Create App Store Connect API Key
+        if: >-
+          github.event_name == 'workflow_dispatch' &&
+          inputs.publish == true &&
+          steps.check_dist.outputs.has_dist == 'true'
         env:
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
           ASC_KEY_CONTENT: ${{ secrets.ASC_KEY_CONTENT }}
+          ASC_API_KEY_PATH: ${{ runner.temp }}/app-store-connect-api-key.json
         run: |
-          # 用 Python 创建 API key JSON（避免 shell 转义问题）
-          python3 -c "
-          import json, os, base64
-          key_id = os.environ['ASC_KEY_ID']
-          issuer_id = os.environ['ASC_ISSUER_ID']
-          key_b64 = os.environ['ASC_KEY_CONTENT']
-          key = base64.b64decode(key_b64).decode('utf-8')
-          api_key = {
-              'key_id': key_id,
-              'issuer_id': issuer_id,
-              'key': key,
-              'in_house': False
-          }
-          with open('/tmp/api_key.json', 'w') as f:
-              json.dump(api_key, f, indent=2)
-          print('API key JSON created successfully')
-          "
+          python3 - <<'PY'
+          import base64
+          import json
+          import os
+          from pathlib import Path
 
-          # 上传 IPA 到 App Store Connect
+          api_key = {
+              "key_id": os.environ["ASC_KEY_ID"],
+              "issuer_id": os.environ["ASC_ISSUER_ID"],
+              "key": base64.b64decode(os.environ["ASC_KEY_CONTENT"]).decode("utf-8"),
+              "in_house": False,
+          }
+          Path(os.environ["ASC_API_KEY_PATH"]).write_text(
+              json.dumps(api_key), encoding="utf-8"
+          )
+          PY
+          chmod 600 "$ASC_API_KEY_PATH"
+          echo "ASC_API_KEY_PATH=$ASC_API_KEY_PATH" >> "$GITHUB_ENV"
+
+      - name: Upload to App Store Connect
+        if: >-
+          github.event_name == 'workflow_dispatch' &&
+          inputs.publish == true &&
+          steps.check_dist.outputs.has_dist == 'true'
+        run: |
           fastlane pilot upload \
             --ipa VoType-AppStore.ipa \
-            --api-key-path /tmp/api_key.json \
-            --skip_waiting_for_build_processing
+            --api-key-path "$ASC_API_KEY_PATH"
 
-      - name: Upload Metadata & Screenshots to App Store Connect
-        if: always() && steps.check_dist.outputs.has_dist == 'true'
-        env:
-          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
-          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
-          ASC_KEY_CONTENT: ${{ secrets.ASC_KEY_CONTENT }}
+      - name: Upload Metadata and Screenshots
+        if: >-
+          github.event_name == 'workflow_dispatch' &&
+          inputs.publish == true &&
+          inputs.upload_metadata == true &&
+          steps.check_dist.outputs.has_dist == 'true'
         run: |
-          # 创建 API key JSON
-          python3 -c "
-          import json, os, base64
-          key_id = os.environ['ASC_KEY_ID']
-          issuer_id = os.environ['ASC_ISSUER_ID']
-          key_b64 = os.environ['ASC_KEY_CONTENT']
-          key = base64.b64decode(key_b64).decode('utf-8')
-          api_key = {
-              'key_id': key_id,
-              'issuer_id': issuer_id,
-              'key': key,
-              'in_house': False
-          }
-          with open('/tmp/api_key.json', 'w') as f:
-              json.dump(api_key, f, indent=2)
-          print('API key JSON created')
-          "
-
-          # 上传元数据和截图
           fastlane deliver \
-            --api-key-path /tmp/api_key.json \
+            --api-key-path "$ASC_API_KEY_PATH" \
             --metadata fastlane/metadata \
             --screenshots fastlane/screenshots \
             --skip_binary_upload \
-            --app_version "1.0" \
+            --app_version "$APP_VERSION" \
             --force \
             --precheck_include_in_app_purchases false
 
-      - name: Cleanup Keychain
+      - name: Cleanup Signing Material
         if: always()
         run: |
-          if [ -n "$KEYCHAIN_FILE" ]; then
+          if [ -n "${KEYCHAIN_FILE:-}" ]; then
             security delete-keychain "$KEYCHAIN_FILE" 2>/dev/null || true
+          fi
+          if [ -n "${ASC_API_KEY_PATH:-}" ]; then
+            rm -f "$ASC_API_KEY_PATH"
           fi

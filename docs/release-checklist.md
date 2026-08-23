@@ -1,0 +1,64 @@
+# VoType 1.0 发布验收清单
+
+本清单区分“源码/CI 已验证”和“必须在 Apple 账号或真机完成”的事项。只有所有必需项通过后，才能把版本称为可发布。
+
+## 1. 源码与 CI
+
+- [ ] `xcodegen generate` 成功，`project.yml` 是唯一项目配置源。
+- [ ] `VoTypeTests` 在可用 iPhone 模拟器全部通过；找不到模拟器时 CI 必须失败。
+- [ ] Release 的无签名 device build 通过。
+- [ ] App 与 Keyboard Extension 都包含 `PrivacyInfo.xcprivacy`。
+- [ ] `CFBundleVersion` 大于 App Store Connect 中已经上传的 build 33。
+- [ ] 普通 PR / push 不会调用 `pilot upload` 或 `deliver`。
+- [ ] 手动发布只有在 `publish=true` 时才会访问 App Store Connect。
+
+## 2. Apple Developer 与签名
+
+- [ ] 主 App ID `com.daseanle.votype` 已启用 `group.com.daseanle.votype.shared`。
+- [ ] 扩展 App ID `com.daseanle.votype.keyboard` 已启用同一 App Group。
+- [ ] 开发和 App Store 分发的四份 provisioning profile 已重新生成并包含该 App Group。
+- [ ] GitHub Actions Secrets 中的描述文件已替换；不在仓库或文档中保存证书、密码、API Key 或 profile 内容。
+- [ ] 签名归档中主 App 与扩展的 entitlement 均包含正确 App Group。
+
+## 3. 真机功能
+
+至少覆盖 iOS 16 的最低兼容设备、当前正式 iOS、iOS 26，以及一台 iPad。
+
+- [ ] 首次授权、拒绝后重试、从设置重新授权均可恢复。
+- [ ] App Group 会话设置能从键盘传到宿主 App，识别结果只返回同一 session。
+- [ ] App/扩展被系统杀掉后，不会把旧结果自动插到错误 App 或输入框。
+- [ ] 中文、英文及至少一种日韩/欧洲语言使用正确 locale 和标点。
+- [ ] 翻译开关、目标语言、个人词典、自动标点、口水词、列表格式化分别验证。
+- [ ] 语音“替换、追加、删除”都验证，删除不能插入命令原文。
+- [ ] 断网时：支持设备端识别的语言正常工作；不支持时给出准确错误，不宣称离线可用。
+- [ ] 电话、Siri、蓝牙切换、耳机插拔和其他音频中断后不会卡死或误录。
+- [ ] 用户关闭实验性后台待命后，重启 App 不会自动重新开启。
+- [ ] 内存、能耗、麦克风指示和后台音频行为符合产品披露。
+
+## 4. App Store 合规决策
+
+以下两项仍是发布架构阻塞，必须在提交审核前解决或从商店构建中移除：
+
+- [ ] 键盘扩展不依赖 responder-chain 调用 `UIApplication.open` 启动宿主 App。
+- [ ] 商店构建不使用近静音噪声冒充音频播放来维持后台执行。
+
+在完成合规架构前，可以进行内部开发或 TestFlight 技术验证，但不能把其描述为已经满足 App Store 审核要求。
+
+## 5. 隐私与商店材料
+
+- [ ] 隐私政策 URL `https://aimarshalllee.github.io/voice-input-keyboard/privacy-policy.html` 返回 200。
+- [ ] App Store Connect 的 Privacy Details 与隐私政策、代码行为一致。
+- [ ] 中文和英文描述只宣称真机端到端验证过的能力。
+- [ ] 删除“完全离线、语音不离开设备、无需切 App、无限时长、自动语言检测、日期自动格式化”等不准确表述。
+- [ ] 现有 `fastlane/screenshots` 不得用于发布：它们包含缺字方框、重叠文字、与实际键盘不一致的界面和未实现宣称。
+- [ ] 使用当前候选 TestFlight build 在真机重新截图；逐张以 100% 比例检查文字、图标、语言和隐私表述。
+- [ ] 支持 URL、隐私 URL、截图尺寸和所有本地化元数据通过 Fastlane precheck。
+
+## 6. TestFlight 与发布
+
+- [ ] 手动运行发布 workflow，确认 archive / export、IPA 和 dSYM 可追溯。
+- [ ] 等待 App Store Connect 完成 build processing，而不只验证上传命令成功。
+- [ ] 安装处理完成的 TestFlight build，执行一次完整回归。
+- [ ] 填写加密出口、隐私问卷、审核说明和键盘测试步骤。
+- [ ] 先邀请内部测试；外部测试稳定后再提交 App Review。
+- [ ] App Review 通过且公开商店页可查询后，才把项目状态改为“已发布”。

@@ -23,7 +23,13 @@ struct PunctuationRules: Codable, Equatable {
 
 class LanguageManager {
 
-    static let shared = LanguageManager()
+    static let shared = LanguageManager(defaults: SharedDefaults.shared)
+
+    private let sharedDefaults: UserDefaults
+
+    init(defaults: UserDefaults = SharedDefaults.shared) {
+        self.sharedDefaults = defaults
+    }
 
     // MARK: - 所有支持的语言
 
@@ -232,25 +238,23 @@ class LanguageManager {
 
     // MARK: - 用户偏好
 
-    private let sharedDefaults = UserDefaults.standard as UserDefaults?
-
     /// 用户启用的语言 ID 列表
     var enabledLanguageIDs: [String] {
         get {
-            sharedDefaults?.stringArray(forKey: "enabledLanguages") ?? ["zh-CN", "en-US"]
+            sharedDefaults.stringArray(forKey: "enabledLanguages") ?? ["zh-CN", "en-US"]
         }
         set {
-            sharedDefaults?.set(newValue, forKey: "enabledLanguages")
+            sharedDefaults.set(newValue, forKey: "enabledLanguages")
         }
     }
 
     /// 当前选中的语言 ID
     var currentLanguageID: String {
         get {
-            sharedDefaults?.string(forKey: "currentLanguage") ?? "zh-CN"
+            sharedDefaults.string(forKey: "currentLanguage") ?? "zh-CN"
         }
         set {
-            sharedDefaults?.set(newValue, forKey: "currentLanguage")
+            sharedDefaults.set(newValue, forKey: "currentLanguage")
         }
     }
 
@@ -263,7 +267,29 @@ class LanguageManager {
 
     /// 当前语言配置
     var currentLanguage: LanguageConfig {
-        LanguageManager.allLanguages.first { $0.id == currentLanguageID } ?? LanguageManager.allLanguages[0]
+        LanguageManager.language(for: currentLanguageID)
+    }
+
+    /// 根据 BCP 47 ID 查找配置。兼容 URL 中的短 ID（如 `en`）和
+    /// Apple 常见脚本标签（如 `zh-Hans` / `zh-Hant`）。
+    static func language(for id: String) -> LanguageConfig {
+        if let exact = allLanguages.first(where: { $0.id.caseInsensitiveCompare(id) == .orderedSame }) {
+            return exact
+        }
+
+        let normalized = id.lowercased()
+        if normalized.hasPrefix("zh-hant") {
+            return allLanguages.first(where: { $0.id == "zh-TW" }) ?? allLanguages[0]
+        }
+        if normalized.hasPrefix("zh-hk") || normalized.hasPrefix("yue") {
+            return allLanguages.first(where: { $0.id == "zh-HK" }) ?? allLanguages[0]
+        }
+
+        let languageCode = normalized.split(separator: "-").first.map(String.init) ?? normalized
+        return allLanguages.first {
+            let candidateCode = $0.id.lowercased().split(separator: "-").first.map { String($0) }
+            return candidateCode == languageCode
+        } ?? allLanguages[0]
     }
 
     /// 切换到下一个启用的语言

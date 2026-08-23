@@ -7,8 +7,6 @@ struct ContentView: View {
 
     @State private var speechAuthorized = false
     @State private var micAuthorized = false
-    @State private var keyboardAdded = false
-
     @State private var autoPunctuation = true
     @State private var fillerWordRemoval = true
     @State private var livePreview = true
@@ -37,7 +35,7 @@ struct ContentView: View {
     // 后台保活状态
     @ObservedObject private var bgDictation = BackgroundDictationManager.shared
 
-    private let sharedDefaults = UserDefaults.standard as UserDefaults?
+    private let sharedDefaults: UserDefaults? = SharedDefaults.shared
 
     var body: some View {
         NavigationView {
@@ -66,22 +64,23 @@ struct ContentView: View {
                             number: 1,
                             title: "添加键盘",
                             description: "设置 → 通用 → 键盘 → 键盘 → 添加新键盘 → 选择「语音输入」",
-                            isDone: keyboardAdded,
+                            isDone: false,
                             action: openKeyboardSettings
                         )
 
                         StepRow(
                             number: 2,
                             title: "允许完全访问",
-                            description: "在键盘列表中点击「语音输入」→ 开启「允许完全访问」\n这是使用麦克风的必要条件",
-                            isDone: micAuthorized
+                            description: "在键盘列表中点击「语音输入」→ 开启「允许完全访问」\n键盘需要该权限与 VoType App 交换本次听写设置和结果",
+                            isDone: false,
+                            action: openKeyboardSettings
                         )
 
                         StepRow(
                             number: 3,
                             title: "授权语音识别",
                             description: "点击下方按钮授权语音识别和麦克风权限",
-                            isDone: speechAuthorized,
+                            isDone: speechAuthorized && micAuthorized,
                             action: requestSpeechPermission
                         )
                     }
@@ -301,10 +300,10 @@ struct ContentView: View {
                         .cornerRadius(16)
                     }
 
-                    // 后台保活 (Typeless / 微信输入法核心功能)
+                    // 实验性后台待命
                     VStack(alignment: .leading, spacing: 14) {
                         HStack {
-                            Text("后台保活").font(.headline)
+                            Text("实验性后台待命").font(.headline)
                             Spacer()
                             Toggle("", isOn: Binding(
                                 get: { bgDictation.isPipStandbyEnabled },
@@ -329,7 +328,7 @@ struct ContentView: View {
                                     Text("待命中")
                                         .font(.subheadline.bold())
                                         .foregroundColor(.green)
-                                    Text("键盘点麦克风即可直接说话,不切换App\n设置已保存,下次打开App自动恢复")
+                                    Text("VoType 会持续使用后台音频维持待命，可能增加耗电并影响其他音频。关闭后不会自动恢复。")
                                         .font(.caption2)
                                         .foregroundColor(.secondary)
                                 }
@@ -338,15 +337,12 @@ struct ContentView: View {
                             .padding(.vertical, 4)
                         } else {
                             VStack(alignment: .leading, spacing: 6) {
-                                Text("首次使用语音输入后自动开启")
+                                Text("默认关闭，仅在你主动开启后恢复")
                                     .font(.caption)
                                     .foregroundColor(.secondary)
-                                Text("开启后在任何App的键盘上点麦克风即可直接语音输入")
+                                Text("该能力依赖 iOS 后台执行状态；系统仍可能暂停 App，届时需要重新打开 VoType。")
                                     .font(.caption2)
                                     .foregroundColor(.secondary)
-                                Text("和 Typeless / 微信输入法一样的体验")
-                                    .font(.caption2)
-                                    .foregroundColor(.blue)
                             }
                         }
                     }
@@ -358,9 +354,9 @@ struct ContentView: View {
                     VStack(alignment: .leading, spacing: 12) {
                         Text("使用方法").font(.headline)
 
-                        InstructionRow(text: "首次使用:点麦克风,App 打开后说话,自动返回")
-                        InstructionRow(text: "之后:键盘点麦克风即可直接说话(不切 App)")
-                        InstructionRow(text: "说完后自动停止,文字自动插入光标位置")
+                        InstructionRow(text: "首次使用:点麦克风；如果 VoType 打开，请在 App 中完成听写")
+                        InstructionRow(text: "识别结束后手动返回原 App，再切回 VoType 键盘")
+                        InstructionRow(text: "键盘收到匹配的会话结果后会插入光标位置")
                         InstructionRow(text: "说错了可以说「不对,应该是...」自动纠正")
                         InstructionRow(text: "说「第一」「第二」等会自动转为编号列表")
                         InstructionRow(text: "选中文字后说话,可替换或追加内容(语音编辑)")
@@ -398,7 +394,7 @@ struct ContentView: View {
                 loadTranslationSettings()
                 loadUsageStats()
                 checkStatus()
-                // 自动恢复 PiP 保活 (如果用户之前开启过)
+                // 仅恢复用户明确开启过的实验性后台待命
                 bgDictation.autoRestoreIfNeeded()
             }
             .onChange(of: autoPunctuation) { v in saveSetting("autoPunctuation", v) }
@@ -542,7 +538,7 @@ struct ContentView: View {
     // MARK: - 操作
 
     private func openKeyboardSettings() {
-        if let url = URL(string: "App-prefs:Keyboard") {
+        if let url = URL(string: UIApplication.openSettingsURLString) {
             UIApplication.shared.open(url)
         }
     }

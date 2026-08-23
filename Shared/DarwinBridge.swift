@@ -1,49 +1,19 @@
 import Foundation
-import UIKit
-
-/// Darwin 通知 + 命名剪贴板 IPC 系统 (Build 16)
-/// 完全不依赖 App Group,使用 Darwin 通知传信号 + 命名剪贴板传数据
-///
-/// 通信流程:
-/// 1. 键盘写设置到剪贴板 -> 发 Darwin 通知 requestStartDictation
-/// 2. 主 App 收到通知 -> 读剪贴板设置 -> 开始录音 -> 发 Darwin 通知 dictationStarted
-/// 3. 主 App 录音完成 -> 写结果到剪贴板 -> 发 Darwin 通知 transcriptionReady
-/// 4. 键盘收到通知 -> 读剪贴板 -> 插入文字
-///
-/// 心跳机制:
-/// 主 App 录音时每 0.5s 发一次 heartbeat Darwin 通知
-/// 键盘在内存中记录最后一次收到心跳的时间
-/// 如果心跳新鲜(3s 内),走 Path A (Darwin 通知,不切 App)
-/// 如果心跳过期,走 Path B (URL Scheme,启动主 App)
-
-// MARK: - Darwin 通知名称
+import CryptoKit
 
 enum DarwinNotificationName {
-    /// 键盘 -> 主 App:请求开始听写
     static let requestStartDictation = "com.daseanle.votype.requestStartDictation"
-    /// 主 App -> 键盘:听写已开始
     static let dictationStarted = "com.daseanle.votype.dictationStarted"
-    /// 主 App -> 键盘:听写已停止
     static let dictationStopped = "com.daseanle.votype.dictationStopped"
-    /// 键盘 -> 主 App:请求停止听写
     static let requestStopDictation = "com.daseanle.votype.requestStopDictation"
-    /// 主 App -> 键盘:转录结果已就绪
     static let transcriptionReady = "com.daseanle.votype.transcriptionReady"
-    /// 主 App -> 键盘:出错
     static let transcriptionError = "com.daseanle.votype.transcriptionError"
-    /// 主 App -> 键盘:后台识别失败,降级到前台 URL Scheme
     static let dictationFailed = "com.daseanle.votype.dictationFailed"
-    /// 主 App -> 键盘:心跳 (每 0.5s 发一次,表示主 App 存活)
     static let heartbeat = "com.daseanle.votype.heartbeat"
 }
 
-// MARK: - Darwin 通知观察者
-
-/// 跨进程通知观察者
-/// CFNotificationCenter 的 Darwin 通知中心,不传递数据(仅信号)
-/// 数据通过命名剪贴板传递
+/// Darwin 通知只负责发送“有新状态”的信号，业务数据全部放在 App Group 文件中。
 final class DarwinNotificationObserver {
-
     private let callback: () -> Void
     private let name: String
     private var observer: UnsafeMutableRawPointer?
@@ -52,20 +22,21 @@ final class DarwinNotificationObserver {
         self.name = name
         self.callback = callback
 
-        let center = CFNotificationCenterGetDarwinNotifyCenter()
-        let observerPtr = Unmanaged.passRetained(self).toOpaque()
-        self.observer = observerPtr
-
+        // 调用方强持有观察者；passRetained 会造成无法进入 deinit 的自保持泄漏。
+        let observerPointer = Unmanaged.passUnretained(self).toOpaque()
+        observer = observerPointer
         CFNotificationCenterAddObserver(
-            center,
-            observerPtr,
+            CFNotificationCenterGetDarwinNotifyCenter(),
+            observerPointer,
             { _, observer, _, _, _ in
-                guard let observer = observer else { return }
-                let obj = Unmanaged<DarwinNotificationObserver>.fromOpaque(observer).takeUnretainedValue()
+                guard let observer else { return }
+                let object = Unmanaged<DarwinNotificationObserver>
+                    .fromOpaque(observer)
+                    .takeUnretainedValue()
                 if Thread.isMainThread {
-                    obj.callback()
+                    object.callback()
                 } else {
-                    DispatchQueue.main.async { obj.callback() }
+                    DispatchQueue.main.async { object.callback() }
                 }
             },
             name as CFString,
@@ -75,22 +46,19 @@ final class DarwinNotificationObserver {
     }
 
     deinit {
-        let center = CFNotificationCenterGetDarwinNotifyCenter()
-        if let observer = self.observer {
+        if let observer {
             CFNotificationCenterRemoveObserver(
-                center,
+                CFNotificationCenterGetDarwinNotifyCenter(),
                 observer,
                 CFNotificationName(name as CFString),
                 nil
             )
-            Unmanaged<DarwinNotificationObserver>.fromOpaque(observer).release()
         }
     }
 
     static func post(_ name: String) {
-        let center = CFNotificationCenterGetDarwinNotifyCenter()
         CFNotificationCenterPostNotification(
-            center,
+            CFNotificationCenterGetDarwinNotifyCenter(),
             CFNotificationName(name as CFString),
             nil,
             nil,
@@ -99,23 +67,14 @@ final class DarwinNotificationObserver {
     }
 }
 
-// MARK: - 心跳追踪器
-
-/// 在键盘扩展内存中追踪主 App 心跳
-/// 主 App 每 0.5s 发一次 heartbeat Darwin 通知
-/// 键盘收到后更新 lastHeartbeatTime
-/// isMainAppAlive() 检查 lastHeartbeatTime 是否在 3s 内
-class HeartbeatTracker {
+final class HeartbeatTracker {
     static let shared = HeartbeatTracker()
 
-    /// 用 NSLock 保证线程安全 (Darwin 通知回调可能在子线程)
     private let lock = NSLock()
     private var lastHeartbeatTime: CFAbsoluteTime = 0
-
     private var observer: DarwinNotificationObserver?
 
     private init() {
-        // 监听心跳通知
         observer = DarwinNotificationObserver(name: DarwinNotificationName.heartbeat) { [weak self] in
             self?.updateHeartbeat()
         }
@@ -127,16 +86,13 @@ class HeartbeatTracker {
         lock.unlock()
     }
 
-    /// 主 App 是否存活 (3s 内收到过心跳)
     func isMainAppAlive(threshold: TimeInterval = 3.0) -> Bool {
         lock.lock()
         defer { lock.unlock() }
         guard lastHeartbeatTime > 0 else { return false }
-        let age = CFAbsoluteTimeGetCurrent() - lastHeartbeatTime
-        return age < threshold
+        return CFAbsoluteTimeGetCurrent() - lastHeartbeatTime < threshold
     }
 
-    /// 心跳年龄 (秒)
     func heartbeatAge() -> TimeInterval {
         lock.lock()
         defer { lock.unlock() }
@@ -145,142 +101,7 @@ class HeartbeatTracker {
     }
 }
 
-// MARK: - 命名剪贴板
-
-/// 命名剪贴板管理
-/// iOS 命名剪贴板可在进程间共享,适合传递少量数据
-enum SharedClipboard {
-    /// 结果剪贴板 (转录文本 + 错误信息)
-    static let resultName = UIPasteboard.Name("com.daseanle.votype.result")
-    /// 设置剪贴板 (听写设置 JSON)
-    static let settingsName = UIPasteboard.Name("com.daseanle.votype.settings")
-
-    static var resultPasteboard: UIPasteboard? {
-        UIPasteboard(name: resultName, create: false)
-    }
-
-    static var settingsPasteboard: UIPasteboard? {
-        UIPasteboard(name: settingsName, create: false)
-    }
-}
-
-// MARK: - 跨进程通信桥梁
-
-/// 键盘扩展 <-> 主 App 的 IPC 桥梁
-/// Darwin 通知传信号 + 命名剪贴板传数据
-/// 不依赖 App Group
-struct DarwinBridge {
-
-    // MARK: - 写入转录结果(主 App 调用)
-
-    static func writeTranscription(_ text: String, session: String, deleteSelected: Bool = false) {
-        let payload: [String: String] = [
-            "status": "completed",
-            "text": text,
-            "session": session,
-            "deleteSelected": deleteSelected ? "1" : "0"
-        ]
-        writeJSON(payload, to: .result)
-        DarwinNotificationObserver.post(DarwinNotificationName.transcriptionReady)
-        print("[DarwinBridge] Transcription written, session=" + String(session.prefix(8)))
-    }
-
-    // MARK: - 写入错误(主 App 调用)
-
-    static func writeError(_ message: String, session: String) {
-        let payload: [String: String] = ["status": "error", "text": message, "session": session]
-        writeJSON(payload, to: .result)
-        DarwinNotificationObserver.post(DarwinNotificationName.transcriptionError)
-        print("[DarwinBridge] Error written: " + message)
-    }
-
-    // MARK: - 读取并消费结果(键盘扩展调用)
-
-    static func readAndConsumeResult() -> (text: String?, error: String?, session: String?, deleteSelected: Bool) {
-        guard let pb = SharedClipboard.resultPasteboard,
-              let json = pb.string,
-              let data = json.data(using: .utf8),
-              let dict = try? JSONSerialization.jsonObject(with: data) as? [String: String] else {
-            return (nil, nil, nil, false)
-        }
-
-        // 消费后清空剪贴板
-        pb.string = ""
-
-        let status = dict["status"] ?? ""
-        if status == "completed" {
-            let del = dict["deleteSelected"] == "1"
-            return (dict["text"], nil, dict["session"], del)
-        } else if status == "error" {
-            return (nil, dict["text"], dict["session"], false)
-        }
-        return (nil, nil, nil, false)
-    }
-
-    // MARK: - 心跳机制
-
-    /// 主 App 调用:发送心跳通知
-    static func writeHeartbeat() {
-        DarwinNotificationObserver.post(DarwinNotificationName.heartbeat)
-    }
-
-    /// 键盘调用:检查主 App 是否存活
-    static func isMainAppAlive(threshold: TimeInterval = 3.0) -> Bool {
-        HeartbeatTracker.shared.isMainAppAlive(threshold: threshold)
-    }
-
-    /// 键盘调用:心跳年龄
-    static func heartbeatAge() -> TimeInterval {
-        HeartbeatTracker.shared.heartbeatAge()
-    }
-
-    // MARK: - 听写设置(键盘 -> 主 App)
-
-    static func writeDictationSettings(_ settings: DictationSettings) {
-        guard let data = try? JSONEncoder().encode(settings),
-              let json = String(data: data, encoding: .utf8) else { return }
-        let pb = UIPasteboard(name: SharedClipboard.settingsName, create: true)
-        pb?.string = json
-    }
-
-    static func readDictationSettings() -> DictationSettings? {
-        guard let pb = SharedClipboard.settingsPasteboard,
-              let json = pb.string,
-              let data = json.data(using: .utf8) else { return nil }
-        return try? JSONDecoder().decode(DictationSettings.self, from: data)
-    }
-
-    // MARK: - 发送 Darwin 通知
-
-    static func postNotification(_ name: String) {
-        DarwinNotificationObserver.post(name)
-    }
-
-    // MARK: - 私有:JSON 读写
-
-    private enum ClipboardType {
-        case result
-        case settings
-    }
-
-    private static func writeJSON(_ payload: [String: String], to type: ClipboardType) {
-        guard let data = try? JSONSerialization.data(withJSONObject: payload),
-              let json = String(data: data, encoding: .utf8) else { return }
-        let name: UIPasteboard.Name
-        switch type {
-        case .result:
-            name = SharedClipboard.resultName
-        case .settings:
-            name = SharedClipboard.settingsName
-        }
-        let pb = UIPasteboard(name: name, create: true)
-        pb?.string = json
-    }
-}
-
-// MARK: - 听写设置(跨进程传递)
-
-struct DictationSettings: Codable {
+struct DictationSettings: Codable, Equatable {
     let language: String
     let whisper: Bool
     let translateEnabled: Bool
@@ -288,4 +109,484 @@ struct DictationSettings: Codable {
     let selectedText: String?
     let keyboardType: Int
     let session: String
+    let timestamp: TimeInterval
+
+    init(
+        language: String,
+        whisper: Bool,
+        translateEnabled: Bool,
+        translateTarget: String,
+        selectedText: String?,
+        keyboardType: Int,
+        session: String,
+        timestamp: TimeInterval = Date().timeIntervalSince1970
+    ) {
+        self.language = language
+        self.whisper = whisper
+        self.translateEnabled = translateEnabled
+        self.translateTarget = translateTarget
+        self.selectedText = selectedText
+        self.keyboardType = keyboardType
+        self.session = session
+        self.timestamp = timestamp
+    }
+}
+
+struct DictationIPCResult: Codable, Equatable {
+    enum Status: String, Codable {
+        case completed
+        case error
+    }
+
+    let status: Status
+    let text: String
+    let session: String
+    let deleteSelected: Bool
+    let timestamp: TimeInterval
+
+    var transcription: String? { status == .completed ? text : nil }
+    var error: String? { status == .error ? text : nil }
+}
+
+private protocol TimestampedIPCValue {
+    var timestamp: TimeInterval { get }
+}
+
+extension DictationSettings: TimestampedIPCValue {}
+extension DictationIPCResult: TimestampedIPCValue {}
+
+/// App Group 原子文件 IPC。Darwin 通知只传信号，文件承载带 session 的数据。
+struct DarwinBridge {
+    static let appGroupIdentifier = SharedDefaults.suiteName
+    static let settingsMaxAge: TimeInterval = 60
+    static let resultMaxAge: TimeInterval = 5 * 60
+
+    private static let settingsFileName = "dictation-settings.json"
+    private static let resultFilePrefix = "dictation-result-"
+    private static let resultFileSuffix = ".json"
+    private static let ioLock = NSLock()
+    private static let configurationLock = NSLock()
+    private static var injectedContainerDirectory: URL?
+    private static var hasInjectedContainerDirectory = false
+
+    // MARK: 测试注入
+
+    static func setContainerDirectoryForTesting(_ directory: URL?) {
+        configurationLock.lock()
+        injectedContainerDirectory = directory
+        hasInjectedContainerDirectory = true
+        configurationLock.unlock()
+    }
+
+    static func resetContainerDirectoryAfterTesting() {
+        configurationLock.lock()
+        injectedContainerDirectory = nil
+        hasInjectedContainerDirectory = false
+        configurationLock.unlock()
+    }
+
+    static func clearIPCFilesForTesting() {
+        guard let directory = containerDirectory() else { return }
+        try? FileManager.default.removeItem(at: directory.appendingPathComponent(settingsFileName))
+        for url in resultFileURLs(in: directory) {
+            try? FileManager.default.removeItem(at: url)
+        }
+    }
+
+    // MARK: 结果（主 App -> 键盘）
+
+    @discardableResult
+    static func writeTranscription(
+        _ text: String,
+        session: String,
+        deleteSelected: Bool = false,
+        timestamp: TimeInterval = Date().timeIntervalSince1970
+    ) -> Bool {
+        guard let fileName = resultFileName(for: session) else { return false }
+        let payload = DictationIPCResult(
+            status: .completed,
+            text: text,
+            session: session,
+            deleteSelected: deleteSelected,
+            timestamp: timestamp
+        )
+        guard write(payload, fileName: fileName) else { return false }
+        DarwinNotificationObserver.post(DarwinNotificationName.transcriptionReady)
+        return true
+    }
+
+    @discardableResult
+    static func writeError(
+        _ message: String,
+        session: String,
+        timestamp: TimeInterval = Date().timeIntervalSince1970
+    ) -> Bool {
+        guard let fileName = resultFileName(for: session) else { return false }
+        let payload = DictationIPCResult(
+            status: .error,
+            text: message,
+            session: session,
+            deleteSelected: false,
+            timestamp: timestamp
+        )
+        guard write(payload, fileName: fileName) else { return false }
+        DarwinNotificationObserver.post(DarwinNotificationName.transcriptionError)
+        return true
+    }
+
+    /// 只查看结果。扩展重启后用它提示用户，不得直接自动插入。
+    static func peekResult(
+        now: TimeInterval = Date().timeIntervalSince1970,
+        maxAge: TimeInterval = resultMaxAge
+    ) -> DictationIPCResult? {
+        guard let directory = containerDirectory() else { return nil }
+        return resultFileURLs(in: directory)
+            .compactMap { url in
+                read(
+                    fileName: url.lastPathComponent,
+                    as: DictationIPCResult.self,
+                    now: now,
+                    maxAge: maxAge
+                )
+            }
+            .max(by: { $0.timestamp < $1.timestamp })
+    }
+
+    /// 仅 session 匹配时原子消费；不匹配时文件保持不变。
+    static func readAndConsumeResult(
+        expectedSession: String,
+        now: TimeInterval = Date().timeIntervalSince1970,
+        maxAge: TimeInterval = resultMaxAge
+    ) -> DictationIPCResult? {
+        guard let fileName = resultFileName(for: expectedSession) else { return nil }
+        return consume(
+            fileName: fileName,
+            as: DictationIPCResult.self,
+            expectedSession: expectedSession,
+            now: now,
+            maxAge: maxAge,
+            session: { $0.session },
+            timestamp: { $0.timestamp }
+        )
+    }
+
+    /// 用户确认一个恢复结果后，清理不晚于该结果的其他遗留结果。更晚到达的
+    /// 新会话结果会保留，避免扩展重启后旧结果被逐个插入到错误输入框。
+    static func discardResults(
+        through timestamp: TimeInterval,
+        now: TimeInterval = Date().timeIntervalSince1970
+    ) {
+        guard let directory = containerDirectory() else { return }
+        for url in resultFileURLs(in: directory) {
+            guard let result = read(
+                fileName: url.lastPathComponent,
+                as: DictationIPCResult.self,
+                now: now,
+                maxAge: resultMaxAge
+            ), result.timestamp <= timestamp else { continue }
+            _ = consume(
+                fileName: url.lastPathComponent,
+                as: DictationIPCResult.self,
+                expectedSession: result.session,
+                now: now,
+                maxAge: resultMaxAge,
+                session: { $0.session },
+                timestamp: { $0.timestamp }
+            )
+        }
+    }
+
+    // MARK: 设置（键盘 -> 主 App）
+
+    @discardableResult
+    static func writeDictationSettings(_ settings: DictationSettings) -> Bool {
+        write(settings, fileName: settingsFileName)
+    }
+
+    /// 后台尝试已消费设置后，失败时只能在没有更新会话的情况下回写。
+    /// 比较和写入位于同一次文件协调中，避免“先检查 B、再被 A 覆盖”的竞态。
+    static func requeueDictationSettingsIfNotSuperseded(
+        _ settings: DictationSettings,
+        now: TimeInterval = Date().timeIntervalSince1970
+    ) -> Bool {
+        guard let url = fileURL(named: settingsFileName),
+              let data = try? JSONEncoder().encode(settings) else { return false }
+
+        ioLock.lock()
+        defer { ioLock.unlock() }
+
+        let coordinator = NSFileCoordinator(filePresenter: nil)
+        var coordinationError: NSError?
+        var operationError: Error?
+        var didRequeue = false
+        coordinator.coordinate(
+            writingItemAt: url,
+            options: .forReplacing,
+            error: &coordinationError
+        ) { coordinatedURL in
+            if let existingData = try? Data(contentsOf: coordinatedURL),
+               let existing = try? JSONDecoder().decode(
+                   DictationSettings.self,
+                   from: existingData
+               ), isFresh(existing.timestamp, now: now, maxAge: settingsMaxAge),
+               existing.session != settings.session {
+                return
+            }
+            do {
+                try data.write(
+                    to: coordinatedURL,
+                    options: [.atomic, .completeFileProtection]
+                )
+                didRequeue = true
+            } catch {
+                operationError = error
+            }
+        }
+        if let error = coordinationError {
+            print("[DarwinBridge] IPC requeue failed: \(error.localizedDescription)")
+            return false
+        }
+        if let operationError {
+            print("[DarwinBridge] IPC requeue failed: \(operationError.localizedDescription)")
+            return false
+        }
+        return didRequeue
+    }
+
+    /// 查看尚未处理的听写请求。主 App 被用户手动打开时可据此进入 DictationView。
+    static func peekPendingDictationSettings(
+        now: TimeInterval = Date().timeIntervalSince1970,
+        maxAge: TimeInterval = settingsMaxAge
+    ) -> DictationSettings? {
+        read(fileName: settingsFileName, as: DictationSettings.self, now: now, maxAge: maxAge)
+    }
+
+    static func readAndConsumeDictationSettings(
+        expectedSession: String? = nil,
+        now: TimeInterval = Date().timeIntervalSince1970,
+        maxAge: TimeInterval = settingsMaxAge
+    ) -> DictationSettings? {
+        consume(
+            fileName: settingsFileName,
+            as: DictationSettings.self,
+            expectedSession: expectedSession,
+            now: now,
+            maxAge: maxAge,
+            session: { $0.session },
+            timestamp: { $0.timestamp }
+        )
+    }
+
+    @discardableResult
+    static func discardPendingDictationSettings(expectedSession: String) -> Bool {
+        readAndConsumeDictationSettings(expectedSession: expectedSession) != nil
+    }
+
+    // MARK: 心跳与通知
+
+    static func writeHeartbeat() {
+        DarwinNotificationObserver.post(DarwinNotificationName.heartbeat)
+    }
+
+    static func isMainAppAlive(threshold: TimeInterval = 3.0) -> Bool {
+        HeartbeatTracker.shared.isMainAppAlive(threshold: threshold)
+    }
+
+    static func heartbeatAge() -> TimeInterval {
+        HeartbeatTracker.shared.heartbeatAge()
+    }
+
+    static func postNotification(_ name: String) {
+        DarwinNotificationObserver.post(name)
+    }
+
+    /// Darwin 通知本身不携带 payload。会改变会话状态的通知必须把 session
+    /// 哈希编码到通知名中，避免旧会话的迟到通知驱动当前会话。
+    static func sessionNotificationName(base: String, session: String) -> String? {
+        guard let token = sessionToken(session) else { return nil }
+        return "\(base).\(token)"
+    }
+
+    @discardableResult
+    static func postSessionNotification(base: String, session: String) -> Bool {
+        guard let name = sessionNotificationName(base: base, session: session) else {
+            return false
+        }
+        DarwinNotificationObserver.post(name)
+        return true
+    }
+
+    // MARK: 文件协调
+
+    private static func containerDirectory() -> URL? {
+        configurationLock.lock()
+        let isInjected = hasInjectedContainerDirectory
+        let injected = injectedContainerDirectory
+        configurationLock.unlock()
+        if isInjected { return injected }
+        return FileManager.default.containerURL(
+            forSecurityApplicationGroupIdentifier: appGroupIdentifier
+        )
+    }
+
+    private static func fileURL(named fileName: String) -> URL? {
+        guard let directory = containerDirectory() else {
+            print("[DarwinBridge] App Group container unavailable: \(appGroupIdentifier)")
+            return nil
+        }
+        do {
+            try FileManager.default.createDirectory(
+                at: directory,
+                withIntermediateDirectories: true,
+                attributes: nil
+            )
+            return directory.appendingPathComponent(fileName, isDirectory: false)
+        } catch {
+            print("[DarwinBridge] Cannot prepare IPC directory: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    private static func resultFileName(for session: String) -> String? {
+        guard let token = sessionToken(session) else { return nil }
+        return "\(resultFilePrefix)\(token)\(resultFileSuffix)"
+    }
+
+    private static func resultFileURLs(in directory: URL) -> [URL] {
+        let urls = (try? FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        )) ?? []
+        return urls.filter {
+            let name = $0.lastPathComponent
+            return name.hasPrefix(resultFilePrefix) && name.hasSuffix(resultFileSuffix)
+        }
+    }
+
+    private static func sessionToken(_ session: String) -> String? {
+        let bytes = Data(session.utf8)
+        guard !bytes.isEmpty, bytes.count <= 512 else { return nil }
+        return SHA256.hash(data: bytes)
+            .map { String(format: "%02x", $0) }
+            .joined()
+    }
+
+    private static func write<Value: Encodable>(_ value: Value, fileName: String) -> Bool {
+        guard let url = fileURL(named: fileName),
+              let data = try? JSONEncoder().encode(value) else { return false }
+
+        ioLock.lock()
+        defer { ioLock.unlock() }
+
+        let coordinator = NSFileCoordinator(filePresenter: nil)
+        var coordinationError: NSError?
+        var operationError: Error?
+        coordinator.coordinate(
+            writingItemAt: url,
+            options: .forReplacing,
+            error: &coordinationError
+        ) { coordinatedURL in
+            do {
+                try data.write(to: coordinatedURL, options: [.atomic, .completeFileProtection])
+            } catch {
+                operationError = error
+            }
+        }
+
+        if let error = coordinationError {
+            print("[DarwinBridge] IPC write failed: \(error.localizedDescription)")
+            return false
+        }
+        if let operationError {
+            print("[DarwinBridge] IPC write failed: \(operationError.localizedDescription)")
+            return false
+        }
+        return true
+    }
+
+    private static func read<Value: Decodable & TimestampedIPCValue>(
+        fileName: String,
+        as type: Value.Type,
+        now: TimeInterval,
+        maxAge: TimeInterval
+    ) -> Value? {
+        guard let url = fileURL(named: fileName) else { return nil }
+
+        ioLock.lock()
+        defer { ioLock.unlock() }
+
+        let coordinator = NSFileCoordinator(filePresenter: nil)
+        var coordinationError: NSError?
+        var value: Value?
+        coordinator.coordinate(
+            writingItemAt: url,
+            options: .forMerging,
+            error: &coordinationError
+        ) { coordinatedURL in
+            guard let data = try? Data(contentsOf: coordinatedURL),
+                  let decoded = try? JSONDecoder().decode(Value.self, from: data) else {
+                try? FileManager.default.removeItem(at: coordinatedURL)
+                return
+            }
+            guard isFresh(decoded.timestamp, now: now, maxAge: maxAge) else {
+                try? FileManager.default.removeItem(at: coordinatedURL)
+                return
+            }
+            value = decoded
+        }
+        return coordinationError == nil ? value : nil
+    }
+
+    private static func consume<Value: Codable>(
+        fileName: String,
+        as type: Value.Type,
+        expectedSession: String?,
+        now: TimeInterval,
+        maxAge: TimeInterval,
+        session: (Value) -> String,
+        timestamp: (Value) -> TimeInterval
+    ) -> Value? {
+        guard let url = fileURL(named: fileName) else { return nil }
+
+        ioLock.lock()
+        defer { ioLock.unlock() }
+
+        let coordinator = NSFileCoordinator(filePresenter: nil)
+        var coordinationError: NSError?
+        var consumed: Value?
+        coordinator.coordinate(
+            writingItemAt: url,
+            options: .forMerging,
+            error: &coordinationError
+        ) { coordinatedURL in
+            guard let data = try? Data(contentsOf: coordinatedURL),
+                  let decoded = try? JSONDecoder().decode(Value.self, from: data) else {
+                try? FileManager.default.removeItem(at: coordinatedURL)
+                return
+            }
+            guard isFresh(timestamp(decoded), now: now, maxAge: maxAge) else {
+                try? FileManager.default.removeItem(at: coordinatedURL)
+                return
+            }
+            if let expectedSession, session(decoded) != expectedSession {
+                return
+            }
+            do {
+                try FileManager.default.removeItem(at: coordinatedURL)
+                consumed = decoded
+            } catch {
+                print("[DarwinBridge] IPC consume failed: \(error.localizedDescription)")
+            }
+        }
+        return coordinationError == nil ? consumed : nil
+    }
+
+    private static func isFresh(
+        _ timestamp: TimeInterval,
+        now: TimeInterval,
+        maxAge: TimeInterval
+    ) -> Bool {
+        timestamp > 0 && timestamp <= now + 5 && now - timestamp <= maxAge
+    }
 }

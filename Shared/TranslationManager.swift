@@ -11,29 +11,37 @@ import FoundationModels
 /// - 说英文 → 输出中文
 /// - iOS 26+ 使用设备端 LLM 做高质量翻译
 /// - 低版本回退到简单词典替换(仅中英互译)
-class TranslationManager {
+protocol TranslationProviding {
+    func translate(_ text: String, from sourceLang: String, to targetLang: String) async -> String?
+}
 
-    static let shared = TranslationManager()
+class TranslationManager: TranslationProviding {
 
-    private let sharedDefaults = UserDefaults.standard as UserDefaults?
+    static let shared = TranslationManager(defaults: SharedDefaults.shared)
+
+    private let sharedDefaults: UserDefaults
+
+    init(defaults: UserDefaults = SharedDefaults.shared) {
+        self.sharedDefaults = defaults
+    }
 
     // MARK: - 翻译模式
 
     var translationEnabled: Bool {
-        sharedDefaults?.object(forKey: "translationEnabled") as? Bool ?? false
+        sharedDefaults.object(forKey: "translationEnabled") as? Bool ?? false
     }
 
     func setTranslationEnabled(_ enabled: Bool) {
-        sharedDefaults?.set(enabled, forKey: "translationEnabled")
+        sharedDefaults.set(enabled, forKey: "translationEnabled")
     }
 
     /// 目标翻译语言 ID
     var targetLanguageID: String {
         get {
-            sharedDefaults?.string(forKey: "translationTarget") ?? "en-US"
+            sharedDefaults.string(forKey: "translationTarget") ?? "en-US"
         }
         set {
-            sharedDefaults?.set(newValue, forKey: "translationTarget")
+            sharedDefaults.set(newValue, forKey: "translationTarget")
         }
     }
 
@@ -44,17 +52,18 @@ class TranslationManager {
     /// - Parameter sourceLang: 源语言 ID
     /// - Returns: 翻译后的文本,如果翻译失败返回 nil
     func translate(_ text: String, from sourceLang: String) async -> String? {
+        await translate(text, from: sourceLang, to: targetLanguageID)
+    }
+
+    /// 使用调用方本次会话指定的目标语言翻译，避免异步处理期间读取到已变化的全局设置。
+    func translate(_ text: String, from sourceLang: String, to targetLang: String) async -> String? {
         guard !text.isEmpty else { return nil }
 
-        let targetLang = targetLanguageID
         guard targetLang != sourceLang else { return nil }
 
         // 获取目标语言名
-        let targetConfig = LanguageManager.allLanguages.first { $0.id == targetLang }
-        let sourceConfig = LanguageManager.allLanguages.first { $0.id == sourceLang }
-
-        let targetName = targetConfig?.name ?? targetLang
-        let sourceName = sourceConfig?.name ?? sourceLang
+        let targetName = LanguageManager.language(for: targetLang).name
+        let sourceName = LanguageManager.language(for: sourceLang).name
 
         // LLM 翻译 (iOS 26+)
         #if canImport(FoundationModels)

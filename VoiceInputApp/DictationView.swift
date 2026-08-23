@@ -1,6 +1,7 @@
 import SwiftUI
 import AVFoundation
 import Speech
+import UIKit
 
 // MARK: - ViewModel
 
@@ -15,6 +16,7 @@ class DictationViewModel: ObservableObject {
     @Published var statusMessage = "准备中..."
     @Published var hasResult = false
     @Published var permissionError: String?
+    @Published var canExit = false
 
     private var audioEngine: AVAudioEngine?
     private var speechRecognizer: SFSpeechRecognizer?
@@ -27,54 +29,103 @@ class DictationViewModel: ObservableObject {
     // 心跳定时器:每 0.5s 写一次心跳,让键盘知道主 App 存活
     private var heartbeatTimer: DispatchSourceTimer?
 
-    private var languageID = "zh-CN"
-    private var whisperMode = false
-    private var selectedText: String?
-    private var sessionId = ""
-    private var keyboardType: Int = 0
+    private(set) var languageID = "zh-CN"
+    private(set) var whisperMode = false
+    private(set) var translateEnabled = false
+    private(set) var translateTarget = "en-US"
+    private(set) var selectedText: String?
+    private(set) var sessionId = ""
+    private(set) var keyboardType: Int = 0
+    private(set) var hasValidSettings = false
+    private var didWriteTerminalResult = false
+    private var stopRequestObserver: DarwinNotificationObserver?
 
     // MARK: - 从 URL 加载设置
 
     func loadSettings(from url: URL?) {
-        // Path B: URL Scheme 传参
-        if let url = url, let components = URLComponents(url: url, resolvingAgainstBaseURL: false) {
-            let queryItems = components.queryItems ?? []
-            let dict = Dictionary(queryItems.compactMap { item -> (String, String)? in
-                guard let value = item.value else { return nil }
-                return (item.name, value)
-            }, uniquingKeysWith: { _, last in last })
-
-            sessionId = dict[DictationConstants.paramSession] ?? UUID().uuidString
-            languageID = dict[DictationConstants.paramLang] ?? "zh-CN"
-            whisperMode = dict[DictationConstants.paramWhisper] == "1"
-            selectedText = dict[DictationConstants.paramSelectedText]
-            keyboardType = Int(dict[DictationConstants.paramKbType] ?? "0") ?? 0
-        } else if let settings = DarwinBridge.readDictationSettings() {
-            // Path A: Darwin 通知触发,设置从命名剪贴板读取
-            sessionId = settings.session
-            languageID = settings.language
-            whisperMode = settings.whisper
-            selectedText = settings.selectedText
-            keyboardType = settings.keyboardType
-            print("[Dictation] Loaded settings from clipboard (Path A), session=\(sessionId.prefix(8))")
+        let expectedSession: String?
+        if let url,
+           url.scheme == DictationConstants.urlScheme,
+           url.host == DictationConstants.dictationPath,
+           let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+           let value = components.queryItems?.first(where: {
+               $0.name == DictationConstants.paramSession
+           })?.value,
+           UUID(uuidString: value) != nil {
+            expectedSession = value
         } else {
-            sessionId = UUID().uuidString
-            languageID = "zh-CN"
+            expectedSession = nil
         }
 
+        let settings: DictationSettings?
+        if let expectedSession {
+            settings = DarwinBridge.readAndConsumeDictationSettings(
+                expectedSession: expectedSession
+            )
+        } else if url == nil,
+                  let pending = DarwinBridge.peekPendingDictationSettings() {
+            settings = DarwinBridge.readAndConsumeDictationSettings(
+                expectedSession: pending.session
+            )
+        } else {
+            settings = nil
+        }
+
+        guard let settings, UUID(uuidString: settings.session) != nil else {
+            hasValidSettings = false
+            sessionId = ""
+            speechRecognizer = nil
+            return
+        }
+
+        hasValidSettings = true
+        sessionId = settings.session
+        languageID = settings.language
+        whisperMode = settings.whisper
+        translateEnabled = settings.translateEnabled
+        translateTarget = settings.translateTarget
+        selectedText = settings.selectedText
+        keyboardType = settings.keyboardType
         speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: languageID))
+        configureStopRequestObserver()
+    }
+
+    private func configureStopRequestObserver() {
+        guard let name = DarwinBridge.sessionNotificationName(
+            base: DarwinNotificationName.requestStopDictation,
+            session: sessionId
+        ) else {
+            stopRequestObserver = nil
+            return
+        }
+        stopRequestObserver = DarwinNotificationObserver(name: name) { [weak self] in
+            Task { @MainActor in
+                guard let self, self.hasValidSettings else { return }
+                if self.isRecording {
+                    self.stopRecording()
+                } else if !self.didWriteTerminalResult {
+                    self.fail("语音输入已取消")
+                }
+            }
+        }
     }
 
     // MARK: - 权限检查 + 自动开始录音
 
     func checkPermissionsAndStart() {
+        guard hasValidSettings else {
+            permissionError = "听写请求已过期，请返回键盘重试"
+            statusMessage = permissionError ?? "听写请求无效"
+            canExit = true
+            return
+        }
         let speechStatus = SFSpeechRecognizer.authorizationStatus()
 
         if speechStatus != .authorized {
             SFSpeechRecognizer.requestAuthorization { status in
                 DispatchQueue.main.async {
                     if status != .authorized {
-                        self.permissionError = "请到设置中允许语音识别权限"
+                        self.fail("请到设置中允许语音识别权限")
                     } else {
                         self.checkMicPermission()
                     }
@@ -91,7 +142,7 @@ class DictationViewModel: ObservableObject {
             AVAudioSession.sharedInstance().requestRecordPermission { granted in
                 DispatchQueue.main.async {
                     if !granted {
-                        self.permissionError = "请到设置中允许麦克风权限"
+                        self.fail("请到设置中允许麦克风权限")
                     } else {
                         self.startRecording()
                     }
@@ -109,7 +160,7 @@ class DictationViewModel: ObservableObject {
         liveText = ""
 
         guard let recognizer = speechRecognizer, recognizer.isAvailable else {
-            permissionError = "语音识别不可用,请检查网络连接"
+            fail("语音识别不可用，请检查网络或设备端识别支持")
             return
         }
 
@@ -132,8 +183,8 @@ class DictationViewModel: ObservableObject {
 
             recognitionRequest = SFSpeechAudioBufferRecognitionRequest()
             guard let req = recognitionRequest else { return }
-            req.shouldReportPartialResults = true
-            req.requiresOnDeviceRecognition = false
+            req.shouldReportPartialResults = TextProcessor.shared.livePreviewEnabled
+            req.requiresOnDeviceRecognition = recognizer.supportsOnDeviceRecognition
 
             recognitionTask = recognizer.recognitionTask(with: req) { [weak self] result, error in
                 DispatchQueue.main.async {
@@ -156,6 +207,12 @@ class DictationViewModel: ObservableObject {
             let inputNode = engine.inputNode
             let recordingFormat = inputNode.outputFormat(forBus: 0)
 
+            guard recordingFormat.sampleRate > 0, recordingFormat.channelCount > 0 else {
+                fail("麦克风音频格式不可用，请检查输入设备")
+                cleanupAudioOnly()
+                return
+            }
+
             inputNode.removeTap(onBus: 0)
             inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { buffer, _ in
                 req.append(buffer)
@@ -171,12 +228,24 @@ class DictationViewModel: ObservableObject {
 
             // 写入心跳 + 发送 dictationStarted 通知 (键盘收到后取消 5s 超时)
             DarwinBridge.writeHeartbeat()
-            DarwinBridge.postNotification(DarwinNotificationName.dictationStarted)
+            DarwinBridge.postSessionNotification(
+                base: DarwinNotificationName.dictationStarted,
+                session: sessionId
+            )
             startHeartbeat()
 
         } catch {
-            statusMessage = "启动失败: \(error.localizedDescription)"
+            fail("启动失败：\(error.localizedDescription)")
             cleanup()
+        }
+    }
+
+    private func fail(_ message: String) {
+        permissionError = message
+        statusMessage = message
+        canExit = true
+        if !didWriteTerminalResult, !sessionId.isEmpty {
+            didWriteTerminalResult = DarwinBridge.writeError(message, session: sessionId)
         }
     }
 
@@ -200,13 +269,19 @@ class DictationViewModel: ObservableObject {
         DarwinBridge.postNotification(DarwinNotificationName.dictationStopped)
 
         if resultText.isEmpty {
-            DarwinBridge.writeError("未识别到语音", session: sessionId)
-            statusMessage = "未识别到语音"
-            hasResult = true
+            let wroteResult = DarwinBridge.writeError("未识别到语音", session: sessionId)
+            didWriteTerminalResult = wroteResult
+            if wroteResult {
+                statusMessage = "未识别到语音"
+                hasResult = true
+            } else {
+                permissionError = "无法写入共享结果，请检查 App Group 配置"
+                statusMessage = permissionError ?? "无法写入结果"
+                canExit = true
+            }
             transitionToStandby()
         } else {
             statusMessage = "正在处理文字..."
-            hasResult = true
 
             // ★ 关键: 不依赖 self! DictationView 会在 2.5s 后 dismiss,
             // viewModel 可能被释放。把所有需要的值捕获为局部变量,
@@ -216,6 +291,10 @@ class DictationViewModel: ObservableObject {
             let capturedKbType = kbType
             let capturedResultText = resultText
             let capturedHadSelectedText = hadSelectedText
+            let capturedLanguage = languageID
+            let capturedTranslateEnabled = translateEnabled
+            let capturedTranslateTarget = translateTarget
+            let capturedVoiceEditEnabled = TextProcessor.shared.voiceEditEnabled
 
             // 在主 App 中处理文字 (LLM/翻译/格式化/语音编辑)
             // 键盘扩展内存太小,不能跑 LLM
@@ -223,19 +302,42 @@ class DictationViewModel: ObservableObject {
                 let processed = await TextProcessor.shared.process(
                     capturedResultText,
                     selectedText: capturedSelectedText,
-                    keyboardType: capturedKbType
+                    keyboardType: capturedKbType,
+                    language: capturedLanguage,
+                    translateEnabled: capturedTranslateEnabled,
+                    translateTarget: capturedTranslateTarget
                 )
 
-                let finalText = processed.isEmpty ? capturedResultText : processed
-                DarwinBridge.writeTranscription(
-                    finalText,
-                    session: capturedSessionId,
-                    deleteSelected: capturedHadSelectedText && TextProcessor.shared.voiceEditEnabled
-                )
+                let wroteResult: Bool
+                switch processed {
+                case .insert(let text):
+                    wroteResult = DarwinBridge.writeTranscription(
+                        text,
+                        session: capturedSessionId,
+                        deleteSelected: capturedHadSelectedText && capturedVoiceEditEnabled
+                    )
+                case .deleteSelection:
+                    wroteResult = DarwinBridge.writeTranscription(
+                        "",
+                        session: capturedSessionId,
+                        deleteSelected: true
+                    )
+                case .failure(let reason):
+                    let message = reason == .emptyInput ? "未识别到语音" : "文字处理后没有可输入内容"
+                    wroteResult = DarwinBridge.writeError(message, session: capturedSessionId)
+                }
 
                 // 回到主线程更新 UI (如果 viewModel 还活着)
                 await MainActor.run {
-                    self?.statusMessage = "识别完成 ✓"
+                    self?.didWriteTerminalResult = wroteResult
+                    if wroteResult {
+                        self?.statusMessage = "识别完成 ✓"
+                        self?.hasResult = true
+                    } else {
+                        self?.permissionError = "无法写入共享结果，请检查 App Group 配置"
+                        self?.statusMessage = "无法写入结果"
+                        self?.canExit = true
+                    }
                     self?.transitionToStandby()
                 }
             }
@@ -252,8 +354,8 @@ class DictationViewModel: ObservableObject {
             // 停掉 ViewModel 自己的心跳,BG manager 会接管
             self.stopHeartbeat()
 
-            // 启用后台待命
-            BackgroundDictationManager.shared.enablePipStandby()
+            // 只恢复用户明确开启过的后台待命，不得在录音后替用户开启。
+            BackgroundDictationManager.shared.resumeStandbyIfEnabled()
 
             // 清理录音资源但保留 audio session
             self.cleanupAudioOnly()
@@ -290,8 +392,17 @@ class DictationViewModel: ObservableObject {
 
     func cleanup() {
         if isRecording {
-            DarwinBridge.writeError("已取消", session: sessionId)
-            stopRecording()
+            isRecording = false
+            silenceTimer?.invalidate()
+            silenceTimer = nil
+            audioEngine?.stop()
+            audioEngine?.inputNode.removeTap(onBus: 0)
+            recognitionRequest?.endAudio()
+            recognitionTask?.cancel()
+            if !didWriteTerminalResult {
+                didWriteTerminalResult = DarwinBridge.writeError("已取消", session: sessionId)
+            }
+            DarwinBridge.postNotification(DarwinNotificationName.dictationStopped)
         }
         stopHeartbeat()
         recognitionRequest?.endAudio()
@@ -299,6 +410,7 @@ class DictationViewModel: ObservableObject {
         recognitionRequest = nil
         recognitionTask = nil
         audioEngine = nil
+        stopRequestObserver = nil
     }
 
     // MARK: - 心跳定时器
@@ -373,10 +485,18 @@ struct DictationView: View {
 
                 // 错误提示
                 if let error = viewModel.permissionError {
-                    Text(error)
-                        .font(.caption)
-                        .foregroundColor(.red)
-                        .padding()
+                    VStack(spacing: 10) {
+                        Text(error)
+                            .font(.caption)
+                            .foregroundColor(.red)
+                        Button("前往系统设置") {
+                            if let url = URL(string: UIApplication.openSettingsURLString) {
+                                UIApplication.shared.open(url)
+                            }
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                    .padding()
                 }
 
                 Spacer()
@@ -384,7 +504,7 @@ struct DictationView: View {
                 // 底部操作按钮
                 VStack(spacing: 16) {
                     if viewModel.hasResult {
-                        Text("文字已就绪,返回键盘即可\n后台保活已自动开启")
+                        Text("文字已就绪，返回键盘即可")
                             .font(.subheadline)
                             .foregroundColor(.blue)
                             .multilineTextAlignment(.center)
@@ -403,6 +523,10 @@ struct DictationView: View {
                         .tint(.red)
                         .controlSize(.large)
                         .padding(.horizontal)
+                    } else if viewModel.canExit {
+                        Button("返回") { dismiss() }
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.large)
                     } else if viewModel.permissionError == nil {
                         ProgressView()
                             .scaleEffect(1.5)
@@ -427,6 +551,9 @@ struct DictationView: View {
                     dismiss()
                 }
             }
+        }
+        .onDisappear {
+            viewModel.cleanup()
         }
     }
 }
