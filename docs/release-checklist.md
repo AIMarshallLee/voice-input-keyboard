@@ -8,7 +8,7 @@
 - [x] `VoTypeTests` 在可用 iPhone 模拟器全部通过；找不到模拟器时 CI 必须失败。
 - [x] Release 的无签名 device build 通过。
 - [x] App 与 Keyboard Extension 都包含 `PrivacyInfo.xcprivacy`。
-- [x] `project.yml` 中源码构建号为 35；TestFlight CI 已使用 run number 覆盖并上传 build 105。
+- [x] `project.yml` 中源码构建号为 35；TestFlight CI 已使用 run number 覆盖并上传 build 112。
 - [x] 普通 PR / push 不会调用 `pilot upload` 或 `deliver`。
 - [x] 手动发布只有在 `publish=true` 时才会访问 App Store Connect。
 
@@ -22,7 +22,7 @@
 - [x] CI 不再依赖仓库中的 App Store profile secrets；证书、密码、API Key 或 profile 内容均不写入仓库或文档。
 - [x] 签名候选包中主 App 与扩展的 entitlement 均包含正确 App Group，且证书 SHA 与 embedded profile UUID 已逐一核对。
 
-验证证据：2026-08-24 的 [Build IPA #105](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/32721229487) 已通过 profile、证书、Bundle ID、App Group、嵌入 profile 与嵌套签名校验。
+验证证据：2026-08-25 的 [Build IPA #112](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/32763521130) 已通过 XCTest、profile、证书、Bundle ID、App Group、嵌入 profile 与嵌套签名校验。
 
 ## 3. 真机功能
 
@@ -66,10 +66,10 @@
 ## 6. TestFlight 与发布
 
 - [x] 手动运行发布 workflow，签名 IPA 已保存为可追溯的 GitHub Actions artifact。
-- [x] App Store Connect 已完成 build 105 processing，而不只是上传命令成功。
+- [x] App Store Connect 已完成 build 112 processing，而不只是上传命令成功。
 - [ ] 安装处理完成的 TestFlight build，执行一次完整回归。
 - [ ] 填写加密出口、隐私问卷、审核说明和键盘测试步骤。
-- [x] Build 1.0 (105) 已分发给 Internal testers；外部测试稳定后再提交 App Review。
+- [x] Build 1.0 (112) 已分发给 Internal testers；真机稳定且用户明确确认后再考虑提交 App Review。
 - [ ] App Review 通过且公开商店页可查询后，才把项目状态改为“已发布”。
 
-TestFlight 证据：同一 [Build IPA #105](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/32721229487) 日志确认 `Successfully finished processing the build 1.0 - 105` 及 `Successfully distributed build to Internal testers`；`Upload Metadata and Screenshots` 明确跳过。
+TestFlight 证据：同一 [Build IPA #112](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/32763521130) 日志确认 `Successfully finished processing the build 1.0 - 112` 及 `Successfully distributed build to Internal testers`；`Upload Metadata and Screenshots` 明确跳过。
