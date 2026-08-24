@@ -1241,30 +1241,35 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
         requestContainingAppOpen(sessionId: sessionId)
     }
 
-    /// `NSExtensionContext.open` is attempted first. Apple does not guarantee
-    /// containing-app launch for custom keyboard extensions, so older/current
-    /// iOS builds also need the responder-chain route initiated by the same tap.
+    /// Apple does not guarantee `NSExtensionContext.open` for custom keyboards.
+    /// Run the responder-chain request immediately from the user's tap instead
+    /// of trusting the extension-context completion value, then retry only while
+    /// the keyboard is still visible and the same session is waiting.
     private func requestContainingAppOpen(sessionId: String) {
         guard let url = DictationConstants.buildDictationURL(session: sessionId) else {
             showManualOpenFallback(sessionId: sessionId)
             return
         }
 
-        let responderFallback = { [weak self] in
-            guard let self = self,
-                  self.isWaitingForResult,
-                  self.currentSessionId == sessionId else { return }
-            _ = self.openURLThroughResponderChain(url)
+        // Build 112 tried extensionContext first. On the tested iPhone it could
+        // report the request as accepted without actually switching apps, so the
+        // responder route never ran. Do not gate the real fallback on that flag.
+        _ = openURLThroughResponderChain(url)
+
+        extensionContext?.open(url) { opened in
+            print("[KB] extensionContext.open completion: \(opened)")
         }
 
-        guard let extensionContext = extensionContext else {
-            responderFallback()
-            return
-        }
-
-        extensionContext.open(url) { opened in
-            guard !opened else { return }
-            DispatchQueue.main.async(execute: responderFallback)
+        for delay in [0.20, 0.65] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                guard let self = self,
+                      self.keyboardIsVisible,
+                      self.isWaitingForResult,
+                      self.currentSessionId == sessionId,
+                      self.currentLivePhase == .starting else { return }
+                print("[KB] Retrying containing-app open after \(delay)s")
+                _ = self.openURLThroughResponderChain(url)
+            }
         }
     }
 
@@ -1274,11 +1279,13 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
         var responder: UIResponder? = self
         while let current = responder {
             if current.responds(to: selector) {
+                print("[KB] Sending openURL: through \(type(of: current))")
                 current.perform(selector, with: url)
                 return true
             }
             responder = current.next
         }
+        print("[KB] No responder accepted openURL:")
         return false
     }
 
