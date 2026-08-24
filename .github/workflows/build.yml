@@ -639,13 +639,12 @@ jobs:
               rm -f "$entitlements_file"
               exit 1
             fi
-            if ! codesign --display --entitlements :- "$bundle_path" \
+            if ! codesign --display --entitlements - --xml "$bundle_path" \
               > "$entitlements_file" 2>/dev/null; then
               echo "Unable to extract $label entitlements"
               rm -f "$entitlements_file"
               exit 1
             fi
-            plutil -convert xml1 "$entitlements_file"
 
             SIGNED_ENTITLEMENTS="$entitlements_file" \
               SIGNED_INFO_PLIST="$bundle_path/Info.plist" \
