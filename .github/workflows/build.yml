@@ -85,20 +85,34 @@ jobs:
           p12_is_valid() {
             local encoded="$1"
             local password="$2"
-            local cert_file
+            local cert_file keychain_file keychain_password import_status
             cert_file=$(mktemp)
+            keychain_file="$RUNNER_TEMP/votype-p12-check-$(uuidgen).keychain-db"
+            keychain_password=$(uuidgen)
             if ! printf '%s' "$encoded" | base64 --decode > "$cert_file"; then
               rm -f "$cert_file"
               return 1
             fi
-            if ! P12_CHECK_PASSWORD="$password" openssl pkcs12 \
-              -in "$cert_file" \
-              -passin env:P12_CHECK_PASSWORD \
-              -noout >/dev/null 2>&1; then
-              rm -f "$cert_file"
-              return 1
+
+            import_status=0
+            if ! security create-keychain -p "$keychain_password" "$keychain_file" \
+              >/dev/null 2>&1; then
+              import_status=1
+            elif ! security unlock-keychain -p "$keychain_password" "$keychain_file" \
+              >/dev/null 2>&1; then
+              import_status=1
+            elif ! security import "$cert_file" \
+              -P "$password" -A -t cert -f pkcs12 -k "$keychain_file" \
+              >/dev/null 2>&1; then
+              import_status=1
+            elif ! security find-identity -v -p codesigning "$keychain_file" \
+              | grep -Eq '^[[:space:]]*[1-9][0-9]*\)'; then
+              import_status=1
             fi
+
+            security delete-keychain "$keychain_file" >/dev/null 2>&1 || true
             rm -f "$cert_file"
+            return "$import_status"
           }
 
           profile_has_app_group() {
@@ -176,20 +190,34 @@ jobs:
           p12_is_valid() {
             local encoded="$1"
             local password="$2"
-            local cert_file
+            local cert_file keychain_file keychain_password import_status
             cert_file=$(mktemp)
+            keychain_file="$RUNNER_TEMP/votype-p12-check-$(uuidgen).keychain-db"
+            keychain_password=$(uuidgen)
             if ! printf '%s' "$encoded" | base64 --decode > "$cert_file"; then
               rm -f "$cert_file"
               return 1
             fi
-            if ! P12_CHECK_PASSWORD="$password" openssl pkcs12 \
-              -in "$cert_file" \
-              -passin env:P12_CHECK_PASSWORD \
-              -noout >/dev/null 2>&1; then
-              rm -f "$cert_file"
-              return 1
+
+            import_status=0
+            if ! security create-keychain -p "$keychain_password" "$keychain_file" \
+              >/dev/null 2>&1; then
+              import_status=1
+            elif ! security unlock-keychain -p "$keychain_password" "$keychain_file" \
+              >/dev/null 2>&1; then
+              import_status=1
+            elif ! security import "$cert_file" \
+              -P "$password" -A -t cert -f pkcs12 -k "$keychain_file" \
+              >/dev/null 2>&1; then
+              import_status=1
+            elif ! security find-identity -v -p codesigning "$keychain_file" \
+              | grep -Eq '^[[:space:]]*[1-9][0-9]*\)'; then
+              import_status=1
             fi
+
+            security delete-keychain "$keychain_file" >/dev/null 2>&1 || true
             rm -f "$cert_file"
+            return "$import_status"
           }
 
           asc_key_is_valid() {
