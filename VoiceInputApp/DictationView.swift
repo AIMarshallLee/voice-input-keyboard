@@ -6,9 +6,7 @@ import UIKit
 // MARK: - ViewModel
 
 /// 容器 App 语音听写 ViewModel
-/// 仅首次使用时显示 (URL Scheme 降级路径)
-/// 录音完成后自动启用 BackgroundDictationManager 后台保活
-/// 之后不再显示此页面
+/// 用户打开 VoType 后承接键盘留存的听写请求；录音开始后可切回原输入框。
 @MainActor
 class DictationViewModel: ObservableObject {
     @Published var isRecording = false
@@ -38,20 +36,33 @@ class DictationViewModel: ObservableObject {
     private(set) var keyboardType: Int = 0
     private(set) var hasValidSettings = false
     private var didWriteTerminalResult = false
+    private var isProcessingResult = false
+    private var isFinalizingRecognition = false
+    private var recognitionFinalizeWorkItem: DispatchWorkItem?
+    private var processingTask: Task<Void, Never>?
+    private var lifecycleGeneration: UInt = 0
+    private var publishesLivePartials = true
+    private let liveStatePublisher = DictationLiveStatePublisher()
     private var stopRequestObserver: DarwinNotificationObserver?
+    private var audioInterruptionObserver: NSObjectProtocol?
+    private var mediaServicesResetObserver: NSObjectProtocol?
+    private var audioRouteObserver: NSObjectProtocol?
 
     // MARK: - 从 URL 加载设置
 
-    func loadSettings(from url: URL?) {
+    func loadSettings(from url: URL?, expectedSession explicitSession: String? = nil) {
         let expectedSession: String?
-        if let url,
+        if let explicitSession,
+           DictationConstants.isValidSession(explicitSession) {
+            expectedSession = explicitSession
+        } else if let url,
            url.scheme == DictationConstants.urlScheme,
            url.host == DictationConstants.dictationPath,
            let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
            let value = components.queryItems?.first(where: {
                $0.name == DictationConstants.paramSession
            })?.value,
-           UUID(uuidString: value) != nil {
+           DictationConstants.isValidSession(value) {
             expectedSession = value
         } else {
             expectedSession = nil
@@ -71,7 +82,9 @@ class DictationViewModel: ObservableObject {
             settings = nil
         }
 
-        guard let settings, UUID(uuidString: settings.session) != nil else {
+        guard let settings,
+              DictationConstants.isValidSession(settings.session),
+              !DarwinBridge.isSessionCancelled(session: settings.session) else {
             hasValidSettings = false
             sessionId = ""
             speechRecognizer = nil
@@ -79,6 +92,7 @@ class DictationViewModel: ObservableObject {
         }
 
         hasValidSettings = true
+        lifecycleGeneration &+= 1
         sessionId = settings.session
         languageID = settings.language
         whisperMode = settings.whisper
@@ -88,6 +102,11 @@ class DictationViewModel: ObservableObject {
         keyboardType = settings.keyboardType
         speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: languageID))
         configureStopRequestObserver()
+        configureAudioObservers()
+        liveStatePublisher.publishImmediately(
+            phase: .starting,
+            session: settings.session
+        )
     }
 
     private func configureStopRequestObserver() {
@@ -101,13 +120,61 @@ class DictationViewModel: ObservableObject {
         stopRequestObserver = DarwinNotificationObserver(name: name) { [weak self] in
             Task { @MainActor in
                 guard let self, self.hasValidSettings else { return }
-                if self.isRecording {
+                if DarwinBridge.isSessionCancelled(session: self.sessionId) {
+                    self.cancelActiveSession()
+                } else if self.isRecording {
                     self.stopRecording()
-                } else if !self.didWriteTerminalResult {
+                } else if self.isFinalizingRecognition
+                            || self.isProcessingResult
+                            || self.didWriteTerminalResult {
+                    // stop 是幂等操作；finalizing/processing 已经不再收音，不能
+                    // 用一个 error 覆盖正在生成的正确终态。
+                    return
+                } else {
                     self.fail("语音输入已取消")
                 }
             }
         }
+    }
+
+    private func configureAudioObservers() {
+        removeAudioObservers()
+        audioInterruptionObserver = NotificationCenter.default.addObserver(
+            forName: AVAudioSession.interruptionNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let self,
+                  let typeValue = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+                  AVAudioSession.InterruptionType(rawValue: typeValue) == .began else { return }
+            self.abortRecording(message: "录音被系统中断，请重试")
+        }
+        mediaServicesResetObserver = NotificationCenter.default.addObserver(
+            forName: AVAudioSession.mediaServicesWereResetNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.abortRecording(message: "音频服务已重置，请重新录音")
+        }
+        audioRouteObserver = NotificationCenter.default.addObserver(
+            forName: AVAudioSession.routeChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let reasonValue = notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
+                  let reason = AVAudioSession.RouteChangeReason(rawValue: reasonValue),
+                  reason == .oldDeviceUnavailable else { return }
+            self?.abortRecording(message: "音频输入设备已断开，请重试")
+        }
+    }
+
+    private func removeAudioObservers() {
+        [audioInterruptionObserver, mediaServicesResetObserver, audioRouteObserver]
+            .compactMap { $0 }
+            .forEach { NotificationCenter.default.removeObserver($0) }
+        audioInterruptionObserver = nil
+        mediaServicesResetObserver = nil
+        audioRouteObserver = nil
     }
 
     // MARK: - 权限检查 + 自动开始录音
@@ -119,43 +186,96 @@ class DictationViewModel: ObservableObject {
             canExit = true
             return
         }
+        let expectedSession = sessionId
+        let generation = lifecycleGeneration
         let speechStatus = SFSpeechRecognizer.authorizationStatus()
 
         if speechStatus != .authorized {
-            SFSpeechRecognizer.requestAuthorization { status in
-                DispatchQueue.main.async {
+            SFSpeechRecognizer.requestAuthorization { [weak self] status in
+                DispatchQueue.main.async { [weak self] in
+                    guard let self,
+                          self.canStartRecording(
+                            expectedSession: expectedSession,
+                            generation: generation
+                          ) else { return }
                     if status != .authorized {
                         self.fail("请到设置中允许语音识别权限")
                     } else {
-                        self.checkMicPermission()
+                        self.checkMicPermission(
+                            expectedSession: expectedSession,
+                            generation: generation
+                        )
                     }
                 }
             }
         } else {
-            checkMicPermission()
+            checkMicPermission(
+                expectedSession: expectedSession,
+                generation: generation
+            )
         }
     }
 
-    private func checkMicPermission() {
+    private func checkMicPermission(expectedSession: String, generation: UInt) {
+        guard canStartRecording(
+            expectedSession: expectedSession,
+            generation: generation
+        ) else { return }
         let micStatus = AVAudioSession.sharedInstance().recordPermission
         if micStatus != .granted {
-            AVAudioSession.sharedInstance().requestRecordPermission { granted in
-                DispatchQueue.main.async {
+            AVAudioSession.sharedInstance().requestRecordPermission { [weak self] granted in
+                DispatchQueue.main.async { [weak self] in
+                    guard let self,
+                          self.canStartRecording(
+                            expectedSession: expectedSession,
+                            generation: generation
+                          ) else { return }
                     if !granted {
                         self.fail("请到设置中允许麦克风权限")
                     } else {
-                        self.startRecording()
+                        self.startRecording(
+                            expectedSession: expectedSession,
+                            generation: generation
+                        )
                     }
                 }
             }
         } else {
-            startRecording()
+            startRecording(
+                expectedSession: expectedSession,
+                generation: generation
+            )
         }
+    }
+
+    private func canStartRecording(
+        expectedSession: String,
+        generation: UInt
+    ) -> Bool {
+        hasValidSettings
+            && !didWriteTerminalResult
+            && !isRecording
+            && !isFinalizingRecognition
+            && !isProcessingResult
+            && sessionId == expectedSession
+            && lifecycleGeneration == generation
+            && !DarwinBridge.isSessionCancelled(session: expectedSession)
     }
 
     // MARK: - 录音
 
     func startRecording() {
+        startRecording(
+            expectedSession: sessionId,
+            generation: lifecycleGeneration
+        )
+    }
+
+    private func startRecording(expectedSession: String, generation: UInt) {
+        guard canStartRecording(
+            expectedSession: expectedSession,
+            generation: generation
+        ) else { return }
         recognizedText = ""
         liveText = ""
 
@@ -164,42 +284,68 @@ class DictationViewModel: ObservableObject {
             return
         }
 
-        // ★ 停止后台保活的 SilentAudioPlayer，避免噪声干扰录音
-        BackgroundDictationManager.shared.stopSilentPlayerForRecording()
-
         let engine = AVAudioEngine()
         audioEngine = engine
 
         do {
             let session = AVAudioSession.sharedInstance()
-            // ★ 不使用 .duckOthers！和后台保活模式一致
-            // .duckOthers 会让 iOS 认为这个 session 是"次要"的，更容易被挂起
+            // 不使用 .duckOthers，避免录音时压低其他 App 的音频。
             if whisperMode {
                 try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetoothHFP, .allowBluetoothA2DP, .mixWithOthers])
             } else {
                 try session.setCategory(.playAndRecord, mode: .default, options: [.allowBluetoothHFP, .allowBluetoothA2DP, .mixWithOthers])
             }
-            try session.setActive(true, options: .notifyOthersOnDeactivation)
+            try session.setActive(true)
 
             recognitionRequest = SFSpeechAudioBufferRecognitionRequest()
-            guard let req = recognitionRequest else { return }
-            req.shouldReportPartialResults = TextProcessor.shared.livePreviewEnabled
+            guard let req = recognitionRequest else {
+                fail("无法创建语音识别请求")
+                cleanupAudioOnly()
+                return
+            }
+            // Speech partial 始终开启，供 recognizedText、静音超时和最终结果使用；
+            // 用户的 livePreview 开关只决定是否把中间文字发布给键盘。
+            publishesLivePartials = TextProcessor.shared.livePreviewEnabled
+            req.shouldReportPartialResults = true
             req.requiresOnDeviceRecognition = recognizer.supportsOnDeviceRecognition
 
             recognitionTask = recognizer.recognitionTask(with: req) { [weak self] result, error in
                 DispatchQueue.main.async {
-                    guard let self = self else { return }
+                    guard let self = self,
+                          self.sessionId == expectedSession,
+                          self.lifecycleGeneration == generation,
+                          self.isRecording || self.isFinalizingRecognition else { return }
                     if let result = result {
                         let text = result.bestTranscription.formattedString
                         self.recognizedText = text
                         self.liveText = text
                         self.lastTextUpdateTime = Date()
+                        if self.publishesLivePartials {
+                            self.liveStatePublisher.publishPartial(
+                                text,
+                                session: self.sessionId
+                            )
+                        }
                     }
                     if let error = error as? NSError, error.code != 203 {
-                        self.stopRecording()
+                        if self.isFinalizingRecognition {
+                            self.finishRecognition(
+                                expectedSession: expectedSession,
+                                generation: generation
+                            )
+                        } else {
+                            self.stopRecording()
+                        }
                     }
                     if result?.isFinal == true {
-                        self.stopRecording()
+                        if self.isFinalizingRecognition {
+                            self.finishRecognition(
+                                expectedSession: expectedSession,
+                                generation: generation
+                            )
+                        } else {
+                            self.stopRecording()
+                        }
                     }
                 }
             }
@@ -219,12 +365,38 @@ class DictationViewModel: ObservableObject {
             }
 
             engine.prepare()
+            guard canStartRecording(
+                expectedSession: expectedSession,
+                generation: generation
+            ) else {
+                cancelActiveSession()
+                return
+            }
             try engine.start()
+
+            guard canStartRecording(
+                expectedSession: expectedSession,
+                generation: generation
+            ) else {
+                cancelActiveSession()
+                return
+            }
 
             isRecording = true
             statusMessage = "正在聆听..."
             lastTextUpdateTime = Date()
             startSilenceTimer()
+            guard liveStatePublisher.publishImmediately(
+                phase: .listening,
+                session: sessionId
+            ) else {
+                if DarwinBridge.isSessionCancelled(session: sessionId) {
+                    cancelActiveSession()
+                } else {
+                    abortRecording(message: "无法同步语音会话，请重试")
+                }
+                return
+            }
 
             // 写入心跳 + 发送 dictationStarted 通知 (键盘收到后取消 5s 超时)
             DarwinBridge.writeHeartbeat()
@@ -245,13 +417,28 @@ class DictationViewModel: ObservableObject {
         statusMessage = message
         canExit = true
         if !didWriteTerminalResult, !sessionId.isEmpty {
-            didWriteTerminalResult = DarwinBridge.writeError(message, session: sessionId)
+            liveStatePublisher.cancelPending(for: sessionId)
+            if DarwinBridge.isSessionCancelled(session: sessionId) {
+                DarwinBridge.clearLiveState(session: sessionId)
+            } else {
+                didWriteTerminalResult = DarwinBridge.writeError(
+                    message,
+                    session: sessionId
+                )
+            }
         }
+        lifecycleGeneration &+= 1
+        hasValidSettings = false
     }
 
     func stopRecording() {
         guard isRecording else { return }
+        if DarwinBridge.isSessionCancelled(session: sessionId) {
+            cancelActiveSession()
+            return
+        }
         isRecording = false
+        isFinalizingRecognition = true
 
         silenceTimer?.invalidate()
         silenceTimer = nil
@@ -259,16 +446,52 @@ class DictationViewModel: ObservableObject {
         audioEngine?.stop()
         audioEngine?.inputNode.removeTap(onBus: 0)
         recognitionRequest?.endAudio()
+        statusMessage = "正在完成识别..."
+        liveStatePublisher.publishImmediately(
+            phase: .processing,
+            partialTranscript: publishesLivePartials ? recognizedText : "",
+            session: sessionId
+        )
+
+        // 通知键盘:听写已停止
+        DarwinBridge.postNotification(DarwinNotificationName.dictationStopped)
+
+        recognitionFinalizeWorkItem?.cancel()
+        let expectedSession = sessionId
+        let generation = lifecycleGeneration
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.finishRecognition(
+                expectedSession: expectedSession,
+                generation: generation
+            )
+        }
+        recognitionFinalizeWorkItem = workItem
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + 0.45,
+            execute: workItem
+        )
+    }
+
+    private func finishRecognition(expectedSession: String, generation: UInt) {
+        guard isFinalizingRecognition,
+              sessionId == expectedSession,
+              lifecycleGeneration == generation else { return }
+        isFinalizingRecognition = false
+        recognitionFinalizeWorkItem?.cancel()
+        recognitionFinalizeWorkItem = nil
         recognitionTask?.cancel()
+
+        if DarwinBridge.isSessionCancelled(session: sessionId) {
+            cancelActiveSession()
+            return
+        }
 
         let resultText = recognizedText
         let hadSelectedText = selectedText != nil && !(selectedText?.isEmpty ?? true)
         let kbType = keyboardType
 
-        // 通知键盘:听写已停止
-        DarwinBridge.postNotification(DarwinNotificationName.dictationStopped)
-
         if resultText.isEmpty {
+            liveStatePublisher.cancelPending(for: sessionId)
             let wroteResult = DarwinBridge.writeError("未识别到语音", session: sessionId)
             didWriteTerminalResult = wroteResult
             if wroteResult {
@@ -282,6 +505,7 @@ class DictationViewModel: ObservableObject {
             transitionToStandby()
         } else {
             statusMessage = "正在处理文字..."
+            isProcessingResult = true
 
             // ★ 关键: 不依赖 self! DictationView 会在 2.5s 后 dismiss,
             // viewModel 可能被释放。把所有需要的值捕获为局部变量,
@@ -295,10 +519,11 @@ class DictationViewModel: ObservableObject {
             let capturedTranslateEnabled = translateEnabled
             let capturedTranslateTarget = translateTarget
             let capturedVoiceEditEnabled = TextProcessor.shared.voiceEditEnabled
+            let capturedGeneration = lifecycleGeneration
 
             // 在主 App 中处理文字 (LLM/翻译/格式化/语音编辑)
             // 键盘扩展内存太小,不能跑 LLM
-            Task { [weak self] in
+            processingTask = Task { [weak self] in
                 let processed = await TextProcessor.shared.process(
                     capturedResultText,
                     selectedText: capturedSelectedText,
@@ -308,6 +533,29 @@ class DictationViewModel: ObservableObject {
                     translateTarget: capturedTranslateTarget
                 )
 
+                // 页面关闭会释放 ViewModel，但已经开始的文字处理仍必须把终态
+                // 写回 App Group。只有 ViewModel 仍存在且已切换到另一代会话时，
+                // 才把这一任务视为过期；IPC cancellation tombstone 是跨生命周期
+                // 的最终取消依据。
+                let generationIsCurrent = self.map {
+                    $0.lifecycleGeneration == capturedGeneration
+                        && $0.sessionId == capturedSessionId
+                } ?? true
+                // 旧任务若已被下一代会话替代，只丢弃旧任务；绝不能借旧任务的
+                // 失败分支取消当前新会话。
+                guard generationIsCurrent else { return }
+                guard !Task.isCancelled,
+                      !DarwinBridge.isSessionCancelled(
+                          session: capturedSessionId
+                      ) else {
+                    await MainActor.run {
+                        self?.isProcessingResult = false
+                        self?.cancelActiveSession()
+                    }
+                    return
+                }
+
+                self?.liveStatePublisher.cancelPending(for: capturedSessionId)
                 let wroteResult: Bool
                 switch processed {
                 case .insert(let text):
@@ -329,6 +577,8 @@ class DictationViewModel: ObservableObject {
 
                 // 回到主线程更新 UI (如果 viewModel 还活着)
                 await MainActor.run {
+                    self?.processingTask = nil
+                    self?.isProcessingResult = false
                     self?.didWriteTerminalResult = wroteResult
                     if wroteResult {
                         self?.statusMessage = "识别完成 ✓"
@@ -343,32 +593,81 @@ class DictationViewModel: ObservableObject {
             }
         }
 
-        print("[Dictation] Recording stopped, transitioning to standby mode")
+        print("[Dictation] Recognition finalized, result: \(resultText.count) chars")
     }
 
     private func transitionToStandby() {
-        // ★ 启用后台保活，不使用 PiP
+        let generation = lifecycleGeneration
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-            guard let self = self else { return }
-
-            // 停掉 ViewModel 自己的心跳,BG manager 会接管
+            guard let self = self,
+                  self.lifecycleGeneration == generation else { return }
             self.stopHeartbeat()
-
-            // 只恢复用户明确开启过的后台待命，不得在录音后替用户开启。
-            BackgroundDictationManager.shared.resumeStandbyIfEnabled()
-
-            // 清理录音资源但保留 audio session
             self.cleanupAudioOnly()
+            try? AVAudioSession.sharedInstance().setActive(
+                false,
+                options: .notifyOthersOnDeactivation
+            )
         }
     }
 
-    /// 只清理录音资源,保留 audio session
+    /// 释放一次听写的录音资源。
     private func cleanupAudioOnly() {
         recognitionRequest = nil
         recognitionTask = nil
         audioEngine = nil
-        // 不调 AVAudioSession.setActive(false) - 保活需要 session 保持 active
-        print("[Dictation] Audio resources cleaned, session kept active for standby")
+        print("[Dictation] Audio resources cleaned")
+    }
+
+    private func cancelActiveSession() {
+        guard !sessionId.isEmpty else { return }
+        lifecycleGeneration &+= 1
+        hasValidSettings = false
+        recognitionFinalizeWorkItem?.cancel()
+        recognitionFinalizeWorkItem = nil
+        processingTask?.cancel()
+        processingTask = nil
+        isRecording = false
+        isFinalizingRecognition = false
+        isProcessingResult = false
+        silenceTimer?.invalidate()
+        silenceTimer = nil
+        audioEngine?.stop()
+        audioEngine?.inputNode.removeTap(onBus: 0)
+        recognitionRequest?.endAudio()
+        recognitionTask?.cancel()
+        liveStatePublisher.cancelPending(for: sessionId)
+        DarwinBridge.clearLiveState(session: sessionId)
+        stopHeartbeat()
+        cleanupAudioOnly()
+        try? AVAudioSession.sharedInstance().setActive(
+            false,
+            options: .notifyOthersOnDeactivation
+        )
+        statusMessage = "已取消"
+        canExit = true
+    }
+
+    private func abortRecording(message: String) {
+        guard isRecording || isFinalizingRecognition else { return }
+        recognitionFinalizeWorkItem?.cancel()
+        recognitionFinalizeWorkItem = nil
+        isRecording = false
+        isFinalizingRecognition = false
+        silenceTimer?.invalidate()
+        silenceTimer = nil
+        audioEngine?.stop()
+        audioEngine?.inputNode.removeTap(onBus: 0)
+        recognitionRequest?.endAudio()
+        recognitionTask?.cancel()
+        liveStatePublisher.cancelPending(for: sessionId)
+        fail(message)
+        DarwinBridge.postNotification(DarwinNotificationName.dictationStopped)
+        stopHeartbeat()
+        cleanupAudioOnly()
+        try? AVAudioSession.sharedInstance().setActive(
+            false,
+            options: .notifyOthersOnDeactivation
+        )
     }
 
     // MARK: - 静音自动停止
@@ -391,8 +690,21 @@ class DictationViewModel: ObservableObject {
     // MARK: - 清理
 
     func cleanup() {
-        if isRecording {
+        if !sessionId.isEmpty,
+           DarwinBridge.isSessionCancelled(session: sessionId) {
+            cancelActiveSession()
+            stopRequestObserver = nil
+            removeAudioObservers()
+            return
+        }
+        if !sessionId.isEmpty {
+            liveStatePublisher.cancelPending(for: sessionId)
+        }
+        if isRecording || isFinalizingRecognition {
             isRecording = false
+            isFinalizingRecognition = false
+            recognitionFinalizeWorkItem?.cancel()
+            recognitionFinalizeWorkItem = nil
             silenceTimer?.invalidate()
             silenceTimer = nil
             audioEngine?.stop()
@@ -403,6 +715,13 @@ class DictationViewModel: ObservableObject {
                 didWriteTerminalResult = DarwinBridge.writeError("已取消", session: sessionId)
             }
             DarwinBridge.postNotification(DarwinNotificationName.dictationStopped)
+        } else if hasValidSettings,
+                  !didWriteTerminalResult,
+                  !isProcessingResult,
+                  !sessionId.isEmpty {
+            // 权限页或启动阶段被关闭也属于明确取消；不得把 starting 快照
+            // 留给键盘等待 TTL。
+            didWriteTerminalResult = DarwinBridge.writeError("已取消", session: sessionId)
         }
         stopHeartbeat()
         recognitionRequest?.endAudio()
@@ -411,12 +730,21 @@ class DictationViewModel: ObservableObject {
         recognitionTask = nil
         audioEngine = nil
         stopRequestObserver = nil
+        removeAudioObservers()
+        if !isProcessingResult {
+            lifecycleGeneration &+= 1
+            hasValidSettings = false
+            try? AVAudioSession.sharedInstance().setActive(
+                false,
+                options: .notifyOthersOnDeactivation
+            )
+        }
     }
 
     // MARK: - 心跳定时器
 
     /// 每 0.5s 发一次心跳 Darwin 通知
-    /// 键盘扩展通过心跳判断主 App 是否存活,决定走 Path A (Darwin) 还是 Path B (URL)
+    /// 录音期间发送心跳，让返回后的键盘知道宿主会话仍在运行。
     private func startHeartbeat() {
         stopHeartbeat()
         let timer = DispatchSource.makeTimerSource(queue: .global(qos: .background))
@@ -435,11 +763,11 @@ class DictationViewModel: ObservableObject {
 // MARK: - View
 
 /// 容器 App 的语音听写页面
-/// 仅首次使用时由 URL Scheme 触发显示
-/// 录音完成后自动启用后台保活,之后不再显示
+/// 用户打开 VoType 后消费键盘留在 App Group 中的会话并开始录音。
 struct DictationView: View {
     @StateObject private var viewModel = DictationViewModel()
     @Environment(\.dismiss) var dismiss
+    let expectedSession: String
     var url: URL?
 
     var body: some View {
@@ -539,7 +867,10 @@ struct DictationView: View {
             }
         }
         .onAppear {
-            viewModel.loadSettings(from: url)
+            viewModel.loadSettings(
+                from: url,
+                expectedSession: expectedSession
+            )
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                 viewModel.checkPermissionsAndStart()
             }

@@ -8,7 +8,7 @@
 - [ ] `VoTypeTests` 在可用 iPhone 模拟器全部通过；找不到模拟器时 CI 必须失败。
 - [ ] Release 的无签名 device build 通过。
 - [ ] App 与 Keyboard Extension 都包含 `PrivacyInfo.xcprivacy`。
-- [ ] `CFBundleVersion` 大于 App Store Connect 中已经上传的 build 33。
+- [x] `project.yml` 中候选版本为 build 35，大于已上传的 build 33；CI 仍会使用 run number 覆盖构建号。
 - [ ] 普通 PR / push 不会调用 `pilot upload` 或 `deliver`。
 - [ ] 手动发布只有在 `publish=true` 时才会访问 App Store Connect。
 
@@ -27,22 +27,26 @@
 - [ ] 首次授权、拒绝后重试、从设置重新授权均可恢复。
 - [ ] App Group 会话设置能从键盘传到宿主 App，识别结果只返回同一 session。
 - [ ] App/扩展被系统杀掉后，不会把旧结果自动插到错误 App 或输入框。
+- [ ] 宿主可响应时原地开始；宿主被挂起时清楚提示打开 VoType，且录音开始后返回原输入框仍能显示实时文字。
+- [ ] listening 状态再次点麦克风可停止；starting 取消、processing 重复停止及迟到回调不会产生双结果。
+- [ ] 左滑 QWERTY 的字母、Shift、数字、符号、空格、回车、短按/长按删除和地球键在 iPhone/iPad 可用。
+- [ ] 在 QWERTY 补字期间仍能看到语音状态，并可一次点击结束录音。
 - [ ] 中文、英文及至少一种日韩/欧洲语言使用正确 locale 和标点。
 - [ ] 翻译开关、目标语言、个人词典、自动标点、口水词、列表格式化分别验证。
 - [ ] 语音“替换、追加、删除”都验证，删除不能插入命令原文。
 - [ ] 断网时：支持设备端识别的语言正常工作；不支持时给出准确错误，不宣称离线可用。
 - [ ] 电话、Siri、蓝牙切换、耳机插拔和其他音频中断后不会卡死或误录。
-- [ ] 用户关闭实验性后台待命后，重启 App 不会自动重新开启。
+- [ ] 从旧版本升级后，实验性后台待命偏好被关闭，且不会再启动近静音音频或合成画中画。
 - [ ] 内存、能耗、麦克风指示和后台音频行为符合产品披露。
 
 ## 4. App Store 合规决策
 
-以下两项仍是发布架构阻塞，必须在提交审核前解决或从商店构建中移除：
+源码已移除以下两条不受支持的路径；仍须在候选构建和归档中复核：
 
-- [ ] 键盘扩展不依赖 responder-chain 调用 `UIApplication.open` 启动宿主 App。
-- [ ] 商店构建不使用近静音噪声冒充音频播放来维持后台执行。
+- [x] 键盘扩展不依赖 responder-chain 调用 `UIApplication.open` 启动宿主 App。
+- [x] 商店构建源码不使用近静音噪声或合成画中画维持后台执行。
 
-在完成合规架构前，可以进行内部开发或 TestFlight 技术验证，但不能把其描述为已经满足 App Store 审核要求。
+这两项源码检查通过不等于 App Review 已通过；最终结论仍以签名候选包和 Apple 审核为准。
 
 ## 5. 隐私与商店材料
 

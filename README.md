@@ -13,6 +13,9 @@ VoType 是一个 iOS 语音转文字键盘原型，由宿主 App 负责录音与
 - 选中文字后的替换、追加和删除指令
 - iOS 26+ 的设备端 Foundation Models 润色与翻译（仅在模型可用时）
 - 深色模式、常用符号、空格、删除、回车和输入法切换键
+- 键盘内的 starting / listening / processing 实时状态与节流转写预览
+- 可左滑进入的英文 QWERTY 补字键盘（字母、数字、符号、Shift、长按删除）
+- 再点麦克风停止录音；切换 App 或扩展重建后按输入框上下文安全恢复
 
 “20 个语言”表示可手动选择 20 个识别 locale，不表示自动语言检测或任意语言混输。翻译与 LLM 润色在不支持 Foundation Models 的设备上会安全跳过。
 
@@ -21,10 +24,11 @@ VoType 是一个 iOS 语音转文字键盘原型，由宿主 App 负责录音与
 iOS 不允许自定义键盘扩展直接访问麦克风，因此录音必须由宿主 App 完成：
 
 1. 键盘创建带唯一 session ID 的听写请求。
-2. 请求写入 App Group 共享容器，并用 Darwin notification 通知宿主 App。
+2. 请求写入按 session 隔离的 App Group 文件，并用 Darwin notification 通知宿主 App。
 3. 宿主 App 使用 `SFSpeechRecognizer` 和 `AVAudioEngine` 录音、识别并处理文本。
-4. 结果原子写回共享容器；键盘只消费 session 匹配且未过期的结果。
-5. 键盘扩展被系统重建时，不会把无法确认目标输入框的旧结果自动插入；需要用户再次确认。
+4. 宿主持续发布 starting / listening / processing 快照，最终结果以 first-writer-wins 原子写回。
+5. 取消墓碑与会话事务阻止迟到回调复活；键盘只消费 session 匹配且未过期的结果。
+6. 键盘扩展被系统重建或切换输入框时，只有上下文哈希仍匹配才自动插入，否则要求用户确认。
 
 共享容器标识为：
 
@@ -38,8 +42,8 @@ group.com.daseanle.votype.shared
 
 - 键盘扩展不能直接录音。
 - 从键盘扩展启动宿主 App 的 responder-chain 兼容路径不属于 Apple 支持的扩展 API，不能作为 App Store 版的可靠前提。
-- 可靠的前台流程是：在键盘发起请求后打开 VoType 完成听写，再手动返回原 App。
-- “实验性后台待命”默认关闭。它依赖 iOS 后台音频状态，系统仍可能暂停进程，而且不应被视为已经通过 App Store 审核的能力。
+- 宿主仍可响应时可直接原地开始；否则键盘会保留请求并提示打开 VoType。看到“正在聆听”后可立即返回原输入框继续说话、看实时文字并再次点麦克风停止。
+- 发布版不使用近静音音频或合成画中画保活。iOS 结束宿主进程后，下一次会话仍需要用户打开 VoType；公共 API 无法保证每次都零切换。
 - Apple Speech 的可用性、时长和离线能力由设备、语言与系统状态决定；本项目不承诺无限时长或所有语言离线。
 
 Apple 平台边界可参考 [Custom Keyboard Programming Guide](https://developer.apple.com/library/archive/documentation/General/Conceptual/ExtensibilityPG/CustomKeyboard.html) 与 [App Review Guidelines](https://developer.apple.com/app-store/review/guidelines/)。

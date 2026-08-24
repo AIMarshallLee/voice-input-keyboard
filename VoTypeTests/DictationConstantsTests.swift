@@ -188,6 +188,322 @@ final class DictationConstantsTests: XCTestCase {
         XCTAssertNil(DarwinBridge.readAndConsumeResult(expectedSession: "old", now: now))
     }
 
+    // MARK: - 实时原地反馈
+
+    func testLiveStateCanBeReadRepeatedlyForExpectedSession() {
+        let now = Date().timeIntervalSince1970
+        let session = UUID().uuidString
+
+        XCTAssertTrue(
+            DarwinBridge.writeLiveState(
+                phase: .listening,
+                partialTranscript: "正在识别的文字",
+                session: session,
+                timestamp: now
+            )
+        )
+
+        let first = DarwinBridge.readLiveState(expectedSession: session, now: now)
+        let second = DarwinBridge.readLiveState(expectedSession: session, now: now)
+        XCTAssertEqual(first?.session, session)
+        XCTAssertEqual(first?.phase, .listening)
+        XCTAssertEqual(first?.partialTranscript, "正在识别的文字")
+        XCTAssertEqual(second, first)
+    }
+
+    func testLiveStatesAreIndependentAndSessionChecked() {
+        let now = Date().timeIntervalSince1970
+        let sessionA = UUID().uuidString
+        let sessionB = UUID().uuidString
+
+        XCTAssertTrue(
+            DarwinBridge.writeLiveState(
+                phase: .starting,
+                session: sessionA,
+                timestamp: now
+            )
+        )
+        XCTAssertTrue(
+            DarwinBridge.writeLiveState(
+                phase: .listening,
+                partialTranscript: "B",
+                session: sessionB,
+                timestamp: now + 1
+            )
+        )
+
+        XCTAssertEqual(
+            DarwinBridge.readLiveState(expectedSession: sessionA, now: now + 1)?.phase,
+            .starting
+        )
+        XCTAssertEqual(
+            DarwinBridge.readLiveState(expectedSession: sessionB, now: now + 1)?.partialTranscript,
+            "B"
+        )
+        XCTAssertNil(
+            DarwinBridge.readLiveState(
+                expectedSession: UUID().uuidString,
+                now: now + 1
+            )
+        )
+    }
+
+    func testOlderLiveStateCannotOverwriteLatestSnapshot() {
+        let now = Date().timeIntervalSince1970
+        let session = UUID().uuidString
+
+        XCTAssertTrue(
+            DarwinBridge.writeLiveState(
+                phase: .processing,
+                partialTranscript: "latest",
+                session: session,
+                timestamp: now + 2
+            )
+        )
+        XCTAssertFalse(
+            DarwinBridge.writeLiveState(
+                phase: .listening,
+                partialTranscript: "late callback",
+                session: session,
+                timestamp: now + 1
+            )
+        )
+
+        let state = DarwinBridge.readLiveState(expectedSession: session, now: now + 2)
+        XCTAssertEqual(state?.phase, .processing)
+        XCTAssertEqual(state?.partialTranscript, "latest")
+    }
+
+    func testExpiredLiveStateIsRemoved() {
+        let now = Date().timeIntervalSince1970
+        let session = UUID().uuidString
+        DarwinBridge.writeLiveState(
+            phase: .listening,
+            partialTranscript: "expired",
+            session: session,
+            timestamp: now - DarwinBridge.liveStateMaxAge - 1
+        )
+
+        XCTAssertNil(DarwinBridge.readLiveState(expectedSession: session, now: now))
+        XCTAssertNil(
+            DarwinBridge.readLiveState(
+                expectedSession: session,
+                now: now,
+                maxAge: 60
+            )
+        )
+    }
+
+    func testTerminalResultClearsProcessingLiveState() {
+        let now = Date().timeIntervalSince1970
+        let session = UUID().uuidString
+        DarwinBridge.writeLiveState(
+            phase: .processing,
+            partialTranscript: "processing",
+            session: session,
+            timestamp: now
+        )
+        XCTAssertEqual(
+            DarwinBridge.readLiveState(expectedSession: session, now: now)?.phase,
+            .processing
+        )
+
+        XCTAssertTrue(
+            DarwinBridge.writeTranscription(
+                "done",
+                session: session,
+                timestamp: now + 1
+            )
+        )
+        XCTAssertNil(DarwinBridge.readLiveState(expectedSession: session, now: now + 1))
+    }
+
+    func testLiveStateRejectsInvalidSessionAndDoesNotLeakTextInNames() throws {
+        XCTAssertFalse(
+            DarwinBridge.writeLiveState(
+                phase: .listening,
+                partialTranscript: "private words",
+                session: "not-a-uuid"
+            )
+        )
+
+        let session = UUID().uuidString
+        XCTAssertTrue(
+            DarwinBridge.writeLiveState(
+                phase: .listening,
+                partialTranscript: "private words",
+                session: session
+            )
+        )
+        let notificationName = try XCTUnwrap(
+            DarwinBridge.sessionNotificationName(
+                base: DarwinNotificationName.liveStateChanged,
+                session: session
+            )
+        )
+        XCTAssertFalse(notificationName.contains(session))
+        XCTAssertFalse(notificationName.contains("private words"))
+
+        let fileNames = try FileManager.default.contentsOfDirectory(
+            atPath: ipcDirectory.path
+        )
+        XCTAssertFalse(fileNames.joined().contains(session))
+        XCTAssertFalse(fileNames.joined().contains("private words"))
+    }
+
+    func testClearLiveStateIsIdempotent() {
+        let session = UUID().uuidString
+        DarwinBridge.writeLiveState(phase: .starting, session: session)
+
+        XCTAssertTrue(DarwinBridge.clearLiveState(session: session))
+        XCTAssertNil(DarwinBridge.readLiveState(expectedSession: session))
+        XCTAssertTrue(DarwinBridge.clearLiveState(session: session))
+    }
+
+    func testCancelledSessionRejectsLateLiveAndTerminalWrites() {
+        let session = UUID().uuidString
+        let settings = DictationSettings(
+            language: "zh-CN",
+            whisper: false,
+            translateEnabled: false,
+            translateTarget: "en-US",
+            selectedText: nil,
+            keyboardType: 0,
+            session: session
+        )
+        XCTAssertTrue(DarwinBridge.writeDictationSettings(settings))
+        XCTAssertTrue(DarwinBridge.writeLiveState(phase: .listening, session: session))
+
+        XCTAssertTrue(DarwinBridge.cancelSession(session))
+        XCTAssertTrue(DarwinBridge.isSessionCancelled(session: session))
+        XCTAssertNil(DarwinBridge.peekPendingDictationSettings())
+        XCTAssertNil(DarwinBridge.readLiveState(expectedSession: session))
+        XCTAssertFalse(
+            DarwinBridge.writeLiveState(
+                phase: .processing,
+                partialTranscript: "late partial",
+                session: session
+            )
+        )
+        XCTAssertFalse(DarwinBridge.writeTranscription("late", session: session))
+        XCTAssertFalse(DarwinBridge.writeError("late error", session: session))
+        XCTAssertNil(DarwinBridge.readAndConsumeResult(expectedSession: session))
+    }
+
+    func testCancellationRemovesTerminalThatAlreadyExists() {
+        let session = UUID().uuidString
+        XCTAssertTrue(DarwinBridge.writeTranscription("ready", session: session))
+        XCTAssertEqual(DarwinBridge.peekResult()?.session, session)
+
+        XCTAssertTrue(DarwinBridge.cancelSession(session))
+
+        XCTAssertNil(DarwinBridge.peekResult())
+        XCTAssertNil(DarwinBridge.readAndConsumeResult(expectedSession: session))
+    }
+
+    func testConcurrentCancellationCannotLeaveResultOrLiveState() {
+        let sessions = (0..<24).map { _ in UUID().uuidString }
+        let group = DispatchGroup()
+        let queue = DispatchQueue(
+            label: "DictationConstantsTests.cancellationRace",
+            attributes: .concurrent
+        )
+
+        for session in sessions {
+            group.enter()
+            queue.async {
+                _ = DarwinBridge.writeLiveState(
+                    phase: .listening,
+                    partialTranscript: "late",
+                    session: session
+                )
+                _ = DarwinBridge.writeTranscription("late", session: session)
+                group.leave()
+            }
+            group.enter()
+            queue.async {
+                _ = DarwinBridge.cancelSession(session)
+                group.leave()
+            }
+        }
+
+        XCTAssertEqual(group.wait(timeout: .now() + 5), .success)
+        for session in sessions {
+            XCTAssertTrue(DarwinBridge.isSessionCancelled(session: session))
+            XCTAssertNil(DarwinBridge.readLiveState(expectedSession: session))
+            XCTAssertNil(DarwinBridge.readAndConsumeResult(expectedSession: session))
+        }
+    }
+
+    func testFirstTerminalResultWins() {
+        let session = UUID().uuidString
+        XCTAssertTrue(DarwinBridge.writeTranscription("first", session: session))
+        XCTAssertFalse(DarwinBridge.writeError("late error", session: session))
+
+        let result = DarwinBridge.readAndConsumeResult(expectedSession: session)
+        XCTAssertEqual(result?.status, .completed)
+        XCTAssertEqual(result?.transcription, "first")
+    }
+
+    func testConsumedTerminalReceiptRejectsLateSecondTerminal() {
+        let session = UUID().uuidString
+        XCTAssertTrue(DarwinBridge.writeTranscription("first", session: session))
+
+        let consumed = DarwinBridge.readAndConsumeResult(expectedSession: session)
+        XCTAssertEqual(consumed?.transcription, "first")
+        XCTAssertNil(DarwinBridge.peekResult(expectedSession: session))
+
+        XCTAssertFalse(DarwinBridge.writeError("late error", session: session))
+        XCTAssertFalse(DarwinBridge.writeTranscription("duplicate", session: session))
+        XCTAssertFalse(
+            DarwinBridge.writeLiveState(
+                phase: .listening,
+                partialTranscript: "late partial",
+                session: session
+            )
+        )
+        XCTAssertNil(DarwinBridge.peekResult(expectedSession: session))
+        XCTAssertNil(DarwinBridge.readAndConsumeResult(expectedSession: session))
+    }
+
+    func testLivePhaseCannotRegressFromProcessingToListening() {
+        let now = Date().timeIntervalSince1970
+        let session = UUID().uuidString
+        XCTAssertTrue(
+            DarwinBridge.writeLiveState(
+                phase: .processing,
+                partialTranscript: "finalizing",
+                session: session,
+                timestamp: now
+            )
+        )
+        XCTAssertFalse(
+            DarwinBridge.writeLiveState(
+                phase: .listening,
+                partialTranscript: "late partial",
+                session: session,
+                timestamp: now + 1
+            )
+        )
+        XCTAssertEqual(
+            DarwinBridge.readLiveState(expectedSession: session, now: now + 1)?.phase,
+            .processing
+        )
+    }
+
+    func testCancellationIsSessionScoped() {
+        let cancelled = UUID().uuidString
+        let active = UUID().uuidString
+        XCTAssertTrue(DarwinBridge.cancelSession(cancelled))
+
+        XCTAssertTrue(DarwinBridge.writeTranscription("active", session: active))
+        XCTAssertEqual(
+            DarwinBridge.readAndConsumeResult(expectedSession: active)?.transcription,
+            "active"
+        )
+        XCTAssertFalse(DarwinBridge.isSessionCancelled(session: active))
+    }
+
     func testDarwinBridgeHeartbeat() {
         // 先访问 HeartbeatTracker 初始化单例(注册 Darwin 通知观察者)
         _ = DarwinBridge.isMainAppAlive(threshold: 0.01)
@@ -289,5 +605,40 @@ final class DictationConstantsTests: XCTestCase {
             DarwinBridge.requeueDictationSettingsIfNotSuperseded(old, now: now + 1)
         )
         XCTAssertEqual(DarwinBridge.peekPendingDictationSettings(now: now + 1), newer)
+    }
+
+    func testConsumingLatestSettingsDiscardsOlderPendingRequests() {
+        let now = Date().timeIntervalSince1970
+        let older = DictationSettings(
+            language: "zh-CN",
+            whisper: false,
+            translateEnabled: false,
+            translateTarget: "en-US",
+            selectedText: nil,
+            keyboardType: 0,
+            session: UUID().uuidString,
+            timestamp: now
+        )
+        let latest = DictationSettings(
+            language: "en-US",
+            whisper: false,
+            translateEnabled: false,
+            translateTarget: "zh-CN",
+            selectedText: nil,
+            keyboardType: 0,
+            session: UUID().uuidString,
+            timestamp: now + 1
+        )
+        XCTAssertTrue(DarwinBridge.writeDictationSettings(older))
+        XCTAssertTrue(DarwinBridge.writeDictationSettings(latest))
+
+        XCTAssertEqual(
+            DarwinBridge.readAndConsumeDictationSettings(
+                expectedSession: latest.session,
+                now: now + 1
+            ),
+            latest
+        )
+        XCTAssertNil(DarwinBridge.peekPendingDictationSettings(now: now + 1))
     }
 }

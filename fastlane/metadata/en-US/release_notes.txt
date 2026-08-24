@@ -5,3 +5,6 @@ Version 1.0 stability candidate:
 • Fixes for voice deletion, spoken correction, and permission errors
 • Requests on-device Apple Speech recognition when supported
 • Adds privacy manifests and accurate privacy disclosures
+• Adds live in-keyboard transcription status and tap-again-to-stop
+• Adds an English QWERTY fallback keyboard usable during voice sessions
+• Improves recovery across app switches, extension recreation, interruptions, and cancellation

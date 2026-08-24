@@ -64,6 +64,10 @@ final class DictationViewModelTests: XCTestCase {
             XCTAssertNil(viewModel.selectedText)
             XCTAssertEqual(viewModel.keyboardType, 0)
             XCTAssertEqual(viewModel.sessionId, session)
+            XCTAssertEqual(
+                DarwinBridge.readLiveState(expectedSession: session)?.phase,
+                .starting
+            )
         }
     }
 
@@ -76,6 +80,56 @@ final class DictationViewModelTests: XCTestCase {
             XCTAssertTrue(viewModel.hasValidSettings)
             XCTAssertEqual(viewModel.sessionId, session)
             XCTAssertEqual(viewModel.languageID, "ja-JP")
+        }
+    }
+
+    func testExplicitPresentationSessionCannotConsumeNewerRequest() async {
+        await MainActor.run {
+            let queuedSession = UUID().uuidString
+            let newerSession = UUID().uuidString
+            let now = Date().timeIntervalSince1970
+            XCTAssertTrue(
+                DarwinBridge.writeDictationSettings(
+                    DictationSettings(
+                        language: "ja-JP",
+                        whisper: false,
+                        translateEnabled: false,
+                        translateTarget: "en-US",
+                        selectedText: nil,
+                        keyboardType: 0,
+                        session: queuedSession,
+                        timestamp: now
+                    )
+                )
+            )
+            XCTAssertTrue(
+                DarwinBridge.writeDictationSettings(
+                    DictationSettings(
+                        language: "en-US",
+                        whisper: false,
+                        translateEnabled: false,
+                        translateTarget: "zh-CN",
+                        selectedText: nil,
+                        keyboardType: 0,
+                        session: newerSession,
+                        timestamp: now + 1
+                    )
+                )
+            )
+
+            let viewModel = DictationViewModel()
+            viewModel.loadSettings(
+                from: nil,
+                expectedSession: queuedSession
+            )
+
+            XCTAssertTrue(viewModel.hasValidSettings)
+            XCTAssertEqual(viewModel.sessionId, queuedSession)
+            XCTAssertEqual(viewModel.languageID, "ja-JP")
+            XCTAssertEqual(
+                DarwinBridge.peekPendingDictationSettings(now: now + 1)?.session,
+                newerSession
+            )
         }
     }
 

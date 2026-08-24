@@ -32,9 +32,6 @@ struct ContentView: View {
     @State private var showBatchImport = false
     @State private var batchImportText = ""
 
-    // 后台保活状态
-    @ObservedObject private var bgDictation = BackgroundDictationManager.shared
-
     private let sharedDefaults: UserDefaults? = SharedDefaults.shared
 
     var body: some View {
@@ -300,51 +297,21 @@ struct ContentView: View {
                         .cornerRadius(16)
                     }
 
-                    // 实验性后台待命
+                    // 原地录音说明
                     VStack(alignment: .leading, spacing: 14) {
                         HStack {
-                            Text("实验性后台待命").font(.headline)
+                            Text("原地录音").font(.headline)
                             Spacer()
-                            Toggle("", isOn: Binding(
-                                get: { bgDictation.isPipStandbyEnabled },
-                                set: { newValue in
-                                    if newValue {
-                                        bgDictation.enablePipStandby()
-                                    } else {
-                                        bgDictation.disablePipStandby()
-                                    }
-                                }
-                            ))
-                            .labelsHidden()
+                            Image(systemName: "mic.badge.plus")
+                                .foregroundColor(.blue)
                         }
 
-                        if bgDictation.isPipStandbyEnabled {
-                            HStack(spacing: 12) {
-                                Image(systemName: "speaker.wave.2.fill")
-                                    .font(.title2)
-                                    .foregroundColor(.green)
-
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text("待命中")
-                                        .font(.subheadline.bold())
-                                        .foregroundColor(.green)
-                                    Text("VoType 会持续使用后台音频维持待命，可能增加耗电并影响其他音频。关闭后不会自动恢复。")
-                                        .font(.caption2)
-                                        .foregroundColor(.secondary)
-                                }
-                                Spacer()
-                            }
-                            .padding(.vertical, 4)
-                        } else {
-                            VStack(alignment: .leading, spacing: 6) {
-                                Text("默认关闭，仅在你主动开启后恢复")
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                                Text("该能力依赖 iOS 后台执行状态；系统仍可能暂停 App，届时需要重新打开 VoType。")
-                                    .font(.caption2)
-                                    .foregroundColor(.secondary)
-                            }
-                        }
+                        Text("键盘提示时打开 VoType；看到“正在聆听”后立即返回原输入框即可继续说话。录音会在后台持续，键盘显示实时文字，再点麦克风结束并自动回填。")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        Text("VoType 不使用近静音音频或合成画中画长期保活，因此系统结束宿主进程后需要再次打开 App。")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
                     }
                     .padding()
                     .background(Color(.systemGray6))
@@ -354,9 +321,10 @@ struct ContentView: View {
                     VStack(alignment: .leading, spacing: 12) {
                         Text("使用方法").font(.headline)
 
-                        InstructionRow(text: "首次使用:点麦克风；如果 VoType 打开，请在 App 中完成听写")
-                        InstructionRow(text: "识别结束后手动返回原 App，再切回 VoType 键盘")
-                        InstructionRow(text: "键盘收到匹配的会话结果后会插入光标位置")
+                        InstructionRow(text: "点麦克风；若提示打开 VoType，请打开后等录音开始")
+                        InstructionRow(text: "录音开始后立即返回原输入框，键盘会显示实时识别文字")
+                        InstructionRow(text: "再次点麦克风结束；文字处理完成后自动插入光标位置")
+                        InstructionRow(text: "左滑或点键盘图标可快速补字，右滑返回语音面板")
                         InstructionRow(text: "说错了可以说「不对,应该是...」自动纠正")
                         InstructionRow(text: "说「第一」「第二」等会自动转为编号列表")
                         InstructionRow(text: "选中文字后说话,可替换或追加内容(语音编辑)")
@@ -394,8 +362,7 @@ struct ContentView: View {
                 loadTranslationSettings()
                 loadUsageStats()
                 checkStatus()
-                // 仅恢复用户明确开启过的实验性后台待命
-                bgDictation.autoRestoreIfNeeded()
+                BackgroundDictationManager.shared.autoRestoreIfNeeded()
             }
             .onChange(of: autoPunctuation) { v in saveSetting("autoPunctuation", v) }
             .onChange(of: fillerWordRemoval) { v in saveSetting("fillerWordRemoval", v) }

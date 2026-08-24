@@ -2,9 +2,45 @@ import SwiftUI
 import Combine
 
 /// 宿主 App 的前台听写页面协调器。
+struct DictationPresentation: Identifiable, Equatable {
+    let id: String
+    let url: URL?
+}
+
+@MainActor
 final class DictationCoordinator: ObservableObject {
-    @Published var showDictation = false
-    @Published var dictationURL: URL?
+    @Published var presentation: DictationPresentation?
+    private var queuedPresentations: [DictationPresentation] = []
+    private var transitioningPresentation: DictationPresentation?
+
+    func enqueue(session: String, url: URL?) {
+        guard DictationConstants.isValidSession(session),
+              presentation?.id != session,
+              transitioningPresentation?.id != session,
+              !queuedPresentations.contains(where: { $0.id == session }) else { return }
+        let request = DictationPresentation(id: session, url: url)
+        if presentation == nil, transitioningPresentation == nil {
+            presentation = request
+        } else {
+            queuedPresentations.append(request)
+        }
+    }
+
+    func didDismiss() {
+        guard transitioningPresentation == nil,
+              !queuedPresentations.isEmpty else { return }
+        transitioningPresentation = queuedPresentations.removeFirst()
+        DispatchQueue.main.async { [weak self] in
+            guard let self,
+                  let nextPresentation = self.transitioningPresentation else { return }
+            self.transitioningPresentation = nil
+            if self.presentation == nil {
+                self.presentation = nextPresentation
+            } else {
+                self.queuedPresentations.insert(nextPresentation, at: 0)
+            }
+        }
+    }
 }
 
 @main
@@ -16,8 +52,14 @@ struct VoiceInputApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
-                .fullScreenCover(isPresented: $coordinator.showDictation) {
-                    DictationView(url: coordinator.dictationURL)
+                .fullScreenCover(
+                    item: $coordinator.presentation,
+                    onDismiss: coordinator.didDismiss
+                ) { request in
+                    DictationView(
+                        expectedSession: request.id,
+                        url: request.url
+                    )
                 }
                 .onAppear {
                     presentPendingDictationIfNeeded()
@@ -40,8 +82,7 @@ struct VoiceInputApp: App {
                     }
 
                     print("[App] Valid dictation URL received → showing foreground recorder")
-                    coordinator.dictationURL = url
-                    coordinator.showDictation = true
+                    coordinator.enqueue(session: session, url: url)
                 }
         }
     }
@@ -49,9 +90,7 @@ struct VoiceInputApp: App {
     /// 键盘扩展无法可靠启动宿主 App。用户手动打开 VoType 时，
     /// 继续处理一分钟内尚未消费的 App Group 听写请求。
     private func presentPendingDictationIfNeeded() {
-        guard !coordinator.showDictation,
-              DarwinBridge.peekPendingDictationSettings() != nil else { return }
-        coordinator.dictationURL = nil
-        coordinator.showDictation = true
+        guard let pending = DarwinBridge.peekPendingDictationSettings() else { return }
+        coordinator.enqueue(session: pending.session, url: nil)
     }
 }
