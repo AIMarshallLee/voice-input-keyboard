@@ -1,74 +1,75 @@
-# App Store 元数据
+# App Store 元数据工作稿
+
+> 状态：待真机与 TestFlight 验收，不得直接提交。权威上传文本位于 `fastlane/metadata/`。
 
 ## 基本信息
-- **App 名称**: 语音输入键盘
-- **副标题**: 离线语音转文字输入法
-- **Bundle ID**: com.voiceinput.app
-- **SKU**: voiceinputkbd2026
-- **主要语言**: 简体中文
-- **类别**: 工具 (Utilities)
-- **次要类别**: 效率 (Productivity)
-- **内容分级**: 4+
-- **价格**: 免费
-- **支持 URL**: https://github.com/Daseanle/voice-input-keyboard
-- **隐私政策 URL**: https://daseanle.github.io/voice-input-keyboard/privacy-policy.html
 
-## App 描述（简短）
+- App 名称：声入（英文：VoType）
+- 中文副标题：语音转文字键盘
+- 英文副标题：Voice-to-Text Keyboard
+- 主 App Bundle ID：`com.daseanle.votype`
+- Keyboard Extension Bundle ID：`com.daseanle.votype.keyboard`
+- App Group：`group.com.daseanle.votype.shared`
+- SKU：`voiceinputkbd2026`
+- 主要语言：简体中文
+- 类别：工具（Utilities）
+- 次要类别：效率（Productivity）
+- 内容分级：4+
+- 价格：免费
+- 支持 URL：https://github.com/AIMarshallLee/voice-input-keyboard
+- 隐私政策 URL：https://aimarshalllee.github.io/voice-input-keyboard/privacy-policy.html
 
-离线语音转文字键盘。中英混输、自动标点、去口水词，完全免费，隐私优先。
+## 准确性边界
 
-## App 描述（完整）
+商店文案只能描述已经在候选 TestFlight build 上完成端到端验证的能力：
 
-语音输入键盘是一款专注于语音转文字的 iOS 键盘扩展。
+- “20 个语言”指 20 个可手动选择的固定识别 locale，不是自动语言检测或任意混输。
+- 设备支持时优先请求 Apple 设备端识别；不支持时 Apple Speech 可能联网处理，不得写“完全离线”或“语音不离开设备”。
+- iOS 自定义键盘不能直接录音；用户可能需要在 VoType App 完成听写并手动返回原 App。
+- Foundation Models 润色和翻译仅限模型可用的 iOS 26+ 设备。
+- 当前格式化实现覆盖编号列表和标点，不宣称日期格式化。
+- 不承诺无限会话时长。
+- 用户主动开始听写后可返回原输入框继续录音；发布版不使用近静音音频或合成画中画长期保活，不承诺每次会话都无需打开 VoType。
+- 键盘包含英文 QWERTY 补字层和实时会话反馈，但只有在候选 TestFlight build 真机通过后才能加入正式卖点。
 
-【核心功能】
-• 一键语音输入：点击麦克风按钮即可开始说话，说完后再次点击自动插入文字
-• 实时转写：说话时实时显示识别结果，所见即所得
-• 中英混输：中文语音中夹杂的英文也能正确识别
-• 自动标点：识别结束后自动添加句号、问号等标点
-• 去口水词：自动去除"嗯、啊、那个"等口水词，让输出更干净
-• 符号快捷栏：常用标点、引号、表情一键插入
-• 空格/回车/删除：基础编辑功能齐全
+中文和英文正式描述分别维护在：
 
-【核心优势】
-• 完全离线：优先使用 Apple 设备端语音识别模型，无需网络也能工作
-• 隐私优先：所有识别在设备本地完成，不上传任何数据
-• 完全免费：无订阅、无内购、无广告
-• 无时间限制：不像其他语音输入法有会话时长限制
-• 可自定义：在 App 中开关自动标点、去口水词、实时预览
+- `fastlane/metadata/zh-Hans/description.txt`
+- `fastlane/metadata/en-US/description.txt`
 
-【使用场景】
-• 远程控制：在使用 UU远程等远程桌面 App 时，语音输入文字
-• 消息回复：快速语音回复微信、短信
-• 笔记录入：语音录入备忘录、笔记
-• 搜索输入：语音搜索，无需打字
+## 审核备注草稿
 
-【使用方法】
-1. 打开 App，按照引导添加键盘并开启「允许完全访问」
-2. 在任何 App 中点击输入框唤起键盘
-3. 切换到「语音输入」键盘
-4. 点击麦克风按钮开始说话
-5. 说完后再次点击，文字自动插入
+VoType 包含一个自定义键盘扩展和宿主 App。由于 iOS 不允许自定义键盘扩展直接访问麦克风，录音和 Apple Speech 识别由宿主 App 完成。键盘与宿主 App 仅通过同一 App Group 的本地共享容器交换用户主动发起的会话设置和结果。
 
-【隐私说明】
-本应用不收集任何用户数据。语音识别使用 Apple 系统框架，优先在设备本地完成。无网络连接也可正常使用。
+测试步骤：
 
-## 关键词
-语音输入,语音转文字,输入法,键盘,语音,dictation,speech,text,input,keyboard,离线,语音识别,中英混输
+1. 打开 VoType，授权麦克风和语音识别。
+2. 设置 → 通用 → 键盘 → 键盘 → 添加新键盘 → 声入。
+3. 为声入开启“允许完全访问”，该权限用于 App Group 本地会话交换。
+4. 在测试 App 的普通文本框中切换到声入键盘。
+5. 点击麦克风；如键盘提示，请手动打开 VoType。
+6. 看到“正在聆听”后返回原输入框，确认键盘显示实时状态；再次点击麦克风停止。
+7. 确认匹配结果自动插入；左滑进入 QWERTY 并验证普通补字。
 
-## 审核备注
-本应用是键盘扩展（Keyboard Extension），包含一个宿主 App 用于引导安装和设置。
-键盘核心功能是语音转文字输入，使用 SFSpeechRecognizer 框架。
-已在 Info.plist 中设置 RequestsOpenAccess: true（需要完全访问权限才能使用麦克风）。
-已包含 NSMicrophoneUsageDescription 和 NSSpeechRecognitionUsageDescription 隐私描述。
-隐私政策 URL: https://daseanle.github.io/voice-input-keyboard/privacy-policy.html
+隐私政策：https://aimarshalllee.github.io/voice-input-keyboard/privacy-policy.html
 
-## 截图需求
-- iPhone 6.7" (1290x2796) - 至少需要 1 张
-- iPad 12.9" (2048x2732) - 如果支持 iPad
-- 截图内容建议：
-  1. 键盘主界面（麦克风按钮+符号栏）
-  2. 录音中的实时转写
-  3. App 设置页
-  4. App 引导页
-  5. 隐私说明
+## 截图
+
+现有 `fastlane/screenshots/` 仅是历史占位素材，存在缺字方框、文字重叠、虚假离线宣称和与实际键盘不一致的界面，不能发布。
+
+必须从当前候选 TestFlight build 真机重新截取：
+
+1. 宿主 App 安装与权限引导；
+2. 实际键盘界面；
+3. 返回原输入框后的实时预览与停止状态；
+4. 结果返回和插入；
+5. 语言、个人词典和隐私说明。
+
+每张截图在 100% 比例检查文字、图标、语言和宣称，再放入 Fastlane 目录。所需设备尺寸以提交时 App Store Connect 的最新要求为准。
+
+## 发布状态
+
+- GitHub Actions 已在 2026-08-20 对 build 33 完成构建和上传动作。
+- 工作流使用过跳过处理等待的上传方式，因此这不证明 TestFlight processing 成功。
+- 当前没有证据表明版本已经提交审核或公开上架。
+- 完整门槛见 [发布验收清单](release-checklist.md)。

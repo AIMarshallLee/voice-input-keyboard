@@ -3,46 +3,67 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>语音输入键盘 - 隐私政策</title>
+    <title>VoType 声入 - 隐私政策</title>
     <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; max-width: 680px; margin: 0 auto; padding: 24px 16px; color: #1a1a1a; line-height: 1.7; }
-        h1 { color: #1e7aff; }
-        h2 { margin-top: 28px; }
-        .update { color: #888; font-size: 14px; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 720px; margin: 0 auto; padding: 28px 18px 48px; color: #1a1a1a; line-height: 1.75; }
+        h1 { color: #1e7aff; line-height: 1.25; }
+        h2 { margin-top: 30px; line-height: 1.35; }
+        .update { color: #666; font-size: 14px; }
+        .notice { padding: 14px 16px; border-radius: 10px; background: #eef5ff; }
+        code { background: #f2f2f2; border-radius: 4px; padding: 1px 4px; }
     </style>
 </head>
 <body>
-    <h1>语音输入键盘 隐私政策</h1>
-    <p class="update">最后更新日期：2026年8月18日</p>
+    <h1>VoType 声入隐私政策</h1>
+    <p class="update">最后更新日期：2026年8月24日</p>
 
-    <h2>概述</h2>
-    <p>语音输入键盘（以下简称"本应用"）尊重并保护用户的个人隐私。本应用的核心设计原则是：<strong>所有语音识别在设备本地完成，不上传任何数据到服务器。</strong></p>
+    <p class="notice"><strong>摘要：</strong>VoType 不运营语音服务器，也不包含广告或第三方追踪 SDK。语音识别由 Apple Speech 框架完成；设备和语言不支持本地识别时，Apple 可能通过网络处理识别请求。</p>
 
-    <h2>数据收集</h2>
-    <p>本应用不收集、不存储、不上传任何用户数据。具体来说：</p>
+    <h2>语音和麦克风</h2>
     <ul>
-        <li>语音识别使用 Apple 系统内置的 SFSpeechRecognizer 框架，优先使用设备端离线模型</li>
-        <li>麦克风音频仅在录音期间使用，录音结束后立即销毁</li>
-        <li>识别出的文字直接插入到您正在使用的输入框中，不会被本应用保存</li>
-        <li>应用设置（自动标点、去口水词等开关）存储在设备本地的 App Group 共享存储中，不上传任何服务器</li>
+        <li>VoType 仅在您发起听写会话时请求麦克风输入。</li>
+        <li>设备支持相应语言的设备端识别时，应用会优先请求本地识别。</li>
+        <li>设备端识别不可用时，Apple Speech 可能需要网络并由 Apple 的服务处理音频。该处理受 Apple 的系统服务和隐私条款约束。</li>
+        <li>开发者没有自己的语音服务器，不会从 Apple 接收您的原始录音，也不会把录音用于广告、分析或用户画像。</li>
+        <li>应用不会把原始录音保存为音频文件。</li>
     </ul>
 
-    <h2>麦克风使用</h2>
-    <p>本应用仅在您主动点击麦克风按钮时才会访问麦克风。不点击时，麦克风完全处于关闭状态。</p>
+    <h2>宿主 App 与键盘扩展之间的数据</h2>
+    <p>iOS 不允许自定义键盘扩展直接录音，因此 VoType 的宿主 App 负责识别。为完成一次会话，主 App 与键盘扩展会在同一 App Group 的本地共享容器中临时交换：</p>
+    <ul>
+        <li>随机会话标识、时间戳、识别语言和功能选项；</li>
+        <li>您主动选中并用于语音编辑的文本（如有）；</li>
+        <li>识别后的文字或错误状态。</li>
+    </ul>
+    <p>键盘只消费与当前会话匹配且未过期的结果。结果在匹配消费后删除；取消或未完成的会话数据会按有效期清理。为避免切换 App 后把结果插到错误输入框，应用只临时保存输入框前后文和选区的哈希，不保存这些位置的原文。上述内容不会上传到开发者服务器。</p>
 
-    <h2>网络访问</h2>
-    <p>本应用不需要网络连接即可工作。当设备端模型不可用时，Apple 的 SFSpeechRecognizer 可能会使用网络进行语音识别，但此数据传输由 Apple 系统处理，本应用不涉及。</p>
+    <h2>本地设置和统计</h2>
+    <p>以下内容保存在同一设备的 App Group 本地存储中：</p>
+    <ul>
+        <li>语言偏好、功能开关和个人词典；</li>
+        <li>总输入字符数、会话次数、语言使用次数和连续使用天数等聚合统计。</li>
+    </ul>
+    <p>这些本地数据不包含原始录音，不会被开发者上传。您可以在 App 内删除个人词典条目和重置使用统计；卸载 App 会由系统清理对应容器。</p>
 
-    <h2>第三方服务</h2>
-    <p>本应用不包含任何第三方追踪 SDK、广告 SDK 或分析服务。</p>
+    <h2>设备端模型</h2>
+    <p>在支持 Foundation Models 的 iOS 26+ 设备上，文字润色和翻译可由 Apple 的设备端模型完成。模型不可用时，VoType 会跳过相关功能，不会改用开发者服务器。</p>
 
-    <h2>儿童隐私</h2>
-    <p>本应用不面向 13 岁以下儿童，也不收集任何年龄段的个人信息。</p>
+    <h2>“允许完全访问”</h2>
+    <p>iOS 要求自定义键盘获得“允许完全访问”后，才能向 App Group 共享容器写入会话请求。VoType 使用此权限完成用户主动发起的语音输入、读取本地设置和插入匹配结果；不会记录其他按键，也不会把输入内容发送给开发者。</p>
 
-    <h2>隐私政策更新</h2>
-    <p>如果本隐私政策有变更，我们将在此页面更新。继续使用本应用即表示您同意本隐私政策。</p>
+    <h2>后台录音</h2>
+    <p>您主动开始一次听写后，可以返回原输入框继续说话；该次录音可能在后台持续到您停止、静音超时、发生系统音频中断或会话超时。VoType 不使用近静音音频或合成画中画维持长期待命，听写结束后会停用音频会话。iOS 仍可能终止宿主进程，届时下一次听写需要重新打开 VoType。</p>
+
+    <h2>第三方服务和追踪</h2>
+    <p>VoType 不包含第三方广告、分析或追踪 SDK，不创建用户账号，不出售或共享个人数据，也不进行跨 App 或跨网站追踪。除 Apple Speech 可能进行的系统识别处理外，应用不会把语音或文字发送到第三方服务。</p>
+
+    <h2>权限控制</h2>
+    <p>您可以随时在 iOS 设置中撤销麦克风、语音识别或键盘“允许完全访问”权限。撤销相关权限后，对应语音功能将不可用，但键盘的英文 QWERTY、基础符号、空格、删除、回车和切换输入法功能仍可使用。</p>
+
+    <h2>政策更新</h2>
+    <p>如果数据处理方式发生变化，我们会更新本页面及“最后更新日期”。重大变化会在发布说明或 App 内说明。</p>
 
     <h2>联系我们</h2>
-    <p>如有任何关于隐私的问题，请通过 GitHub Issues 联系我们。</p>
+    <p>如有隐私问题，请在 <a href="https://github.com/AIMarshallLee/voice-input-keyboard/issues">GitHub Issues</a> 中联系。</p>
 </body>
 </html>

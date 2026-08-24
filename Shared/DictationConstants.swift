@@ -1,58 +1,27 @@
 import Foundation
-import UIKit
 
-/// 键盘扩展与容器 App 之间通信的共享常量
+/// 宿主 App 的兼容深链入口。发布版键盘不直接打开该 URL；自定义键盘
+/// 扩展没有受支持的公共 API 可强制拉起容器 App。
 ///
-/// Build 16 起,通信架构改为 Darwin 通知 + 命名剪贴板 (DarwinBridge.swift)
-/// 不依赖 App Group,完全使用 Darwin 通知传信号 + 命名剪贴板传数据
-/// 本文件仅保留 URL Scheme 构建 (Path B 降级路径使用)
-///
-/// 通信流程:
-/// - 路径 A (首选): Darwin 通知 requestStartDictation → 主 App 录音 → transcriptionReady
-/// - 路径 B (降级): URL Scheme 启动主 App → 同上
-/// - 结果传递: DarwinBridge.writeTranscription / readAndConsumeResult (命名剪贴板)
+/// URL 只携带不可猜测的会话 UUID；语言、选中文本和功能设置始终留在
+/// App Group 共享容器中，避免自定义 scheme 暴露用户内容或产生两份设置快照。
 enum DictationConstants {
-    // MARK: - URL Scheme
     static let urlScheme = "votype"
     static let dictationPath = "dictation"
-
-    // MARK: - URL 参数 Keys (Path B 降级路径使用)
-    static let paramLang = "lang"
-    static let paramWhisper = "whisper"
-    static let paramTranslate = "translate"
-    static let paramTranslateTarget = "translateTarget"
-    static let paramSelectedText = "selectedText"
-    static let paramKbType = "kbType"
     static let paramSession = "session"
 
-    // MARK: - 构建听写 URL (Path B: URL Scheme 降级路径)
-    static func buildDictationURL(
-        language: String,
-        whisper: Bool,
-        translateEnabled: Bool,
-        translateTarget: String,
-        selectedText: String?,
-        keyboardType: Int,
-        session: String
-    ) -> URL? {
+    static func isValidSession(_ session: String) -> Bool {
+        UUID(uuidString: session) != nil
+    }
+
+    static func buildDictationURL(session: String) -> URL? {
+        guard isValidSession(session) else { return nil }
         var components = URLComponents()
         components.scheme = urlScheme
         components.host = dictationPath
-
-        var items: [URLQueryItem] = [
-            URLQueryItem(name: paramLang, value: language),
-            URLQueryItem(name: paramWhisper, value: whisper ? "1" : "0"),
-            URLQueryItem(name: paramTranslate, value: translateEnabled ? "1" : "0"),
-            URLQueryItem(name: paramTranslateTarget, value: translateTarget),
-            URLQueryItem(name: paramKbType, value: String(keyboardType)),
+        components.queryItems = [
             URLQueryItem(name: paramSession, value: session)
         ]
-
-        if let selected = selectedText, !selected.isEmpty {
-            items.append(URLQueryItem(name: paramSelectedText, value: selected))
-        }
-
-        components.queryItems = items
         return components.url
     }
 }

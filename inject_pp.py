@@ -1,48 +1,90 @@
 #!/usr/bin/env python3
-import re
 import os
+import re
 import sys
+from pathlib import Path
+from typing import NoReturn
 
-pp_app = os.environ.get('PP_UUID_APP', '')
-pp_kb = os.environ.get('PP_UUID_KB', '')
 
-print(f"App UUID: {pp_app}")
-print(f"Keyboard UUID: {pp_kb}")
+PROJECT_PATH = Path("VoType.xcodeproj/project.pbxproj")
+APP_BUNDLE_ID = "com.daseanle.votype"
+KEYBOARD_BUNDLE_ID = "com.daseanle.votype.keyboard"
 
-if not pp_app or not pp_kb:
-    print("ERROR: Missing PP_UUID_APP or PP_UUID_KB environment variables")
-    sys.exit(1)
 
-pbxproj_path = 'VoType.xcodeproj/project.pbxproj'
+def fail(message: str) -> NoReturn:
+    print(f"ERROR: {message}", file=sys.stderr)
+    raise SystemExit(1)
 
-with open(pbxproj_path, 'r') as f:
-    content = f.read()
 
-# Log current state
-app_matches = re.findall(r'PRODUCT_BUNDLE_IDENTIFIER = "com\.voiceinput\.app";', content)
-kb_matches = re.findall(r'PRODUCT_BUNDLE_IDENTIFIER = "com\.voiceinput\.votype\.keyboard";', content)
-print(f"Found {len(app_matches)} app bundle ID matches")
-print(f"Found {len(kb_matches)} keyboard bundle ID matches")
+def validate_uuid(name: str, value: str) -> str:
+    value = value.strip()
+    if not value:
+        fail(f"Missing {name}")
+    if not re.fullmatch(
+        r"[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-"
+        r"[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}",
+        value,
+    ):
+        fail(f"{name} is not a provisioning profile UUID")
+    return value
 
-# Clear all PROVISIONING_PROFILE_SPECIFIER and PROVISIONING_PROFILE
-content = re.sub(r'PROVISIONING_PROFILE_SPECIFIER = "[^"]*";', 'PROVISIONING_PROFILE_SPECIFIER = "";', content)
-content = re.sub(r'PROVISIONING_PROFILE = "[^"]*";', 'PROVISIONING_PROFILE = "";', content)
 
-# Inject PROVISIONING_PROFILE after each target's bundle ID
-app_replacement = f'PRODUCT_BUNDLE_IDENTIFIER = com.daseanle.votype;\n\t\t\t\tPROVISIONING_PROFILE = "{pp_app}";'
-kb_replacement = f'PRODUCT_BUNDLE_IDENTIFIER = com.daseanle.votype.keyboard;\n\t\t\t\tPROVISIONING_PROFILE = "{pp_kb}";'
+def inject_profile(content: str, bundle_id: str, profile_uuid: str) -> tuple[str, int]:
+    pattern = re.compile(
+        rf'^(?P<indent>[ \t]*)PRODUCT_BUNDLE_IDENTIFIER = "?{re.escape(bundle_id)}"?;$',
+        re.MULTILINE,
+    )
+    matches = list(pattern.finditer(content))
+    if not matches:
+        fail(f"Bundle ID not found in generated project: {bundle_id}")
 
-content = content.replace('PRODUCT_BUNDLE_IDENTIFIER = com.daseanle.votype;', app_replacement)
-content = content.replace('PRODUCT_BUNDLE_IDENTIFIER = com.daseanle.votype.keyboard;', kb_replacement)
+    def replacement(match: re.Match[str]) -> str:
+        indent = match.group("indent")
+        return (
+            f"{match.group(0)}\n"
+            f'{indent}PROVISIONING_PROFILE = "{profile_uuid}";'
+        )
 
-with open(pbxproj_path, 'w') as f:
-    f.write(content)
+    return pattern.sub(replacement, content), len(matches)
 
-# Verify
-with open(pbxproj_path, 'r') as f:
-    verify = f.read()
 
-app_pp_count = verify.count(f'PROVISIONING_PROFILE = "{pp_app}";')
-kb_pp_count = verify.count(f'PROVISIONING_PROFILE = "{pp_kb}";')
-print(f"Verification: App PP injected {app_pp_count} times, Keyboard PP injected {kb_pp_count} times")
-print("Done!")
+def main() -> None:
+    pp_app = validate_uuid("PP_UUID_APP", os.environ.get("PP_UUID_APP", ""))
+    pp_keyboard = validate_uuid("PP_UUID_KB", os.environ.get("PP_UUID_KB", ""))
+    if pp_app == pp_keyboard:
+        fail("App and keyboard provisioning profiles must have different UUIDs")
+
+    if not PROJECT_PATH.is_file():
+        fail(f"Generated project not found: {PROJECT_PATH}")
+
+    content = PROJECT_PATH.read_text(encoding="utf-8")
+
+    # Make the script safe to re-run by removing previously injected settings.
+    content = re.sub(
+        r"^[ \t]*PROVISIONING_PROFILE(?:_SPECIFIER)? = .*;\r?\n",
+        "",
+        content,
+        flags=re.MULTILINE,
+    )
+
+    content, app_count = inject_profile(content, APP_BUNDLE_ID, pp_app)
+    content, keyboard_count = inject_profile(
+        content, KEYBOARD_BUNDLE_ID, pp_keyboard
+    )
+
+    expected_app_line = f'PROVISIONING_PROFILE = "{pp_app}";'
+    expected_keyboard_line = f'PROVISIONING_PROFILE = "{pp_keyboard}";'
+    if content.count(expected_app_line) != app_count:
+        fail("App provisioning profile injection verification failed")
+    if content.count(expected_keyboard_line) != keyboard_count:
+        fail("Keyboard provisioning profile injection verification failed")
+
+    PROJECT_PATH.write_text(content, encoding="utf-8")
+    print(
+        "Provisioning profiles injected successfully: "
+        f"app={app_count}, keyboard={keyboard_count}"
+    )
+
+
+if __name__ == "__main__":
+    main()

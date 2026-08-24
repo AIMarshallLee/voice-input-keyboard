@@ -1,26 +1,43 @@
 import SwiftUI
 import Combine
 
-/// 听写协调器
-///
-/// Path A (Darwin 通知): 由 BackgroundDictationManager 在后台处理,不显示 UI
-/// Path B (URL Scheme): 显示 DictationView 全屏页面 (仅首次使用或 App 被杀后)
+/// 宿主 App 的前台听写页面协调器。
+struct DictationPresentation: Identifiable, Equatable {
+    let id: String
+    let url: URL?
+}
+
+@MainActor
 final class DictationCoordinator: ObservableObject {
-    @Published var showDictation = false
-    @Published var dictationURL: URL?
+    @Published var presentation: DictationPresentation?
+    private var queuedPresentations: [DictationPresentation] = []
+    private var transitioningPresentation: DictationPresentation?
 
-    private var stopObserver: DarwinNotificationObserver?
+    func enqueue(session: String, url: URL?) {
+        guard DictationConstants.isValidSession(session),
+              presentation?.id != session,
+              transitioningPresentation?.id != session,
+              !queuedPresentations.contains(where: { $0.id == session }) else { return }
+        let request = DictationPresentation(id: session, url: url)
+        if presentation == nil, transitioningPresentation == nil {
+            presentation = request
+        } else {
+            queuedPresentations.append(request)
+        }
+    }
 
-    init() {
-        // 监听键盘的 requestStopDictation
-        stopObserver = DarwinNotificationObserver(
-            name: DarwinNotificationName.requestStopDictation
-        ) { [weak self] in
-            guard let self = self else { return }
-            print("[App] requestStopDictation received")
-            // 如果 DictationView 在显示,关闭它
-            DispatchQueue.main.async {
-                self.showDictation = false
+    func didDismiss() {
+        guard transitioningPresentation == nil,
+              !queuedPresentations.isEmpty else { return }
+        transitioningPresentation = queuedPresentations.removeFirst()
+        DispatchQueue.main.async { [weak self] in
+            guard let self,
+                  let nextPresentation = self.transitioningPresentation else { return }
+            self.transitioningPresentation = nil
+            if self.presentation == nil {
+                self.presentation = nextPresentation
+            } else {
+                self.queuedPresentations.insert(nextPresentation, at: 0)
             }
         }
     }
@@ -28,26 +45,52 @@ final class DictationCoordinator: ObservableObject {
 
 @main
 struct VoiceInputApp: App {
+    @Environment(\.scenePhase) private var scenePhase
     @StateObject private var coordinator = DictationCoordinator()
     @StateObject private var bgDictation = BackgroundDictationManager.shared
 
     var body: some Scene {
         WindowGroup {
             ContentView()
-                .fullScreenCover(isPresented: $coordinator.showDictation) {
-                    DictationView(url: coordinator.dictationURL)
+                .fullScreenCover(
+                    item: $coordinator.presentation,
+                    onDismiss: coordinator.didDismiss
+                ) { request in
+                    DictationView(
+                        expectedSession: request.id,
+                        url: request.url
+                    )
                 }
-                .onOpenURL { url in
-                    // ★ Build 33: 永远显示 DictationView！
-                    // 之前: isPipStandbyEnabled=true 时重定向到 BackgroundDictationManager
-                    //       后台 SFSpeechRecognizer 必定失败 (Apple 不支持后台语音识别)
-                    // 现在: 永远走前台 DictationView，前台识别可靠
-                    if url.scheme == DictationConstants.urlScheme {
-                        print("[App] URL Scheme received → showing DictationView (foreground recognition)")
-                        coordinator.dictationURL = url
-                        coordinator.showDictation = true
+                .onAppear {
+                    presentPendingDictationIfNeeded()
+                }
+                .onChange(of: scenePhase) { phase in
+                    if phase == .active {
+                        presentPendingDictationIfNeeded()
                     }
                 }
+                .onOpenURL { url in
+                    guard url.scheme == DictationConstants.urlScheme,
+                          url.host == DictationConstants.dictationPath,
+                          let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+                          let session = components.queryItems?.first(where: {
+                              $0.name == DictationConstants.paramSession
+                          })?.value,
+                          UUID(uuidString: session) != nil else {
+                        print("[App] Ignoring malformed or unsupported URL")
+                        return
+                    }
+
+                    print("[App] Valid dictation URL received → showing foreground recorder")
+                    coordinator.enqueue(session: session, url: url)
+                }
         }
+    }
+
+    /// 键盘扩展无法可靠启动宿主 App。用户手动打开 VoType 时，
+    /// 继续处理一分钟内尚未消费的 App Group 听写请求。
+    private func presentPendingDictationIfNeeded() {
+        guard let pending = DarwinBridge.peekPendingDictationSettings() else { return }
+        coordinator.enqueue(session: pending.session, url: nil)
     }
 }

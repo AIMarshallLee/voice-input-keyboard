@@ -1,33 +1,28 @@
-VoType is a voice-to-text keyboard for iOS. Speak naturally, and your words appear instantly in any app.
+VoType is a voice-to-text keyboard for iOS. The keyboard extension starts a session and inserts its matching result; the VoType app records and recognizes speech with Apple's Speech framework.
 
 [KEY FEATURES]
-• One-tap voice input: Tap the mic, speak — text is inserted automatically when you stop
-• PiP background standby: After first use, subsequent voice input works without switching apps, just like Typeless / WeChat Input
-• Real-time transcription: See your words appear as you speak
-• 20-language support: English, Chinese, Japanese, Korean, German, French, Spanish, and more
-• Smart auto-formatting: Automatically formats numbered lists, dates, and punctuation
-• On-device translation: Translate your speech to another language (iOS 26+ on-device LLM)
-• Scenario awareness: Adapts to email fields, URLs, and social media inputs
-• Voice editing: Replace, delete, or append to selected text using voice commands
-• Whisper mode: Enhanced voice capture for quiet environments
-• Usage statistics: Track your total words, sessions, and streaks
+• Start voice input from a custom keyboard
+• See connecting, listening, processing, and live transcript status; tap the microphone again to stop
+• Swipe left for an English QWERTY fallback with letters, numbers, symbols, and hold-to-delete
+• Choose from 20 fixed speech-recognition locales
+• Automatic punctuation, filler-word cleanup, and spoken self-correction
+• Numbered-list formatting for spoken sequences
+• Personal dictionary and language preferences
+• Replace, append to, or delete selected text with voice commands
+• On-device Foundation Models polish and translation on supported iOS 26+ devices
+• Local aggregate usage counts
 
 [PRIVACY]
-Speech recognition uses Apple's Speech framework, with recognition requests processed via Apple's servers. LLM polish and translation use Apple's on-device models (iOS 26+). No user data is collected, no accounts, no tracking. Voice data is used only during recognition and is not stored.
-
-[COMPLETELY FREE]
-No subscriptions, no in-app purchases, no ads. Forever.
-
-[PERFECT FOR]
-• Quick message replies without typing
-• Voice dictation for notes and documents
-• Accessibility — type hands-free
-• Multilingual communication
+VoType contains no advertising, third-party analytics, or tracking SDKs and operates no speech server. It requests on-device Apple Speech recognition when the device and language support it. Otherwise, Apple Speech may process recognition over the network. Session settings and results are exchanged temporarily in a local App Group container and are removed after matching consumption or expiry.
 
 [HOW TO USE]
-1. Open VoType and follow the setup guide to add the keyboard
-2. Enable "Allow Full Access" in Settings
-3. Tap any text field in any app to bring up the keyboard
-4. Switch to the VoType keyboard
-5. Tap the mic button and start speaking
-6. Text is inserted automatically when you stop
+1. Open VoType and follow the guide to add the keyboard
+2. Enable Allow Full Access so the keyboard can exchange the current session locally with the containing app
+3. Grant microphone and speech-recognition permission
+4. Switch to VoType in a text field and tap the microphone
+5. If prompted, open VoType; once listening starts, return to the original text field and keep speaking
+6. Watch live status in the keyboard and tap the microphone again to stop; the matching result is inserted when ready
+
+iOS does not let a custom keyboard extension record from the microphone directly. If iOS has terminated VoType, the next session still requires opening the app. Apple Speech availability, offline support, languages, and session duration depend on the device and system.
+
+Free, with no subscription, in-app purchase, or advertising. The current app interface is optimized for Simplified Chinese.

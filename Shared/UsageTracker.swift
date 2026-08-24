@@ -11,33 +11,37 @@ import Foundation
 /// - 连续使用天数(Streak)
 class UsageTracker {
 
-    static let shared = UsageTracker()
+    static let shared = UsageTracker(defaults: SharedDefaults.shared)
 
-    private let sharedDefaults = UserDefaults.standard as UserDefaults?
+    private let sharedDefaults: UserDefaults
+
+    init(defaults: UserDefaults = SharedDefaults.shared) {
+        self.sharedDefaults = defaults
+    }
 
     // MARK: - 记录使用
 
     /// 记录一次语音输入会话
     func recordSession(charCount: Int, language: String, featuresUsed: Set<String> = []) {
         // 总字数
-        let totalChars = sharedDefaults?.integer(forKey: "usage_totalChars") ?? 0
-        sharedDefaults?.set(totalChars + charCount, forKey: "usage_totalChars")
+        let totalChars = sharedDefaults.integer(forKey: "usage_totalChars")
+        sharedDefaults.set(totalChars + charCount, forKey: "usage_totalChars")
 
         // 总会话数
-        let totalSessions = sharedDefaults?.integer(forKey: "usage_totalSessions") ?? 0
-        sharedDefaults?.set(totalSessions + 1, forKey: "usage_totalSessions")
+        let totalSessions = sharedDefaults.integer(forKey: "usage_totalSessions")
+        sharedDefaults.set(totalSessions + 1, forKey: "usage_totalSessions")
 
         // 语言分布
-        var langDist = sharedDefaults?.dictionary(forKey: "usage_langDist") as? [String: Int] ?? [:]
+        var langDist = sharedDefaults.dictionary(forKey: "usage_langDist") as? [String: Int] ?? [:]
         langDist[language, default: 0] += 1
-        sharedDefaults?.set(langDist, forKey: "usage_langDist")
+        sharedDefaults.set(langDist, forKey: "usage_langDist")
 
         // 功能使用
-        var featureCounts = sharedDefaults?.dictionary(forKey: "usage_features") as? [String: Int] ?? [:]
+        var featureCounts = sharedDefaults.dictionary(forKey: "usage_features") as? [String: Int] ?? [:]
         for feature in featuresUsed {
             featureCounts[feature, default: 0] += 1
         }
-        sharedDefaults?.set(featureCounts, forKey: "usage_features")
+        sharedDefaults.set(featureCounts, forKey: "usage_features")
 
         // 每日记录
         recordDailyUsage()
@@ -53,7 +57,7 @@ class UsageTracker {
         formatter.dateFormat = "yyyy-MM-dd"
         let today = formatter.string(from: Date())
 
-        var daily = sharedDefaults?.dictionary(forKey: "usage_daily") as? [String: Int] ?? [:]
+        var daily = sharedDefaults.dictionary(forKey: "usage_daily") as? [String: Int] ?? [:]
         daily[today, default: 0] += 1
 
         // 只保留最近7天
@@ -64,7 +68,7 @@ class UsageTracker {
             }
         }
 
-        sharedDefaults?.set(daily, forKey: "usage_daily")
+        sharedDefaults.set(daily, forKey: "usage_daily")
     }
 
     // MARK: - Streak 计算
@@ -75,8 +79,8 @@ class UsageTracker {
         let today = formatter.string(from: Date())
         let yesterday = formatter.string(from: Date(timeIntervalSinceNow: -86400))
 
-        let lastUseDate = sharedDefaults?.string(forKey: "usage_lastUseDate") ?? ""
-        var currentStreak = sharedDefaults?.integer(forKey: "usage_streak") ?? 0
+        let lastUseDate = sharedDefaults.string(forKey: "usage_lastUseDate") ?? ""
+        var currentStreak = sharedDefaults.integer(forKey: "usage_streak")
 
         if lastUseDate == today {
             // 今天已经记录过了,不重复加
@@ -88,13 +92,13 @@ class UsageTracker {
             currentStreak = 1
         }
 
-        sharedDefaults?.set(currentStreak, forKey: "usage_streak")
-        sharedDefaults?.set(today, forKey: "usage_lastUseDate")
+        sharedDefaults.set(currentStreak, forKey: "usage_streak")
+        sharedDefaults.set(today, forKey: "usage_lastUseDate")
 
         // 最长 streak
-        let maxStreak = sharedDefaults?.integer(forKey: "usage_maxStreak") ?? 0
+        let maxStreak = sharedDefaults.integer(forKey: "usage_maxStreak")
         if currentStreak > maxStreak {
-            sharedDefaults?.set(currentStreak, forKey: "usage_maxStreak")
+            sharedDefaults.set(currentStreak, forKey: "usage_maxStreak")
         }
     }
 
@@ -111,10 +115,10 @@ class UsageTracker {
     }
 
     var stats: UsageStats {
-        let totalChars = sharedDefaults?.integer(forKey: "usage_totalChars") ?? 0
-        let totalSessions = sharedDefaults?.integer(forKey: "usage_totalSessions") ?? 0
+        let totalChars = sharedDefaults.integer(forKey: "usage_totalChars")
+        let totalSessions = sharedDefaults.integer(forKey: "usage_totalSessions")
 
-        let langDist = sharedDefaults?.dictionary(forKey: "usage_langDist") as? [String: Int] ?? [:]
+        let langDist = sharedDefaults.dictionary(forKey: "usage_langDist") as? [String: Int] ?? [:]
         let languageDistribution = langDist
             .sorted { $0.value > $1.value }
             .prefix(5)
@@ -123,18 +127,18 @@ class UsageTracker {
                 return (config?.name ?? id, config?.flag ?? "", count)
             }
 
-        let featureCounts = sharedDefaults?.dictionary(forKey: "usage_features") as? [String: Int] ?? [:]
+        let featureCounts = sharedDefaults.dictionary(forKey: "usage_features") as? [String: Int] ?? [:]
         let featureUsage = featureCounts
             .sorted { $0.value > $1.value }
             .map { ($0.key, $0.value) }
 
-        let daily = sharedDefaults?.dictionary(forKey: "usage_daily") as? [String: Int] ?? [:]
+        let daily = sharedDefaults.dictionary(forKey: "usage_daily") as? [String: Int] ?? [:]
         let dailyUsage = daily
             .sorted { $0.key < $1.key }
             .map { ($0.key, $0.value) }
 
-        let currentStreak = sharedDefaults?.integer(forKey: "usage_streak") ?? 0
-        let maxStreak = sharedDefaults?.integer(forKey: "usage_maxStreak") ?? 0
+        let currentStreak = sharedDefaults.integer(forKey: "usage_streak")
+        let maxStreak = sharedDefaults.integer(forKey: "usage_maxStreak")
 
         return UsageStats(
             totalChars: totalChars,
@@ -150,14 +154,14 @@ class UsageTracker {
     // MARK: - 重置
 
     func resetAll() {
-        sharedDefaults?.removeObject(forKey: "usage_totalChars")
-        sharedDefaults?.removeObject(forKey: "usage_totalSessions")
-        sharedDefaults?.removeObject(forKey: "usage_langDist")
-        sharedDefaults?.removeObject(forKey: "usage_features")
-        sharedDefaults?.removeObject(forKey: "usage_daily")
-        sharedDefaults?.removeObject(forKey: "usage_streak")
-        sharedDefaults?.removeObject(forKey: "usage_maxStreak")
-        sharedDefaults?.removeObject(forKey: "usage_lastUseDate")
+        sharedDefaults.removeObject(forKey: "usage_totalChars")
+        sharedDefaults.removeObject(forKey: "usage_totalSessions")
+        sharedDefaults.removeObject(forKey: "usage_langDist")
+        sharedDefaults.removeObject(forKey: "usage_features")
+        sharedDefaults.removeObject(forKey: "usage_daily")
+        sharedDefaults.removeObject(forKey: "usage_streak")
+        sharedDefaults.removeObject(forKey: "usage_maxStreak")
+        sharedDefaults.removeObject(forKey: "usage_lastUseDate")
     }
 
     // MARK: - 功能名称
