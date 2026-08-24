@@ -306,7 +306,7 @@ struct ContentView: View {
                                 .foregroundColor(.blue)
                         }
 
-                        Text("键盘提示时打开 VoType；看到“正在聆听”后立即返回原输入框即可继续说话。录音会在后台持续，键盘显示实时文字，再点麦克风结束并自动回填。")
+                        Text("在 VoType 键盘点麦克风后会打开本 App；看到“正在聆听”后立即返回原输入框即可继续说话。录音会在后台持续，键盘显示实时文字，再点麦克风结束并自动回填。")
                             .font(.caption)
                             .foregroundColor(.secondary)
                         Text("VoType 不使用近静音音频或合成画中画长期保活，因此系统结束宿主进程后需要再次打开 App。")
@@ -321,7 +321,7 @@ struct ContentView: View {
                     VStack(alignment: .leading, spacing: 12) {
                         Text("使用方法").font(.headline)
 
-                        InstructionRow(text: "点麦克风；若提示打开 VoType，请打开后等录音开始")
+                        InstructionRow(text: "点麦克风，系统会打开 VoType；等录音开始后返回原输入框")
                         InstructionRow(text: "录音开始后立即返回原输入框，键盘会显示实时识别文字")
                         InstructionRow(text: "再次点麦克风结束；文字处理完成后自动插入光标位置")
                         InstructionRow(text: "左滑或点键盘图标可快速补字，右滑返回语音面板")

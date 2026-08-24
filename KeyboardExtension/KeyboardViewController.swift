@@ -3,10 +3,8 @@ import UIKit
 /// 语音输入键盘 - Darwin 通知 + 命名剪贴板 IPC 架构 (Build 16)
 /// iOS 键盘扩展无法直接录音(平台限制)
 ///
-/// 双路径触发:
-/// 路径 A: 宿主仍可响应 → Darwin 会话通知 → 后台录音 → 自动回填。
-/// 路径 B: 宿主已挂起 → 保留 App Group 会话并提示用户打开 VoType；
-///         录音开始后用户可立即返回原输入框继续说话。
+/// 启动路径: 键盘先把会话写入 App Group，再从用户的麦克风点击打开
+/// VoType。宿主前台消费同一会话，录音开始后用户可立即返回原输入框。
 ///
 /// 参考 Sayboard 架构
 class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate {
@@ -29,6 +27,9 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
     private let quickTypeContainerView = UIView()
     private let quickTypeRowsStack = UIStackView()
     private let quickTypeStatusButton = UIButton(type: .system)
+    private let pinyinCandidateScrollView = UIScrollView()
+    private let pinyinCandidateStack = UIStackView()
+    private let pinyinCompositionLabel = UILabel()
     private var deleteTimer: Timer?
 
     // MARK: - Darwin 通知观察者
@@ -65,8 +66,17 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
         case symbols
     }
 
+    private enum TypingLanguage {
+        case chinese
+        case english
+    }
+
     private var quickTypeLayout: QuickTypeLayout = .letters
     private var isShifted = true
+    private var typingLanguage: TypingLanguage = .chinese
+    private var pinyinComposition = ""
+    private var visiblePinyinCandidates: [String] = []
+    private lazy var pinyinEngine = PinyinInputEngine()
 
     // MARK: - 快捷符号
     private let symbols = ["，", "。", "！", "？", "、", "：", "；", "\u{201C}", "\u{201D}", "（", "）", "…", "—", "～", "😊", "👍", "✅"]
@@ -218,7 +228,7 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
         quickTypeButton.backgroundColor = buttonColor
         quickTypeButton.layer.cornerRadius = 8
         quickTypeButton.translatesAutoresizingMaskIntoConstraints = false
-        quickTypeButton.accessibilityLabel = "打开英文快速补字键盘"
+        quickTypeButton.accessibilityLabel = "打开中文拼音与英文键盘"
         quickTypeButton.addTarget(
             self,
             action: #selector(showQuickTyping),
@@ -405,7 +415,7 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
         containerView.addGestureRecognizer(swipeToType)
     }
 
-    // MARK: - 英文快速补字键盘
+    // MARK: - 中文拼音与英文快速补字键盘
 
     private func setupQuickTypingUI() {
         quickTypeContainerView.backgroundColor = .clear
@@ -430,6 +440,26 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
         )
         quickTypeContainerView.addSubview(quickTypeStatusButton)
         updateQuickTypeStatus("语音输入", phase: nil)
+
+        pinyinCandidateScrollView.translatesAutoresizingMaskIntoConstraints = false
+        pinyinCandidateScrollView.showsHorizontalScrollIndicator = false
+        pinyinCandidateScrollView.backgroundColor = UIColor.secondarySystemBackground
+        pinyinCandidateScrollView.layer.cornerRadius = 7
+        quickTypeContainerView.addSubview(pinyinCandidateScrollView)
+
+        pinyinCandidateStack.axis = .horizontal
+        pinyinCandidateStack.alignment = .fill
+        pinyinCandidateStack.spacing = 4
+        pinyinCandidateStack.translatesAutoresizingMaskIntoConstraints = false
+        pinyinCandidateScrollView.addSubview(pinyinCandidateStack)
+
+        pinyinCompositionLabel.font = UIFont.systemFont(ofSize: 14, weight: .semibold)
+        pinyinCompositionLabel.textColor = .systemBlue
+        pinyinCompositionLabel.text = "拼音"
+        pinyinCompositionLabel.textAlignment = .center
+        pinyinCompositionLabel.accessibilityLabel = "正在输入的拼音"
+        pinyinCompositionLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: 48).isActive = true
+        pinyinCandidateStack.addArrangedSubview(pinyinCompositionLabel)
 
         quickTypeRowsStack.axis = .vertical
         quickTypeRowsStack.spacing = 6
@@ -457,6 +487,31 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
             ),
             quickTypeStatusButton.heightAnchor.constraint(equalToConstant: 28),
 
+            pinyinCandidateScrollView.leadingAnchor.constraint(
+                equalTo: quickTypeContainerView.leadingAnchor,
+                constant: 6
+            ),
+            pinyinCandidateScrollView.trailingAnchor.constraint(
+                equalTo: quickTypeContainerView.trailingAnchor,
+                constant: -6
+            ),
+            pinyinCandidateScrollView.topAnchor.constraint(
+                equalTo: quickTypeStatusButton.bottomAnchor,
+                constant: 3
+            ),
+            pinyinCandidateScrollView.heightAnchor.constraint(equalToConstant: 32),
+
+            pinyinCandidateStack.topAnchor.constraint(equalTo: pinyinCandidateScrollView.topAnchor),
+            pinyinCandidateStack.bottomAnchor.constraint(equalTo: pinyinCandidateScrollView.bottomAnchor),
+            pinyinCandidateStack.leadingAnchor.constraint(
+                equalTo: pinyinCandidateScrollView.leadingAnchor,
+                constant: 4
+            ),
+            pinyinCandidateStack.trailingAnchor.constraint(
+                equalTo: pinyinCandidateScrollView.trailingAnchor,
+                constant: -4
+            ),
+
             quickTypeRowsStack.leadingAnchor.constraint(
                 equalTo: quickTypeContainerView.leadingAnchor,
                 constant: 6
@@ -466,8 +521,8 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
                 constant: -6
             ),
             quickTypeRowsStack.topAnchor.constraint(
-                equalTo: quickTypeStatusButton.bottomAnchor,
-                constant: 4
+                equalTo: pinyinCandidateScrollView.bottomAnchor,
+                constant: 3
             ),
             quickTypeRowsStack.bottomAnchor.constraint(
                 equalTo: quickTypeContainerView.bottomAnchor,
@@ -485,6 +540,7 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
         quickTypeContainerView.addGestureRecognizer(swipeToVoice)
 
         rebuildQuickTypingKeyboard()
+        refreshPinyinCandidates()
     }
 
     private func rebuildQuickTypingKeyboard() {
@@ -506,6 +562,13 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
     private func quickTypeCharacterRows() -> [[String]] {
         switch quickTypeLayout {
         case .letters:
+            if typingLanguage == .chinese {
+                return [
+                    ["q", "w", "e", "r", "t", "y", "u", "i", "o", "p"],
+                    ["a", "s", "d", "f", "g", "h", "j", "k", "l"],
+                    ["z", "x", "c", "v", "b", "n", "m", "delete"],
+                ]
+            }
             return [
                 ["q", "w", "e", "r", "t", "y", "u", "i", "o", "p"],
                 ["a", "s", "d", "f", "g", "h", "j", "k", "l"],
@@ -528,7 +591,7 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
 
     private func quickTypeBottomRow() -> [String] {
         let modeKey = quickTypeLayout == .letters ? "123" : "ABC"
-        return [modeKey, "globe", "voice", "space", "return"]
+        return [modeKey, "globe", "language", "voice", "space", "return"]
     }
 
     private func makeQuickTypeRow(
@@ -551,6 +614,8 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
                 button.widthAnchor.constraint(equalToConstant: 52).isActive = true
             case "globe":
                 button.widthAnchor.constraint(equalToConstant: 42).isActive = true
+            case "language":
+                button.widthAnchor.constraint(equalToConstant: 44).isActive = true
             case "voice":
                 button.widthAnchor.constraint(equalToConstant: 46).isActive = true
             case "return":
@@ -625,6 +690,13 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
             )
             button.backgroundColor = specialKeyColor
             button.accessibilityLabel = "下一个键盘"
+        case "language":
+            button.setTitle(typingLanguage == .chinese ? "中" : "英", for: .normal)
+            button.titleLabel?.font = UIFont.systemFont(ofSize: 15, weight: .semibold)
+            button.backgroundColor = typingLanguage == .chinese ? .systemBlue : specialKeyColor
+            button.setTitleColor(typingLanguage == .chinese ? .white : textColor, for: .normal)
+            button.accessibilityLabel = "中英文切换"
+            button.accessibilityValue = typingLanguage == .chinese ? "中文拼音" : "英文"
         case "voice":
             button.setImage(
                 UIImage(systemName: "mic.fill", withConfiguration: symbolConfig),
@@ -634,7 +706,7 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
             button.tintColor = .white
             button.accessibilityLabel = "返回语音输入"
         case "space":
-            button.setTitle("space", for: .normal)
+            button.setTitle(typingLanguage == .chinese ? "空格" : "space", for: .normal)
             button.titleLabel?.font = UIFont.systemFont(ofSize: 14)
             button.backgroundColor = keyColor
             button.accessibilityLabel = "空格"
@@ -651,7 +723,7 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
             button.backgroundColor = specialKeyColor
             button.accessibilityLabel = key == "ABC" ? "英文字母" : "数字与符号"
         default:
-            let title = quickTypeLayout == .letters && isShifted
+            let title = quickTypeLayout == .letters && isShifted && typingLanguage == .english
                 ? key.uppercased()
                 : key
             button.setTitle(title, for: .normal)
@@ -666,7 +738,7 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
             liveTextLabel.text ?? "语音输入",
             phase: currentLivePhase
         )
-        if quickTypeLayout == .letters {
+        if quickTypeLayout == .letters, typingLanguage == .english {
             isShifted = shouldAutoCapitalize()
             rebuildQuickTypingKeyboard()
         }
@@ -736,38 +808,59 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
 
         switch key {
         case "shift":
+            guard typingLanguage == .english else { return }
             isShifted.toggle()
             rebuildQuickTypingKeyboard()
         case "delete":
-            textDocumentProxy.deleteBackward()
-            refreshShiftAfterEditing()
+            performQuickTypeDelete()
         case "space":
-            textDocumentProxy.insertText(" ")
+            if !commitCurrentPinyin() {
+                textDocumentProxy.insertText(" ")
+            }
         case "return":
+            _ = commitCurrentPinyin()
             textDocumentProxy.insertText("\n")
-            if quickTypeLayout == .letters, !isShifted {
+            if quickTypeLayout == .letters,
+               typingLanguage == .english,
+               !isShifted {
                 isShifted = true
                 rebuildQuickTypingKeyboard()
             }
         case "123":
+            _ = commitCurrentPinyin()
             quickTypeLayout = .numbers
             rebuildQuickTypingKeyboard()
         case "ABC":
             quickTypeLayout = .letters
-            isShifted = shouldAutoCapitalize()
+            isShifted = typingLanguage == .english && shouldAutoCapitalize()
             rebuildQuickTypingKeyboard()
         case "#+=":
+            _ = commitCurrentPinyin()
             quickTypeLayout = .symbols
             rebuildQuickTypingKeyboard()
         case "globe":
+            _ = commitCurrentPinyin()
             advanceToNextInputMode()
+        case "language":
+            _ = commitCurrentPinyin()
+            typingLanguage = typingLanguage == .chinese ? .english : .chinese
+            quickTypeLayout = .letters
+            isShifted = typingLanguage == .english && shouldAutoCapitalize()
+            refreshPinyinCandidates()
+            rebuildQuickTypingKeyboard()
         case "voice":
+            _ = commitCurrentPinyin()
             if isWaitingForResult {
                 micTapped()
             } else {
                 showVoiceInput()
             }
         default:
+            if typingLanguage == .chinese, quickTypeLayout == .letters {
+                pinyinComposition.append(contentsOf: key.lowercased())
+                refreshPinyinCandidates()
+                return
+            }
             let text = quickTypeLayout == .letters && isShifted
                 ? key.uppercased()
                 : key
@@ -779,8 +872,103 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
         }
     }
 
+    private func performQuickTypeDelete() {
+        if typingLanguage == .chinese, !pinyinComposition.isEmpty {
+            pinyinComposition.removeLast()
+            refreshPinyinCandidates()
+            return
+        }
+        textDocumentProxy.deleteBackward()
+        refreshShiftAfterEditing()
+    }
+
+    @discardableResult
+    private func commitCurrentPinyin(candidateIndex: Int = 0) -> Bool {
+        guard typingLanguage == .chinese, !pinyinComposition.isEmpty else {
+            return false
+        }
+
+        let output: String
+        if visiblePinyinCandidates.indices.contains(candidateIndex) {
+            output = visiblePinyinCandidates[candidateIndex]
+        } else {
+            output = pinyinComposition
+        }
+        textDocumentProxy.insertText(output)
+        pinyinComposition = ""
+        refreshPinyinCandidates()
+        return true
+    }
+
+    private func refreshPinyinCandidates() {
+        for view in pinyinCandidateStack.arrangedSubviews where view !== pinyinCompositionLabel {
+            pinyinCandidateStack.removeArrangedSubview(view)
+            view.removeFromSuperview()
+        }
+
+        guard typingLanguage == .chinese else {
+            pinyinCompositionLabel.text = "英文"
+            visiblePinyinCandidates = []
+            return
+        }
+
+        guard !pinyinComposition.isEmpty else {
+            pinyinCompositionLabel.text = "拼音"
+            visiblePinyinCandidates = []
+            addPinyinHint("输入拼音，空格选首词")
+            return
+        }
+
+        pinyinCompositionLabel.text = pinyinComposition
+        visiblePinyinCandidates = pinyinEngine?.candidates(
+            for: pinyinComposition,
+            limit: 12
+        ) ?? []
+
+        if visiblePinyinCandidates.isEmpty {
+            addPinyinHint("继续输入或空格上屏拼音")
+        } else {
+            for (index, candidate) in visiblePinyinCandidates.enumerated() {
+                let button = UIButton(type: .system)
+                button.setTitle(candidate, for: .normal)
+                button.titleLabel?.font = UIFont.systemFont(ofSize: 17)
+                button.setTitleColor(.label, for: .normal)
+                button.backgroundColor = index == 0
+                    ? UIColor.systemBlue.withAlphaComponent(0.12)
+                    : .clear
+                button.layer.cornerRadius = 6
+                button.contentEdgeInsets = UIEdgeInsets(top: 2, left: 10, bottom: 2, right: 10)
+                button.accessibilityIdentifier = String(index)
+                button.accessibilityLabel = "候选词 \(candidate)"
+                button.addTarget(
+                    self,
+                    action: #selector(pinyinCandidateTapped(_:)),
+                    for: .touchUpInside
+                )
+                pinyinCandidateStack.addArrangedSubview(button)
+            }
+        }
+        pinyinCandidateScrollView.setContentOffset(.zero, animated: false)
+    }
+
+    private func addPinyinHint(_ text: String) {
+        let label = UILabel()
+        label.text = text
+        label.textColor = .secondaryLabel
+        label.font = UIFont.systemFont(ofSize: 12)
+        pinyinCandidateStack.addArrangedSubview(label)
+    }
+
+    @objc private func pinyinCandidateTapped(_ sender: UIButton) {
+        guard let identifier = sender.accessibilityIdentifier,
+              let index = Int(identifier) else { return }
+        _ = commitCurrentPinyin(candidateIndex: index)
+    }
+
     private func refreshShiftAfterEditing() {
-        guard quickTypeLayout == .letters, deleteTimer == nil else { return }
+        guard quickTypeLayout == .letters,
+              typingLanguage == .english,
+              deleteTimer == nil else { return }
         let shouldShift = shouldAutoCapitalize()
         guard shouldShift != isShifted else { return }
         isShifted = shouldShift
@@ -961,7 +1149,12 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
     @objc private func handleLongPressDelete(_ gesture: UILongPressGestureRecognizer) {
         if gesture.state == .began {
             deleteTimer = Timer.scheduledTimer(withTimeInterval: 0.08, repeats: true) { [weak self] _ in
-                self?.textDocumentProxy.deleteBackward()
+                guard let self = self else { return }
+                if self.quickTypeContainerView.isHidden {
+                    self.textDocumentProxy.deleteBackward()
+                } else {
+                    self.performQuickTypeDelete()
+                }
             }
         } else if gesture.state == .ended
             || gesture.state == .cancelled
@@ -974,10 +1167,10 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
         }
     }
 
-    // MARK: - 无跳转启动听写
+    // MARK: - 启动听写
 
-    /// 先尝试唤醒仍在运行的宿主会话；若 iOS 已挂起宿主，则保留请求并
-    /// 提示用户打开 VoType。自定义键盘不能用受支持的公共 API 强拉容器 App。
+    /// 先写入完整会话并通知仍在运行的宿主，然后用这次明确的用户点击
+    /// 请求打开 VoType。这样宿主无论运行、挂起还是已终止都能消费同一会话。
     private func launchDictation() {
         guard hasFullAccess else {
             liveTextLabel.text = "请到设置→键盘→VoType→开启「允许完全访问」"
@@ -1032,7 +1225,7 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
         micButton.setImage(UIImage(systemName: "ellipsis", withConfiguration: waveConfig), for: .normal)
         micButton.backgroundColor = UIColor.systemOrange
 
-        // 1.5s 无响应说明宿主大概率已被系统挂起，转为手动前台交接。
+        // 1.5s 无响应说明宿主没有完成前台交接，保留手动打开提示。
         // 收到 dictationStarted 会取消此 timer
         // 收到 dictationFailed 也会取消此 timer 并降级
         darwinFallbackTimer = Timer.scheduledTimer(
@@ -1044,12 +1237,52 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
             self.showManualOpenFallback(sessionId: sessionId)
         }
 
-        // 观察者、状态和超时都就绪后再通知宿主 App，避免快速响应丢失。
-        DarwinBridge.postNotification(DarwinNotificationName.requestStartDictation)
+        // 不同时发送后台启动通知，避免宿主在处理深链前抢先消费同一设置。
+        requestContainingAppOpen(sessionId: sessionId)
     }
 
-    /// 自定义键盘扩展没有受支持的 API 可以强制拉起容器 App。保留会话请求，
-    /// 用户打开 VoType 后 App 会自动消费它并开始录音。
+    /// `NSExtensionContext.open` is attempted first. Apple does not guarantee
+    /// containing-app launch for custom keyboard extensions, so older/current
+    /// iOS builds also need the responder-chain route initiated by the same tap.
+    private func requestContainingAppOpen(sessionId: String) {
+        guard let url = DictationConstants.buildDictationURL(session: sessionId) else {
+            showManualOpenFallback(sessionId: sessionId)
+            return
+        }
+
+        let responderFallback = { [weak self] in
+            guard let self = self,
+                  self.isWaitingForResult,
+                  self.currentSessionId == sessionId else { return }
+            _ = self.openURLThroughResponderChain(url)
+        }
+
+        guard let extensionContext = extensionContext else {
+            responderFallback()
+            return
+        }
+
+        extensionContext.open(url) { opened in
+            guard !opened else { return }
+            DispatchQueue.main.async(execute: responderFallback)
+        }
+    }
+
+    @discardableResult
+    private func openURLThroughResponderChain(_ url: URL) -> Bool {
+        let selector = NSSelectorFromString("openURL:")
+        var responder: UIResponder? = self
+        while let current = responder {
+            if current.responds(to: selector) {
+                current.perform(selector, with: url)
+                return true
+            }
+            responder = current.next
+        }
+        return false
+    }
+
+    /// 如果系统拒绝打开请求，仍保留会话；用户手动打开 VoType 后会自动消费。
     private func showManualOpenFallback(sessionId: String) {
         darwinFallbackTimer?.invalidate()
         darwinFallbackTimer = nil
