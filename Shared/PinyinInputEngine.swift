@@ -30,7 +30,7 @@ final class PinyinInputEngine {
     convenience init?(bundle: Bundle = .main) {
         guard let url = bundle.url(
             forResource: "pinyin_simp",
-            withExtension: "dict"
+            withExtension: "txt"
         ), let text = try? String(contentsOf: url, encoding: .utf8) else {
             return nil
         }

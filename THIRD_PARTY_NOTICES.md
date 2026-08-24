@@ -2,7 +2,7 @@
 
 ## Rime simplified Pinyin dictionary
 
-VoType includes `pinyin_simp.dict`, derived from the Android Open Source
+VoType includes `pinyin_simp.txt`, derived from the Android Open Source
 Project Pinyin IME and distributed by the Rime project under the Apache
 License 2.0.
 
