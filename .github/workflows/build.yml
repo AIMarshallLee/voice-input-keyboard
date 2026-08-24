@@ -675,9 +675,20 @@ jobs:
           if groups != [required]:
               raise SystemExit(f"Signed bundle App Groups are not exactly [{required!r}]")
           PY
+            echo "$label entitlements match the expected Team, Bundle ID, and App Group"
 
             cert_prefix="$RUNNER_TEMP/votype-signer-$(uuidgen)-"
-            codesign -d --extract-certificates "$cert_prefix" "$bundle_path" 2>/dev/null
+            if ! codesign --display --extract-certificates="$cert_prefix" \
+              "$bundle_path" 2>/dev/null; then
+              echo "Unable to extract $label signing certificate"
+              rm -f "$entitlements_file"
+              exit 1
+            fi
+            if [ ! -s "${cert_prefix}0" ]; then
+              echo "$label signing certificate was not extracted"
+              rm -f "$entitlements_file"
+              exit 1
+            fi
             cert_sha1=$(shasum -a 1 "${cert_prefix}0" | awk '{print toupper($1)}')
             rm -f \
               "${cert_prefix}0" "${cert_prefix}1" \
