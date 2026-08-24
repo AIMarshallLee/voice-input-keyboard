@@ -24,6 +24,19 @@ final class PinyinInputEngineTests: XCTestCase {
         XCTAssertEqual(engine.candidates(for: "nihao", limit: 4).first, "你好")
     }
 
+    func testExactPhraseOutranksHigherFrequencyCharacterComposition() {
+        let engine = PinyinInputEngine(
+            dictionaryText: """
+            你\tni\t10
+            泥\tni\t1000000
+            好\thao\t10
+            号\thao\t1000000
+            你好\tni hao\t1
+            """
+        )
+        XCTAssertEqual(engine.candidates(for: "nihao", limit: 4).first, "你好")
+    }
+
     func testBeamSearchComposesPhraseNotPresentInDictionary() {
         let engine = PinyinInputEngine(dictionaryText: dictionary)
         XCTAssertEqual(engine.candidates(for: "nihaoma", limit: 4).first, "你好吗")

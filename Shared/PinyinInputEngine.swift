@@ -43,27 +43,19 @@ final class PinyinInputEngine {
         let code = Self.normalize(rawInput)
         guard !code.isEmpty, limit > 0 else { return [] }
 
-        var ranked: [PinyinCandidate] = entries[code] ?? []
-        ranked.append(contentsOf: composedCandidates(for: code, limit: limit * 2))
-
-        var bestScoreByText: [String: Double] = [:]
+        // A dictionary entry matching the complete spelling is more reliable
+        // than a high-frequency character path. Keep those lexical candidates
+        // first, then fill remaining slots with beam-search compositions.
+        var result: [String] = []
+        var seen: Set<String> = []
+        let ranked = (entries[code] ?? [])
+            + composedCandidates(for: code, limit: limit * 2)
         for candidate in ranked where !candidate.text.isEmpty {
-            bestScoreByText[candidate.text] = max(
-                bestScoreByText[candidate.text] ?? -.infinity,
-                candidate.score
-            )
+            guard seen.insert(candidate.text).inserted else { continue }
+            result.append(candidate.text)
+            if result.count == limit { break }
         }
-
-        return bestScoreByText
-            .map { PinyinCandidate(text: $0.key, score: $0.value) }
-            .sorted {
-                if $0.score == $1.score {
-                    return $0.text.count < $1.text.count
-                }
-                return $0.score > $1.score
-            }
-            .prefix(limit)
-            .map(\.text)
+        return result
     }
 
     static func normalize(_ input: String) -> String {
@@ -133,7 +125,7 @@ final class PinyinInputEngine {
                     for segment in segmentCandidates.prefix(3) {
                         // Fewer, longer lexical segments read more naturally than
                         // a chain of independently high-frequency single characters.
-                        let segmentPenalty = path.segmentCount == 0 ? 0 : 1.8
+                        let segmentPenalty = path.segmentCount == 0 ? 0 : 9.0
                         let lengthBonus = Double(segment.text.count * segment.text.count) * 0.22
                         paths[end].append(
                             Path(
