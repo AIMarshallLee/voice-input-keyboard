@@ -33,7 +33,7 @@ iOS 不允许自定义键盘扩展直接访问麦克风，因此录音必须由�
 共享容器标识为：
 
 ```text
-group.com.daseanle.votype.shared
+group.com.daseanle.votype.container
 ```
 
 主 App 与键盘扩展的 App ID、开发描述文件和分发描述文件都必须启用这个 App Group。没有正确 entitlement 时，进程间设置与结果传递不会工作。
@@ -87,8 +87,8 @@ xcodebuild test \
 
 真机构建前，在 Apple Developer 后台完成以下配置：
 
-1. 为 `com.daseanle.votype` 和 `com.daseanle.votype.keyboard` 启用 `group.com.daseanle.votype.shared`。
-2. 重新生成开发与 App Store 分发描述文件。
+1. 为 `com.daseanle.votype` 和 `com.daseanle.votype.keyboard` 启用 `group.com.daseanle.votype.container`。
+2. 开发描述文件按需重新生成；TestFlight CI 会生成并严格校验两份 App Store 分发描述文件。
 3. 在 Xcode 中确认两个 target 的签名团队和 App Group entitlement 一致。
 4. 在设备设置中添加 VoType 键盘并按需开启“允许完全访问”。
 
