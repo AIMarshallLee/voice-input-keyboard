@@ -4,13 +4,15 @@
 
 ## 1. 源码与 CI
 
-- [ ] `xcodegen generate` 成功，`project.yml` 是唯一项目配置源。
-- [ ] `VoTypeTests` 在可用 iPhone 模拟器全部通过；找不到模拟器时 CI 必须失败。
-- [ ] Release 的无签名 device build 通过。
-- [ ] App 与 Keyboard Extension 都包含 `PrivacyInfo.xcprivacy`。
+- [x] `xcodegen generate` 成功，`project.yml` 是唯一项目配置源。
+- [x] `VoTypeTests` 在可用 iPhone 模拟器全部通过；找不到模拟器时 CI 必须失败。
+- [x] Release 的无签名 device build 通过。
+- [x] App 与 Keyboard Extension 都包含 `PrivacyInfo.xcprivacy`。
 - [x] `project.yml` 中候选版本为 build 35，大于已上传的 build 33；CI 仍会使用 run number 覆盖构建号。
-- [ ] 普通 PR / push 不会调用 `pilot upload` 或 `deliver`。
-- [ ] 手动发布只有在 `publish=true` 时才会访问 App Store Connect。
+- [x] 普通 PR / push 不会调用 `pilot upload` 或 `deliver`。
+- [x] 手动发布只有在 `publish=true` 时才会访问 App Store Connect。
+
+验证证据：2026-08-24 的 [PR #1 / Build IPA #90](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/32686345974) 已通过全部 XCTest、无签名 iphoneos Release 构建、IPA 打包与 artifact 上传；发布相关步骤均按条件跳过。
 
 ## 2. Apple Developer 与签名
 
