@@ -181,6 +181,6 @@ final class TextProcessorTests: XCTestCase {
 
         XCTAssertEqual(languageReader.currentLanguageID, "fr-FR")
         XCTAssertEqual(translationReader.targetLanguageID, "de-DE")
-        XCTAssertEqual(SharedDefaults.suiteName, "group.com.daseanle.votype.shared")
+        XCTAssertEqual(SharedDefaults.suiteName, "group.com.daseanle.votype.container")
     }
 }

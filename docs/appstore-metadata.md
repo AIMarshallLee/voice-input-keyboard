@@ -9,7 +9,7 @@
 - 英文副标题：Voice-to-Text Keyboard
 - 主 App Bundle ID：`com.daseanle.votype`
 - Keyboard Extension Bundle ID：`com.daseanle.votype.keyboard`
-- App Group：`group.com.daseanle.votype.shared`
+- App Group：`group.com.daseanle.votype.container`
 - SKU：`voiceinputkbd2026`
 - 主要语言：简体中文
 - 类别：工具（Utilities）

@@ -16,10 +16,10 @@
 
 ## 2. Apple Developer 与签名
 
-- [ ] 主 App ID `com.daseanle.votype` 已启用 `group.com.daseanle.votype.shared`。
-- [ ] 扩展 App ID `com.daseanle.votype.keyboard` 已启用同一 App Group。
-- [ ] 开发和 App Store 分发的四份 provisioning profile 已重新生成并包含该 App Group。
-- [ ] GitHub Actions Secrets 中的描述文件已替换；不在仓库或文档中保存证书、密码、API Key 或 profile 内容。
+- [x] 主 App ID `com.daseanle.votype` 和键盘 App ID `com.daseanle.votype.keyboard` 已启用 `group.com.daseanle.votype.container`。
+- [ ] CI 已重新生成两份 App Store provisioning profile，并验证均包含该 App Group。
+- [ ] 开发 provisioning profile 已按需重新生成；不影响 TestFlight 分发构建。
+- [x] CI 不再依赖仓库中的 App Store profile secrets；证书、密码、API Key 或 profile 内容均不写入仓库或文档。
 - [ ] 签名归档中主 App 与扩展的 entitlement 均包含正确 App Group。
 
 ## 3. 真机功能

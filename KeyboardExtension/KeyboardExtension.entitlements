@@ -4,7 +4,7 @@
 <dict>
 	<key>com.apple.security.application-groups</key>
 	<array>
-		<string>group.com.daseanle.votype.shared</string>
+		<string>group.com.daseanle.votype.container</string>
 	</array>
 </dict>
 </plist>

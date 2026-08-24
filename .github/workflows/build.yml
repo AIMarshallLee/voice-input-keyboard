@@ -22,7 +22,7 @@ permissions:
 
 env:
   TEAM_ID: R765X25892
-  APP_GROUP: group.com.daseanle.votype.shared
+  APP_GROUP: group.com.daseanle.votype.container
   APP_VERSION: "1.0"
   CI_BUILD_NUMBER: ${{ github.run_number }}
 
@@ -73,7 +73,9 @@ jobs:
 
       - name: Check Development Signing Secrets
         id: check_signing
-        if: github.event_name != 'pull_request'
+        if: >-
+          github.event_name != 'pull_request' &&
+          (github.event_name != 'workflow_dispatch' || inputs.publish != true)
         env:
           P12_BASE64: ${{ secrets.CERTIFICATE_P12 }}
           P12_PASSWORD: ${{ secrets.CERTIFICATE_PASSWORD }}
@@ -179,8 +181,6 @@ jobs:
         env:
           DIST_P12: ${{ secrets.DIST_CERTIFICATE_P12 }}
           DIST_PASSWORD: ${{ secrets.DIST_CERTIFICATE_PASSWORD }}
-          DIST_PP_APP: ${{ secrets.DIST_PP_APP }}
-          DIST_PP_KEYBOARD: ${{ secrets.DIST_PP_KEYBOARD }}
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
           ASC_KEY_CONTENT: ${{ secrets.ASC_KEY_CONTENT }}
@@ -229,39 +229,9 @@ jobs:
               '^-----BEGIN (EC )?PRIVATE KEY-----$'
           }
 
-          profile_has_app_group() {
-            local encoded="$1"
-            local label="$2"
-            local work_dir profile_file plist_file groups
-            work_dir=$(mktemp -d)
-            profile_file="$work_dir/profile.mobileprovision"
-            plist_file="$work_dir/profile.plist"
-
-            if ! printf '%s' "$encoded" | base64 --decode > "$profile_file"; then
-              echo "$label is not valid base64"
-              rm -rf "$work_dir"
-              return 1
-            fi
-            if ! security cms -D -i "$profile_file" > "$plist_file" 2>/dev/null; then
-              echo "$label is not a valid provisioning profile"
-              rm -rf "$work_dir"
-              return 1
-            fi
-            groups=$(/usr/libexec/PlistBuddy \
-              -c 'Print :Entitlements:com.apple.security.application-groups' \
-              "$plist_file" 2>/dev/null || true)
-            rm -rf "$work_dir"
-
-            if ! printf '%s\n' "$groups" | grep -Fq "$APP_GROUP"; then
-              echo "$label does not contain required App Group: $APP_GROUP"
-              return 1
-            fi
-          }
-
           has_dist=true
           for required_name in \
-            DIST_P12 DIST_PASSWORD DIST_PP_APP DIST_PP_KEYBOARD \
-            ASC_KEY_ID ASC_ISSUER_ID ASC_KEY_CONTENT; do
+            DIST_P12 DIST_PASSWORD ASC_KEY_ID ASC_ISSUER_ID ASC_KEY_CONTENT; do
             if [ -z "${!required_name:-}" ]; then
               echo "Missing distribution secret: $required_name"
               has_dist=false
@@ -276,14 +246,6 @@ jobs:
           if [ "$has_dist" = true ] && \
              ! asc_key_is_valid "$ASC_KEY_CONTENT"; then
             echo "App Store Connect API key is not valid base64-encoded private key content"
-            has_dist=false
-          fi
-          if [ "$has_dist" = true ] && \
-             ! profile_has_app_group "$DIST_PP_APP" "App distribution profile"; then
-            has_dist=false
-          fi
-          if [ "$has_dist" = true ] && \
-             ! profile_has_app_group "$DIST_PP_KEYBOARD" "Keyboard distribution profile"; then
             has_dist=false
           fi
 
@@ -315,10 +277,40 @@ jobs:
           security create-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN_FILE"
           security set-keychain-settings -lut 21600 "$KEYCHAIN_FILE"
           security unlock-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN_FILE"
-          security list-keychains -d user -s "$KEYCHAIN_FILE" login.keychain-db
+          security list-keychains -d user -s "$KEYCHAIN_FILE"
 
           echo "KEYCHAIN_FILE=$KEYCHAIN_FILE" >> "$GITHUB_ENV"
           echo "KEYCHAIN_PASS=$KEYCHAIN_PASS" >> "$GITHUB_ENV"
+
+      - name: Create App Store Connect API Key
+        if: >-
+          github.event_name == 'workflow_dispatch' &&
+          inputs.publish == true &&
+          steps.check_dist.outputs.has_dist == 'true'
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_CONTENT: ${{ secrets.ASC_KEY_CONTENT }}
+          ASC_API_KEY_PATH: ${{ runner.temp }}/app-store-connect-api-key.json
+        run: |
+          python3 - <<'PY'
+          import base64
+          import json
+          import os
+          from pathlib import Path
+
+          api_key = {
+              "key_id": os.environ["ASC_KEY_ID"],
+              "issuer_id": os.environ["ASC_ISSUER_ID"],
+              "key": base64.b64decode(os.environ["ASC_KEY_CONTENT"]).decode("utf-8"),
+              "in_house": False,
+          }
+          Path(os.environ["ASC_API_KEY_PATH"]).write_text(
+              json.dumps(api_key), encoding="utf-8"
+          )
+          PY
+          chmod 600 "$ASC_API_KEY_PATH"
+          echo "ASC_API_KEY_PATH=$ASC_API_KEY_PATH" >> "$GITHUB_ENV"
 
       - name: Import Development Certificate
         if: steps.check_signing.outputs.has_signing == 'true'
@@ -386,7 +378,9 @@ jobs:
             OTHER_CODE_SIGN_FLAGS="--keychain $KEYCHAIN_FILE"
 
       - name: Build App (unsigned fallback)
-        if: steps.check_signing.outputs.has_signing != 'true'
+        if: >-
+          (github.event_name != 'workflow_dispatch' || inputs.publish != true) &&
+          steps.check_signing.outputs.has_signing != 'true'
         run: |
           xcodebuild \
             -project VoType.xcodeproj \
@@ -402,6 +396,7 @@ jobs:
             -derivedDataPath ./build
 
       - name: Package Development IPA
+        if: github.event_name != 'workflow_dispatch' || inputs.publish != true
         run: |
           APP_PATH=$(find ./build -name 'VoiceInputApp.app' -path '*/Release-iphoneos/*' | head -1)
           if [ -z "$APP_PATH" ] || [ ! -d "$APP_PATH" ]; then
@@ -414,6 +409,7 @@ jobs:
           zip -qry VoType.ipa Payload
 
       - name: Upload Development IPA
+        if: github.event_name != 'workflow_dispatch' || inputs.publish != true
         uses: actions/upload-artifact@v4
         with:
           name: VoType-IPA
@@ -429,6 +425,7 @@ jobs:
           DIST_P12: ${{ secrets.DIST_CERTIFICATE_P12 }}
           DIST_PASSWORD: ${{ secrets.DIST_CERTIFICATE_PASSWORD }}
         run: |
+          set -euo pipefail
           CERT_FILE=$(mktemp "$RUNNER_TEMP/votype-dist.XXXXXX")
           trap 'rm -f "$CERT_FILE"' EXIT
           printf '%s' "$DIST_P12" | base64 --decode > "$CERT_FILE"
@@ -441,37 +438,156 @@ jobs:
             -s -k "$KEYCHAIN_PASS" \
             "$KEYCHAIN_FILE"
 
-      - name: Install Distribution Provisioning Profiles
+          DIST_IDENTITY_LIST=$(
+            security find-identity -v -p codesigning "$KEYCHAIN_FILE" | \
+              awk '/"Apple Distribution:/ {print toupper($2)}'
+          )
+          DIST_IDENTITY_COUNT=$(printf '%s\n' "$DIST_IDENTITY_LIST" | awk 'NF {count++} END {print count + 0}')
+          DIST_IDENTITY_SHA1=$(printf '%s\n' "$DIST_IDENTITY_LIST" | awk 'NF {print; exit}')
+          if [ "$DIST_IDENTITY_COUNT" -ne 1 ] || \
+             ! printf '%s\n' "$DIST_IDENTITY_SHA1" | grep -Eq '^[0-9A-F]{40}$'; then
+            echo "Expected exactly one Apple Distribution identity in the isolated keychain"
+            exit 1
+          fi
+          echo "DIST_IDENTITY_SHA1=$DIST_IDENTITY_SHA1" >> "$GITHUB_ENV"
+
+      - name: Generate Distribution Provisioning Profiles
         if: >-
           github.event_name == 'workflow_dispatch' &&
           inputs.publish == true &&
           steps.check_dist.outputs.has_dist == 'true'
         env:
-          DIST_PP_APP: ${{ secrets.DIST_PP_APP }}
-          DIST_PP_KEYBOARD: ${{ secrets.DIST_PP_KEYBOARD }}
+          FASTLANE_SKIP_UPDATE_CHECK: "1"
+        run: |
+          set -euo pipefail
+          PROFILE_OUTPUT_DIR="$RUNNER_TEMP/votype-app-store-profiles"
+          mkdir -p "$PROFILE_OUTPUT_DIR"
+
+          fastlane run sigh \
+            api_key_path:"$ASC_API_KEY_PATH" \
+            app_identifier:"com.daseanle.votype" \
+            team_id:"$TEAM_ID" \
+            platform:ios \
+            provisioning_name:"VoType App AppStore container-v1" \
+            ignore_profiles_with_different_name:true \
+            fail_on_name_taken:true \
+            output_path:"$PROFILE_OUTPUT_DIR" \
+            filename:"votype-app.mobileprovision" \
+            skip_install:true \
+            force:false
+
+          fastlane run sigh \
+            api_key_path:"$ASC_API_KEY_PATH" \
+            app_identifier:"com.daseanle.votype.keyboard" \
+            team_id:"$TEAM_ID" \
+            platform:ios \
+            provisioning_name:"VoType Keyboard AppStore container-v1" \
+            ignore_profiles_with_different_name:true \
+            fail_on_name_taken:true \
+            output_path:"$PROFILE_OUTPUT_DIR" \
+            filename:"votype-keyboard.mobileprovision" \
+            skip_install:true \
+            force:false
+
+          DIST_PP_APP_PATH="$PROFILE_OUTPUT_DIR/votype-app.mobileprovision"
+          DIST_PP_KEYBOARD_PATH="$PROFILE_OUTPUT_DIR/votype-keyboard.mobileprovision"
+          test -s "$DIST_PP_APP_PATH"
+          test -s "$DIST_PP_KEYBOARD_PATH"
+          echo "DIST_PP_APP_PATH=$DIST_PP_APP_PATH" >> "$GITHUB_ENV"
+          echo "DIST_PP_KEYBOARD_PATH=$DIST_PP_KEYBOARD_PATH" >> "$GITHUB_ENV"
+
+      - name: Install Distribution Provisioning Profiles
+        if: >-
+          github.event_name == 'workflow_dispatch' &&
+          inputs.publish == true &&
+          steps.check_dist.outputs.has_dist == 'true'
         run: |
           set -euo pipefail
           PP_DIR="$HOME/Library/MobileDevice/Provisioning Profiles"
           mkdir -p "$PP_DIR"
 
           install_profile() {
-            local encoded="$1"
+            local profile_file="$1"
             local output_name="$2"
-            local temp_file uuid
-            temp_file=$(mktemp "$RUNNER_TEMP/votype-profile.XXXXXX")
-            printf '%s' "$encoded" | base64 --decode > "$temp_file"
-            uuid=$(security cms -D -i "$temp_file" 2>/dev/null | plutil -extract UUID raw -)
-            if [ -z "$uuid" ]; then
-              echo "Unable to read provisioning profile UUID"
-              rm -f "$temp_file"
+            local bundle_id="$3"
+            local plist_file uuid app_identifier team_identifier
+            plist_file=$(mktemp "$RUNNER_TEMP/votype-profile.XXXXXX")
+
+            if ! security cms -D -i "$profile_file" > "$plist_file" 2>/dev/null; then
+              echo "$profile_file is not a valid provisioning profile"
+              rm -f "$plist_file"
               exit 1
             fi
-            mv "$temp_file" "$PP_DIR/$uuid.mobileprovision"
+
+            uuid=$(plutil -extract UUID raw -o - "$plist_file")
+            if [ -z "$uuid" ]; then
+              echo "Unable to read provisioning profile UUID"
+              rm -f "$plist_file"
+              exit 1
+            fi
+
+            app_identifier=$(plutil -extract Entitlements.application-identifier raw -o - "$plist_file")
+            if [ "$app_identifier" != "$TEAM_ID.$bundle_id" ]; then
+              echo "Profile application identifier mismatch for $bundle_id: $app_identifier"
+              rm -f "$plist_file"
+              exit 1
+            fi
+
+            team_identifier=$(/usr/libexec/PlistBuddy -c 'Print :TeamIdentifier:0' "$plist_file")
+            if [ "$team_identifier" != "$TEAM_ID" ]; then
+              echo "Profile team mismatch for $bundle_id: $team_identifier"
+              rm -f "$plist_file"
+              exit 1
+            fi
+
+            if plutil -extract ProvisionedDevices json -o - "$plist_file" >/dev/null 2>&1 || \
+               plutil -extract ProvisionsAllDevices raw -o - "$plist_file" >/dev/null 2>&1; then
+              echo "Profile for $bundle_id is device-scoped and cannot be used for App Store distribution"
+              rm -f "$plist_file"
+              exit 1
+            fi
+
+            PROFILE_PLIST="$plist_file" python3 - <<'PY'
+          import hashlib
+          import os
+          import plistlib
+
+          with open(os.environ["PROFILE_PLIST"], "rb") as handle:
+              profile = plistlib.load(handle)
+
+          entitlements = profile.get("Entitlements", {})
+          team_id = os.environ["TEAM_ID"]
+          if profile.get("TeamIdentifier") != [team_id]:
+              raise SystemExit(f"Profile TeamIdentifier is not exactly [{team_id!r}]")
+          if entitlements.get("com.apple.developer.team-identifier") != team_id:
+              raise SystemExit(f"Profile team entitlement is not {team_id}")
+          if entitlements.get("get-task-allow") is not False:
+              raise SystemExit("Profile get-task-allow is not explicitly false")
+
+          groups = entitlements.get("com.apple.security.application-groups")
+          required = os.environ["APP_GROUP"]
+          if groups != [required]:
+              raise SystemExit(f"Profile App Groups are not exactly [{required!r}]")
+
+          expected_sha1 = os.environ["DIST_IDENTITY_SHA1"].upper()
+          certificates = profile.get("DeveloperCertificates", [])
+          if len(certificates) != 1:
+              raise SystemExit("Profile does not contain exactly one distribution certificate")
+          certificate_sha1s = {
+              hashlib.sha1(certificate).hexdigest().upper()
+              for certificate in certificates
+          }
+          if expected_sha1 not in certificate_sha1s:
+              raise SystemExit("Profile is not bound to the imported distribution certificate")
+          PY
+
+            cp "$profile_file" "$PP_DIR/$uuid.mobileprovision"
+            rm -f "$plist_file"
             echo "$output_name=$uuid" >> "$GITHUB_ENV"
           }
 
-          install_profile "$DIST_PP_APP" DIST_PP_UUID_APP
-          install_profile "$DIST_PP_KEYBOARD" DIST_PP_UUID_KB
+          install_profile "$DIST_PP_APP_PATH" DIST_PP_UUID_APP com.daseanle.votype
+          install_profile "$DIST_PP_KEYBOARD_PATH" DIST_PP_UUID_KB com.daseanle.votype.keyboard
 
       - name: Build App Store IPA
         if: >-
@@ -491,7 +607,7 @@ jobs:
             -sdk iphoneos \
             -destination 'generic/platform=iOS' \
             CODE_SIGNING_ALLOWED=YES \
-            CODE_SIGN_IDENTITY="Apple Distribution" \
+            CODE_SIGN_IDENTITY="$DIST_IDENTITY_SHA1" \
             DEVELOPMENT_TEAM="$TEAM_ID" \
             CODE_SIGN_STYLE="Manual" \
             CURRENT_PROJECT_VERSION="$CI_BUILD_NUMBER" \
@@ -503,6 +619,87 @@ jobs:
             echo "Distribution VoiceInputApp.app was not produced"
             exit 1
           fi
+
+          KEYBOARD_PATH="$APP_PATH/PlugIns/KeyboardExtension.appex"
+          if [ ! -d "$KEYBOARD_PATH" ]; then
+            echo "Distribution KeyboardExtension.appex was not produced"
+            exit 1
+          fi
+
+          verify_signed_bundle() {
+            local bundle_path="$1"
+            local bundle_id="$2"
+            local label="$3"
+            local expected_profile_uuid="$4"
+            local entitlements_file embedded_plist embedded_uuid cert_prefix cert_sha1
+            entitlements_file=$(mktemp "$RUNNER_TEMP/votype-entitlements.XXXXXX")
+            codesign --verify --strict "$bundle_path"
+            codesign --display --entitlements - --xml "$bundle_path" \
+              > "$entitlements_file" 2>/dev/null
+
+            SIGNED_ENTITLEMENTS="$entitlements_file" \
+              SIGNED_INFO_PLIST="$bundle_path/Info.plist" \
+              EXPECTED_BUNDLE_ID="$bundle_id" \
+              python3 - <<'PY'
+          import os
+          import plistlib
+
+          with open(os.environ["SIGNED_ENTITLEMENTS"], "rb") as handle:
+              entitlements = plistlib.load(handle)
+          with open(os.environ["SIGNED_INFO_PLIST"], "rb") as handle:
+              info = plistlib.load(handle)
+
+          team_id = os.environ["TEAM_ID"]
+          bundle_id = os.environ["EXPECTED_BUNDLE_ID"]
+          if info.get("CFBundleIdentifier") != bundle_id:
+              raise SystemExit(f"Signed bundle identifier is not {bundle_id}")
+          expected_identifier = f"{team_id}.{bundle_id}"
+          if entitlements.get("application-identifier") != expected_identifier:
+              raise SystemExit(
+                  f"Signed bundle application identifier is not {expected_identifier}"
+              )
+          if entitlements.get("com.apple.developer.team-identifier") != team_id:
+              raise SystemExit(f"Signed bundle team identifier is not {team_id}")
+
+          groups = entitlements.get("com.apple.security.application-groups")
+          required = os.environ["APP_GROUP"]
+          if groups != [required]:
+              raise SystemExit(f"Signed bundle App Groups are not exactly [{required!r}]")
+          PY
+
+            cert_prefix="$RUNNER_TEMP/votype-signer-$(uuidgen)-"
+            codesign -d --extract-certificates "$cert_prefix" "$bundle_path" 2>/dev/null
+            cert_sha1=$(shasum -a 1 "${cert_prefix}0" | awk '{print toupper($1)}')
+            rm -f \
+              "${cert_prefix}0" "${cert_prefix}1" \
+              "${cert_prefix}2" "${cert_prefix}3"
+            if [ "$cert_sha1" != "$DIST_IDENTITY_SHA1" ]; then
+              echo "$label signer does not match the imported distribution certificate"
+              rm -f "$entitlements_file"
+              exit 1
+            fi
+
+            embedded_plist=$(mktemp "$RUNNER_TEMP/votype-embedded-profile.XXXXXX")
+            if ! security cms -D -i "$bundle_path/embedded.mobileprovision" \
+              > "$embedded_plist" 2>/dev/null; then
+              echo "$label does not contain a valid embedded provisioning profile"
+              rm -f "$entitlements_file" "$embedded_plist"
+              exit 1
+            fi
+            embedded_uuid=$(plutil -extract UUID raw -o - "$embedded_plist")
+            rm -f "$entitlements_file" "$embedded_plist"
+            if [ "$embedded_uuid" != "$expected_profile_uuid" ]; then
+              echo "$label embedded provisioning profile UUID mismatch: $embedded_uuid"
+              exit 1
+            fi
+          }
+
+          verify_signed_bundle \
+            "$APP_PATH" com.daseanle.votype "Main app" "$DIST_PP_UUID_APP"
+          verify_signed_bundle \
+            "$KEYBOARD_PATH" com.daseanle.votype.keyboard "Keyboard extension" "$DIST_PP_UUID_KB"
+          codesign --verify --deep --strict "$APP_PATH"
+
           rm -rf Payload_dist VoType-AppStore.ipa
           mkdir -p Payload_dist/Payload
           cp -R "$APP_PATH" Payload_dist/Payload/
@@ -518,36 +715,6 @@ jobs:
           name: VoType-AppStore-IPA
           path: VoType-AppStore.ipa
           retention-days: 30
-
-      - name: Create App Store Connect API Key
-        if: >-
-          github.event_name == 'workflow_dispatch' &&
-          inputs.publish == true &&
-          steps.check_dist.outputs.has_dist == 'true'
-        env:
-          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
-          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
-          ASC_KEY_CONTENT: ${{ secrets.ASC_KEY_CONTENT }}
-          ASC_API_KEY_PATH: ${{ runner.temp }}/app-store-connect-api-key.json
-        run: |
-          python3 - <<'PY'
-          import base64
-          import json
-          import os
-          from pathlib import Path
-
-          api_key = {
-              "key_id": os.environ["ASC_KEY_ID"],
-              "issuer_id": os.environ["ASC_ISSUER_ID"],
-              "key": base64.b64decode(os.environ["ASC_KEY_CONTENT"]).decode("utf-8"),
-              "in_house": False,
-          }
-          Path(os.environ["ASC_API_KEY_PATH"]).write_text(
-              json.dumps(api_key), encoding="utf-8"
-          )
-          PY
-          chmod 600 "$ASC_API_KEY_PATH"
-          echo "ASC_API_KEY_PATH=$ASC_API_KEY_PATH" >> "$GITHUB_ENV"
 
       - name: Upload to App Store Connect
         if: >-
