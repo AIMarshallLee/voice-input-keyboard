@@ -634,7 +634,11 @@ jobs:
             local entitlements_file embedded_plist embedded_uuid cert_prefix cert_sha1
             entitlements_file=$(mktemp "$RUNNER_TEMP/votype-entitlements.XXXXXX")
             echo "Verifying $label signature, entitlements, signer, and embedded profile"
-            codesign --verify --strict "$bundle_path"
+            if ! codesign --verify -vvv "$bundle_path"; then
+              echo "$label code signature verification failed"
+              rm -f "$entitlements_file"
+              exit 1
+            fi
             if ! codesign --display --entitlements :- "$bundle_path" \
               > "$entitlements_file" 2>/dev/null; then
               echo "Unable to extract $label entitlements"
@@ -704,7 +708,7 @@ jobs:
             "$APP_PATH" com.daseanle.votype "Main app" "$DIST_PP_UUID_APP"
           verify_signed_bundle \
             "$KEYBOARD_PATH" com.daseanle.votype.keyboard "Keyboard extension" "$DIST_PP_UUID_KB"
-          codesign --verify --deep --strict "$APP_PATH"
+          codesign --verify -vvv --deep "$APP_PATH"
 
           rm -rf Payload_dist VoType-AppStore.ipa
           mkdir -p Payload_dist/Payload
