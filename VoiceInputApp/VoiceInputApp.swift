@@ -87,8 +87,8 @@ struct VoiceInputApp: App {
         }
     }
 
-    /// 键盘扩展无法可靠启动宿主 App。用户手动打开 VoType 时，
-    /// 继续处理一分钟内尚未消费的 App Group 听写请求。
+    /// 深链或用户手动打开 VoType 时，继续处理一分钟内尚未消费的
+    /// App Group 听写请求。
     private func presentPendingDictationIfNeeded() {
         guard let pending = DarwinBridge.peekPendingDictationSettings() else { return }
         coordinator.enqueue(session: pending.session, url: nil)

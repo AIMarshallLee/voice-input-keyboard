@@ -81,6 +81,9 @@ targets:
           - "KeyboardExtension.entitlements"
           - "PrivacyInfo.xcprivacy"
           - "*.lproj"
+          - "Resources"
+      - path: KeyboardExtension/Resources
+        buildPhase: resources
       - path: KeyboardExtension/en.lproj
         type: folder
       - path: KeyboardExtension/zh-Hans.lproj
