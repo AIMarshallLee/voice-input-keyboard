@@ -38,6 +38,7 @@ blocked every possible direct push.
 | Use case | Expected behavior / deny case | Type | Status |
 | --- | --- | --- | --- |
 | Signed candidate install | App and extension install, launch and access the App Group on minimum/current/iOS 26/iPad devices | Guarded live | Proposed final-device gate |
+| Keyboard accessibility | VoiceOver focus/order/labels for the real custom keyboard, candidate bar and recovery actions | Manual review | Proposed final-device gate |
 | PiP standby | Explicit start creates visible truthful PiP, mic remains off, stop clears readiness within 3.5 s | Manual review + guarded live | Proposed final-device gate |
 | Third-party app insertion | Hot and cold paths insert once into WeChat, Notes and a browser without cross-field recovery | Manual review | Proposed final-device gate |
 | Permissions | First grant, deny, revoke, Settings re-grant and Full Access off all recover/fail closed | Manual review | Proposed final-device gate |
@@ -57,6 +58,8 @@ blocked every possible direct push.
 | High | Memory <45 MB and energy behavior have no automated measurement | Extension termination and battery cost |
 | High | Cold-launch responder compatibility is device/app dependent | Voice button may require manual recovery |
 | High | Audio route/interruption matrix is not automated | Stuck or failed subsequent sessions |
+| High | Offline recognition and permission-denial recovery are not exercised against real Apple services/settings | Misleading availability or unrecoverable voice flow |
+| High | Custom keyboard VoiceOver behavior has no physical-device evidence | Inaccessible core input path |
 | Medium | Swift actor-isolation warnings remain under Swift 5.9 | Future Swift 6 build/runtime risk |
 
 Simulator/CI evidence must never be substituted for any final-device or App

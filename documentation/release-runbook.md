@@ -16,7 +16,8 @@ real-device status. Use `documentation/releases/` for immutable records.
 
 1. Merge only after PR CI passes.
 2. Wait for a fresh `main` run to pass generated Info.plist validation, unit/UI
-   tests, generic iphoneos Release build, IPA packaging and artifact upload.
+   tests, generic iphoneos Release build, unsigned `.xcarchive`, IPA packaging
+   and artifact upload.
 3. Manually dispatch **Build IPA** on `main` with `publish=true` and
    `upload_metadata=false`.
 4. CI must create/validate the two App Store profiles, verify exact Team/Bundle/
@@ -57,4 +58,3 @@ public repository evidence.
 
 Rollback never uses `git reset --hard` on shared history and never overwrites an
 already uploaded build. Use a revert/new commit and a new build number.
-

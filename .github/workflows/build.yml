@@ -408,6 +408,26 @@ jobs:
             CURRENT_PROJECT_VERSION="$CI_BUILD_NUMBER" \
             -derivedDataPath ./build
 
+      - name: Archive App (unsigned verification)
+        if: github.event_name != 'workflow_dispatch' || inputs.publish != true
+        run: |
+          rm -rf ./archive/VoType.xcarchive
+          xcodebuild archive \
+            -project VoType.xcodeproj \
+            -scheme VoiceInputApp \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -archivePath ./archive/VoType.xcarchive \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGN_ENTITLEMENTS="" \
+            DEVELOPMENT_TEAM="" \
+            CURRENT_PROJECT_VERSION="$CI_BUILD_NUMBER"
+
+          test -d ./archive/VoType.xcarchive/Products/Applications/VoiceInputApp.app
+          test -d ./archive/VoType.xcarchive/Products/Applications/VoiceInputApp.app/PlugIns/KeyboardExtension.appex
+
       - name: Package Development IPA
         if: github.event_name != 'workflow_dispatch' || inputs.publish != true
         run: |
@@ -426,7 +446,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: VoType-IPA
-          path: VoType.ipa
+          path: |
+            VoType.ipa
+            archive/VoType.xcarchive
           retention-days: 30
 
       - name: Import Distribution Certificate

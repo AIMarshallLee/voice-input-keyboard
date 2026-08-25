@@ -8,6 +8,7 @@
 - [x] `VoTypeTests` 在可用 iPhone 模拟器全部通过；找不到模拟器时 CI 必须失败。
 - [x] `VoTypeUITests` 在模拟器验证免切换入口、麦克风关闭披露和拼音学习重置入口。
 - [x] Release 的无签名 device build 通过。
+- [ ] 无签名 Release `.xcarchive` 同时包含主 App 与 Keyboard Extension；等待新增 CI 门禁证据。
 - [x] App 与 Keyboard Extension 都包含 `PrivacyInfo.xcprivacy`。
 - [x] `project.yml` 中源码构建号为 35；CI 使用 run number 覆盖候选构建号。
 - [x] 普通 PR / push 不会调用 `pilot upload` 或 `deliver`。
@@ -18,6 +19,8 @@
 
 ## 2. Apple Developer 与签名
 
+当前商用候选的 Apple Developer 登录、证书/描述文件操作和分发签名状态：**EXTERNAL / NOT_RUN**。下列已完成项是历史流水线能力/旧构建证据，不代表当前候选已经签名。
+
 - [x] 主 App ID `com.daseanle.votype` 和键盘 App ID `com.daseanle.votype.keyboard` 已启用 `group.com.daseanle.votype.container`。
 - [x] CI 已重新生成两份 App Store provisioning profile，并验证均包含该 App Group。
 - [ ] 开发 provisioning profile 已按需重新生成；不影响 TestFlight 分发构建。
@@ -27,6 +30,8 @@
 验证证据：2026-08-25 的 [Build IPA #115](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/32768276379) 已通过 XCTest、profile、证书、Bundle ID、App Group、嵌入 profile 与嵌套签名校验。
 
 ## 3. 真机功能
+
+本节全部属于 **EXTERNAL / NOT_RUN**，模拟器与 CI 不得将任一项改为通过。
 
 至少覆盖 iOS 16 的最低兼容设备、当前正式 iOS、iOS 26，以及一台 iPad。
 
@@ -76,6 +81,8 @@
 - [x] `upload_metadata` 默认并继续保持关闭；没有明确选择不会上传元数据/截图。
 
 ## 6. TestFlight 与发布
+
+当前商用候选的 TestFlight 上传、processing、内部测试和 App Review：**EXTERNAL / NOT_RUN**。本轮不触发上传或审核。
 
 - [x] 手动运行发布 workflow，签名 IPA 已保存为可追溯的 GitHub Actions artifact。
 - [x] App Store Connect 已完成 build 115 processing，而不只是上传命令成功。

@@ -232,6 +232,8 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
         micButton.layer.shadowRadius = 8
         micButton.layer.shadowOffset = CGSize(width: 0, height: 4)
         micButton.translatesAutoresizingMaskIntoConstraints = false
+        micButton.accessibilityLabel = "语音输入"
+        micButton.accessibilityHint = "开始或结束当前语音会话"
         micButton.addTarget(self, action: #selector(micTapped), for: .touchUpInside)
 
         // 快速补字入口：不需要「允许完全访问」，直接使用 textDocumentProxy。
@@ -258,6 +260,7 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
         liveTextLabel.numberOfLines = 2
         liveTextLabel.text = "点击麦克风开始语音输入"
         liveTextLabel.translatesAutoresizingMaskIntoConstraints = false
+        liveTextLabel.accessibilityTraits.insert(.updatesFrequently)
 
         // 波形
         waveformView.translatesAutoresizingMaskIntoConstraints = false
@@ -291,6 +294,7 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
         globeButton.backgroundColor = buttonColor
         globeButton.layer.cornerRadius = 8
         globeButton.translatesAutoresizingMaskIntoConstraints = false
+        globeButton.accessibilityLabel = "下一个键盘"
         globeButton.addTarget(self, action: #selector(globeTapped), for: .touchUpInside)
         globeButton.widthAnchor.constraint(equalToConstant: 44).isActive = true
         globeButton.heightAnchor.constraint(equalToConstant: 36).isActive = true
@@ -311,6 +315,7 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
         translateButton.backgroundColor = buttonColor
         translateButton.layer.cornerRadius = 8
         translateButton.translatesAutoresizingMaskIntoConstraints = false
+        translateButton.accessibilityHint = "开启或关闭语音翻译"
         translateButton.addTarget(self, action: #selector(translateToggled), for: .touchUpInside)
         translateButton.widthAnchor.constraint(equalToConstant: 40).isActive = true
         translateButton.heightAnchor.constraint(equalToConstant: 36).isActive = true
@@ -322,6 +327,7 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
         whisperButton.backgroundColor = buttonColor
         whisperButton.layer.cornerRadius = 8
         whisperButton.translatesAutoresizingMaskIntoConstraints = false
+        whisperButton.accessibilityHint = "开启或关闭耳语模式"
         whisperButton.addTarget(self, action: #selector(whisperToggled), for: .touchUpInside)
         whisperButton.widthAnchor.constraint(equalToConstant: 40).isActive = true
         whisperButton.heightAnchor.constraint(equalToConstant: 36).isActive = true
@@ -343,6 +349,8 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
         deleteButton.backgroundColor = buttonColor
         deleteButton.layer.cornerRadius = 8
         deleteButton.translatesAutoresizingMaskIntoConstraints = false
+        deleteButton.accessibilityLabel = "退格"
+        deleteButton.accessibilityHint = "按住可连续删除"
         deleteButton.addTarget(self, action: #selector(deleteTapped), for: .touchUpInside)
         deleteButton.widthAnchor.constraint(equalToConstant: 44).isActive = true
         deleteButton.heightAnchor.constraint(equalToConstant: 36).isActive = true
@@ -355,6 +363,7 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
         returnButton.backgroundColor = buttonColor
         returnButton.layer.cornerRadius = 8
         returnButton.translatesAutoresizingMaskIntoConstraints = false
+        returnButton.accessibilityLabel = "回车"
         returnButton.addTarget(self, action: #selector(returnTapped), for: .touchUpInside)
         returnButton.widthAnchor.constraint(equalToConstant: 44).isActive = true
         returnButton.heightAnchor.constraint(equalToConstant: 36).isActive = true
@@ -1046,6 +1055,8 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
         let title = "\(lang.flag) \(lang.id.split(separator: "-").first ?? "")"
         langButton.setTitle(title, for: .normal)
         langButton.titleLabel?.font = UIFont.systemFont(ofSize: 13, weight: .medium)
+        langButton.accessibilityLabel = "识别语言"
+        langButton.accessibilityValue = lang.name
     }
 
     @objc private func langTapped() {
@@ -1077,6 +1088,8 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
             translateButton.setTitle(nil, for: .normal)
             translateButton.setImage(UIImage(systemName: "translate"), for: .normal)
         }
+        translateButton.accessibilityLabel = "翻译模式"
+        translateButton.accessibilityValue = isOn ? "开启" : "关闭"
     }
 
     @objc private func translateToggled() {
@@ -1098,6 +1111,8 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
         let isDark = traitCollection.userInterfaceStyle == .dark
         whisperButton.tintColor = isWhisperMode ? .white : nil
         whisperButton.backgroundColor = isWhisperMode ? UIColor.systemPurple : (isDark ? UIColor(white: 0.18, alpha: 1) : UIColor.white)
+        whisperButton.accessibilityLabel = "耳语模式"
+        whisperButton.accessibilityValue = isWhisperMode ? "开启" : "关闭"
     }
 
     @objc private func whisperToggled() {
@@ -1269,6 +1284,7 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
         let waveConfig = UIImage.SymbolConfiguration(pointSize: 34, weight: .bold)
         micButton.setImage(UIImage(systemName: "ellipsis", withConfiguration: waveConfig), for: .normal)
         micButton.backgroundColor = UIColor.systemOrange
+        micButton.accessibilityLabel = "正在连接 VoType"
 
         // 热路径会先尝试原地启动，1.2 秒没有 started 才降级到冷启动；
         // 整条路径必须给出明确状态，不再永远停在“打开后即可说话”。
@@ -1378,6 +1394,7 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
             phase: .starting
         )
         micButton.backgroundColor = .systemOrange
+        micButton.accessibilityLabel = "请从主屏幕打开 VoType"
         stopPulse()
     }
 
@@ -1403,6 +1420,7 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
             self.micButton.setImage(UIImage(systemName: "stop.fill", withConfiguration: waveConfig), for: .normal)
             self.micButton.backgroundColor = UIColor.systemRed
             self.micButton.isEnabled = true
+            self.micButton.accessibilityLabel = "正在聆听，点按结束"
             self.startPulse()
         }
     }
@@ -1457,6 +1475,7 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
                     : "正在连接 VoType..."
                 micButton.backgroundColor = .systemOrange
                 micButton.isEnabled = true
+                micButton.accessibilityLabel = "正在连接 VoType"
                 stopPulse()
             case .listening:
                 let partial = state.partialTranscript.trimmingCharacters(
@@ -1474,6 +1493,7 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
                 )
                 micButton.backgroundColor = .systemRed
                 micButton.isEnabled = true
+                micButton.accessibilityLabel = "正在聆听，点按结束"
                 startPulse()
             case .processing:
                 liveTextLabel.text = requiresContextRevalidation
@@ -1483,6 +1503,7 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
                     : "正在整理：\(String(state.partialTranscript.prefix(48)))"
                 micButton.isEnabled = false
                 micButton.backgroundColor = .systemGray
+                micButton.accessibilityLabel = "正在整理文字"
                 stopPulse()
             }
             updateQuickTypeStatus(
