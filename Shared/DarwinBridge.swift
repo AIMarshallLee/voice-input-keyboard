@@ -11,6 +11,7 @@ enum DarwinNotificationName {
     static let dictationFailed = "com.daseanle.votype.dictationFailed"
     static let liveStateChanged = "com.daseanle.votype.liveStateChanged"
     static let heartbeat = "com.daseanle.votype.heartbeat"
+    static let readinessChanged = "com.daseanle.votype.readinessChanged"
 }
 
 /// Darwin 通知只负责发送“有新状态”的信号，业务数据全部放在 App Group 文件中。
@@ -193,6 +194,21 @@ struct DictationLiveState: Codable, Equatable {
     let timestamp: TimeInterval
 }
 
+/// 宿主当前能否在不切换 App 的情况下承接键盘请求。
+///
+/// 这是带过期时间的事实快照，不是一个永久开关。键盘扩展即使在最近一次
+/// Darwin 心跳之后才启动，也能从 App Group 文件得到可靠的冷/热路径判断。
+struct DictationReadiness: Codable, Equatable {
+    enum Mode: String, Codable, Equatable {
+        case standby
+        case recording
+        case processing
+    }
+
+    let mode: Mode
+    let timestamp: TimeInterval
+}
+
 private struct DictationCancellation: Codable {
     let session: String
     let timestamp: TimeInterval
@@ -339,6 +355,7 @@ private protocol TimestampedIPCValue {
 extension DictationSettings: TimestampedIPCValue {}
 extension DictationIPCResult: TimestampedIPCValue {}
 extension DictationLiveState: TimestampedIPCValue {}
+extension DictationReadiness: TimestampedIPCValue {}
 extension DictationCancellation: TimestampedIPCValue {}
 extension DictationTerminalReceipt: TimestampedIPCValue {}
 
@@ -350,6 +367,7 @@ struct DarwinBridge {
     static let liveStateMaxAge: TimeInterval = 2 * 60
     static let cancellationMaxAge: TimeInterval = 24 * 60 * 60
     static let terminalReceiptMaxAge: TimeInterval = 24 * 60 * 60
+    static let readinessMaxAge: TimeInterval = 3.5
 
     private static let legacySettingsFileName = "dictation-settings.json"
     private static let settingsFilePrefix = "dictation-settings-"
@@ -364,6 +382,7 @@ struct DarwinBridge {
     private static let terminalReceiptFileSuffix = ".json"
     private static let sessionLockFilePrefix = "dictation-session-"
     private static let sessionLockFileSuffix = ".lock"
+    private static let readinessFileName = "dictation-readiness.json"
     private static let ioLock = NSLock()
     private static let configurationLock = NSLock()
     private static var injectedContainerDirectory: URL?
@@ -405,6 +424,9 @@ struct DarwinBridge {
         for url in terminalReceiptFileURLs(in: directory) {
             try? FileManager.default.removeItem(at: url)
         }
+        try? FileManager.default.removeItem(
+            at: directory.appendingPathComponent(readinessFileName)
+        )
     }
 
     // MARK: 结果（主 App -> 键盘）
@@ -840,6 +862,59 @@ struct DarwinBridge {
     }
 
     // MARK: 心跳与通知
+
+    /// 发布宿主的短期可用状态。只有画中画待命实际处于 active，或一个录音
+    /// 会话正在运行时才应调用；快照停止刷新后会自动过期为冷启动路径。
+    @discardableResult
+    static func writeReadiness(
+        _ mode: DictationReadiness.Mode,
+        timestamp: TimeInterval = Date().timeIntervalSince1970
+    ) -> Bool {
+        guard timestamp > 0,
+              let url = fileURL(named: readinessFileName) else { return false }
+        let value = DictationReadiness(mode: mode, timestamp: timestamp)
+
+        ioLock.lock()
+        defer { ioLock.unlock() }
+        let didWrite = writeUncoordinated(value, to: url)
+        if didWrite {
+            DarwinNotificationObserver.post(DarwinNotificationName.readinessChanged)
+            DarwinNotificationObserver.post(DarwinNotificationName.heartbeat)
+        }
+        return didWrite
+    }
+
+    static func readReadiness(
+        now: TimeInterval = Date().timeIntervalSince1970,
+        maxAge: TimeInterval = readinessMaxAge
+    ) -> DictationReadiness? {
+        read(
+            fileName: readinessFileName,
+            as: DictationReadiness.self,
+            now: now,
+            maxAge: maxAge
+        )
+    }
+
+    /// 只有 standby 能接收一个全新会话；recording/processing 用于界面状态，
+    /// 不能被另一个输入框误判为可立即开麦。
+    static func canStartInPlace(
+        now: TimeInterval = Date().timeIntervalSince1970
+    ) -> Bool {
+        readReadiness(now: now)?.mode == .standby
+    }
+
+    @discardableResult
+    static func clearReadiness() -> Bool {
+        guard let url = fileURL(named: readinessFileName) else { return false }
+        ioLock.lock()
+        let removed = removeUncoordinated(url)
+        ioLock.unlock()
+        if removed {
+            DarwinNotificationObserver.post(DarwinNotificationName.readinessChanged)
+        }
+        return removed
+    }
 
     static func writeHeartbeat() {
         DarwinNotificationObserver.post(DarwinNotificationName.heartbeat)

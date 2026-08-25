@@ -524,6 +524,48 @@ final class DictationConstantsTests: XCTestCase {
         XCTAssertTrue(DarwinBridge.isMainAppAlive(threshold: 3.0))
     }
 
+    func testFreshStandbyReadinessAllowsInPlaceStart() {
+        let now = Date().timeIntervalSince1970
+        XCTAssertTrue(DarwinBridge.writeReadiness(.standby, timestamp: now))
+
+        XCTAssertEqual(
+            DarwinBridge.readReadiness(now: now)?.mode,
+            .standby
+        )
+        XCTAssertTrue(DarwinBridge.canStartInPlace(now: now + 1))
+    }
+
+    func testReadinessExpiresInsteadOfLeavingFalseReadyState() {
+        let now = Date().timeIntervalSince1970
+        XCTAssertTrue(DarwinBridge.writeReadiness(.standby, timestamp: now))
+
+        XCTAssertNil(
+            DarwinBridge.readReadiness(
+                now: now + DarwinBridge.readinessMaxAge + 0.1
+            )
+        )
+        XCTAssertFalse(
+            DarwinBridge.canStartInPlace(
+                now: now + DarwinBridge.readinessMaxAge + 0.1
+            )
+        )
+    }
+
+    func testRecordingReadinessDoesNotAcceptAnotherStart() {
+        let now = Date().timeIntervalSince1970
+        XCTAssertTrue(DarwinBridge.writeReadiness(.recording, timestamp: now))
+
+        XCTAssertEqual(DarwinBridge.readReadiness(now: now)?.mode, .recording)
+        XCTAssertFalse(DarwinBridge.canStartInPlace(now: now))
+    }
+
+    func testClearReadinessIsIdempotent() {
+        XCTAssertTrue(DarwinBridge.writeReadiness(.standby))
+        XCTAssertTrue(DarwinBridge.clearReadiness())
+        XCTAssertNil(DarwinBridge.readReadiness())
+        XCTAssertTrue(DarwinBridge.clearReadiness())
+    }
+
     func testDarwinBridgeDictationSettings() {
         let settings = DictationSettings(
             language: "zh-CN",

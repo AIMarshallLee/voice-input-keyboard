@@ -5,6 +5,8 @@ import AVFoundation
 /// 主 App:引导安装 + 设置 + 词典管理 + 隐私说明
 struct ContentView: View {
 
+    @StateObject private var pipStandby = PiPStandbyManager.shared
+
     @State private var speechAuthorized = false
     @State private var micAuthorized = false
     @State private var autoPunctuation = true
@@ -80,6 +82,54 @@ struct ContentView: View {
                             isDone: speechAuthorized && micAuthorized,
                             action: requestSpeechPermission
                         )
+                    }
+                    .padding()
+                    .background(Color(.systemGray6))
+                    .cornerRadius(16)
+
+                    // 用户主动开启的免切换语音。PiP 承载真实状态与实时文字，
+                    // 待命阶段明确保持麦克风关闭。
+                    VStack(alignment: .leading, spacing: 14) {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("免切换语音").font(.headline)
+                                Text(pipStatusText)
+                                    .font(.caption)
+                                    .foregroundColor(pipStatusColor)
+                            }
+                            Spacer()
+                            Circle()
+                                .fill(pipStatusColor)
+                                .frame(width: 10, height: 10)
+                        }
+
+                        PiPStandbySourceView()
+                            .frame(height: 150)
+                            .clipShape(RoundedRectangle(cornerRadius: 12))
+                            .accessibilityLabel("VoType 免切换语音状态画面")
+
+                        Text("开启后可回到微信、备忘录或浏览器，键盘上的实心麦克风可原地开始。待命时不录音；只有你点键盘麦克风后才会使用麦克风。")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+
+                        Button {
+                            if pipStandby.isActive {
+                                pipStandby.stopStandby()
+                            } else {
+                                pipStandby.startStandby()
+                            }
+                        } label: {
+                            Label(
+                                pipStandby.isActive ? "关闭免切换语音" : "开启免切换语音",
+                                systemImage: pipStandby.isActive
+                                    ? "pip.exit"
+                                    : "pip.enter"
+                            )
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 10)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(!pipStandby.isSupported || pipStandby.state == .starting)
                     }
                     .padding()
                     .background(Color(.systemGray6))
@@ -306,10 +356,10 @@ struct ContentView: View {
                                 .foregroundColor(.blue)
                         }
 
-                        Text("在 VoType 键盘点麦克风后会打开本 App；看到“正在聆听”后立即返回原输入框即可继续说话。录音会在后台持续，键盘显示实时文字，再点麦克风结束并自动回填。")
+                        Text("开启“免切换语音”后，实心麦克风会直接原地录音；空心麦克风表示当前需要短暂打开 VoType。键盘会显示实时文字，再点麦克风结束并自动回填。")
                             .font(.caption)
                             .foregroundColor(.secondary)
-                        Text("VoType 不使用近静音音频或合成画中画长期保活，因此系统结束宿主进程后需要再次打开 App。")
+                        Text("系统或你关闭画中画后，键盘会自动退回空心麦克风，不会假装仍可原地录音。")
                             .font(.caption2)
                             .foregroundColor(.secondary)
                     }
@@ -321,7 +371,8 @@ struct ContentView: View {
                     VStack(alignment: .leading, spacing: 12) {
                         Text("使用方法").font(.headline)
 
-                        InstructionRow(text: "点麦克风，系统会打开 VoType；等录音开始后返回原输入框")
+                        InstructionRow(text: "先在 VoType 开启一次“免切换语音”，再回到任意输入框")
+                        InstructionRow(text: "实心麦克风原地录音；空心麦克风会短暂打开 VoType")
                         InstructionRow(text: "录音开始后立即返回原输入框，键盘会显示实时识别文字")
                         InstructionRow(text: "再次点麦克风结束；文字处理完成后自动插入光标位置")
                         InstructionRow(text: "左滑或点键盘图标可快速补字，右滑返回语音面板")
@@ -396,6 +447,28 @@ struct ContentView: View {
     }
 
     // MARK: - 设置
+
+    private var pipStatusText: String {
+        switch pipStandby.state {
+        case .unavailable: return "此设备不支持画中画"
+        case .ready: return "未开启 · 键盘将使用冷启动"
+        case .starting: return "正在请求系统开启画中画…"
+        case .standby: return "已待命 · 麦克风关闭"
+        case .recording: return "正在录音"
+        case .processing: return "正在整理文字"
+        case .failed(let message): return "开启失败：\(message)"
+        }
+    }
+
+    private var pipStatusColor: Color {
+        switch pipStandby.state {
+        case .standby: return .green
+        case .recording: return .red
+        case .processing, .starting: return .orange
+        case .failed, .unavailable: return .red
+        case .ready: return .secondary
+        }
+    }
 
     private func loadSettings() {
         autoPunctuation = sharedDefaults?.object(forKey: "autoPunctuation") as? Bool ?? true

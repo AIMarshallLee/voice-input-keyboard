@@ -12,6 +12,10 @@ struct PinyinCandidate: Equatable {
 /// performs a bounded beam search so continuous Pinyin can still be converted
 /// when the complete phrase is not present in the dictionary.
 final class PinyinInputEngine {
+    private static let learningStorageKey = "pinyinAdaptiveSelectionCounts.v1"
+    private static let maximumLearnedCodes = 2_000
+    private static let maximumLearnedCandidatesPerCode = 16
+
     private struct Path {
         let text: String
         let score: Double
@@ -21,9 +25,17 @@ final class PinyinInputEngine {
     private var entries: [String: [PinyinCandidate]] = [:]
     private var maximumCodeLength = 0
     private let perCodeLimit: Int
+    private let learningStore: UserDefaults?
+    private var selectionCounts: [String: [String: Int]]
 
-    init(dictionaryText: String, perCodeLimit: Int = 8) {
+    init(
+        dictionaryText: String,
+        perCodeLimit: Int = 8,
+        learningStore: UserDefaults? = nil
+    ) {
         self.perCodeLimit = max(1, perCodeLimit)
+        self.learningStore = learningStore
+        self.selectionCounts = Self.loadSelectionCounts(from: learningStore)
         load(dictionaryText)
     }
 
@@ -34,7 +46,10 @@ final class PinyinInputEngine {
         ), let text = try? String(contentsOf: url, encoding: .utf8) else {
             return nil
         }
-        self.init(dictionaryText: text)
+        self.init(
+            dictionaryText: text,
+            learningStore: SharedDefaults.shared
+        )
     }
 
     var isReady: Bool { !entries.isEmpty }
@@ -53,9 +68,52 @@ final class PinyinInputEngine {
         for candidate in ranked where !candidate.text.isEmpty {
             guard seen.insert(candidate.text).inserted else { continue }
             result.append(candidate.text)
-            if result.count == limit { break }
         }
-        return result
+
+        // 学习只在同一拼音的现有词库候选之间调整顺序，不会凭空制造文字。
+        // 对数增益让少量明确选择能纠正首选，同时避免长期使用后永远无法改回。
+        let learned = selectionCounts[code] ?? [:]
+        return result.enumerated()
+            .sorted { lhs, rhs in
+                let lhsScore = log1p(Double(learned[lhs.element] ?? 0)) * 4
+                    - Double(lhs.offset) * 0.22
+                let rhsScore = log1p(Double(learned[rhs.element] ?? 0)) * 4
+                    - Double(rhs.offset) * 0.22
+                if lhsScore == rhsScore { return lhs.offset < rhs.offset }
+                return lhsScore > rhsScore
+            }
+            .prefix(limit)
+            .map(\.element)
+    }
+
+    /// 用户点选或用空格确认候选后进行纯本地学习。
+    func recordSelection(input rawInput: String, candidate: String) {
+        let code = Self.normalize(rawInput)
+        guard !code.isEmpty,
+              !candidate.isEmpty,
+              candidates(for: code, limit: 64).contains(candidate) else { return }
+
+        var counts = selectionCounts[code] ?? [:]
+        counts[candidate] = min(10_000, (counts[candidate] ?? 0) + 1)
+        if counts.count > Self.maximumLearnedCandidatesPerCode {
+            counts = Dictionary(
+                uniqueKeysWithValues: counts
+                    .sorted { $0.value > $1.value }
+                    .prefix(Self.maximumLearnedCandidatesPerCode)
+            )
+        }
+        selectionCounts[code] = counts
+
+        if selectionCounts.count > Self.maximumLearnedCodes {
+            let weakestCodes = selectionCounts
+                .map { (code: $0.key, total: $0.value.values.reduce(0, +)) }
+                .sorted { $0.total < $1.total }
+                .prefix(selectionCounts.count - Self.maximumLearnedCodes)
+            for item in weakestCodes {
+                selectionCounts.removeValue(forKey: item.code)
+            }
+        }
+        persistSelectionCounts()
     }
 
     static func normalize(_ input: String) -> String {
@@ -157,5 +215,22 @@ final class PinyinInputEngine {
             bestByText[path.text] = path
         }
         return bestByText.values.sorted { $0.score > $1.score }.prefix(limit).map { $0 }
+    }
+
+    private static func loadSelectionCounts(
+        from store: UserDefaults?
+    ) -> [String: [String: Int]] {
+        guard let data = store?.data(forKey: learningStorageKey),
+              let decoded = try? JSONDecoder().decode(
+                [String: [String: Int]].self,
+                from: data
+              ) else { return [:] }
+        return decoded
+    }
+
+    private func persistSelectionCounts() {
+        guard let learningStore,
+              let data = try? JSONEncoder().encode(selectionCounts) else { return }
+        learningStore.set(data, forKey: Self.learningStorageKey)
     }
 }

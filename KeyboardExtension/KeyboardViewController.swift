@@ -46,6 +46,7 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
     private var darwinFallbackTimer: Timer?
     private var resultTimeoutTimer: Timer?
     private var liveStatePollTimer: Timer?
+    private var readinessPollTimer: Timer?
     private var recoveredPendingSessionId: String?
     private var recoveredSnapshot: KeyboardSessionRecoverySnapshot?
     private var currentLivePhase: DictationLivePhase?
@@ -98,6 +99,7 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
         updateTranslateButton()
         updateLangButton()
         checkForPendingResult()
+        startReadinessPolling()
         if isWaitingForResult, let session = currentSessionId {
             startLiveStatePolling(for: session)
         }
@@ -113,6 +115,8 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
         deleteTimer = nil
         liveStatePollTimer?.invalidate()
         liveStatePollTimer = nil
+        readinessPollTimer?.invalidate()
+        readinessPollTimer = nil
         stopPulse()
     }
 
@@ -121,6 +125,7 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
         darwinFallbackTimer?.invalidate()
         resultTimeoutTimer?.invalidate()
         liveStatePollTimer?.invalidate()
+        readinessPollTimer?.invalidate()
     }
 
     override func textDidChange(_ textInput: UITextInput?) {
@@ -891,6 +896,10 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
         let output: String
         if visiblePinyinCandidates.indices.contains(candidateIndex) {
             output = visiblePinyinCandidates[candidateIndex]
+            pinyinEngine?.recordSelection(
+                input: pinyinComposition,
+                candidate: output
+            )
         } else {
             output = pinyinComposition
         }
@@ -1225,11 +1234,12 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
         micButton.setImage(UIImage(systemName: "ellipsis", withConfiguration: waveConfig), for: .normal)
         micButton.backgroundColor = UIColor.systemOrange
 
-        // 1.5s 无响应说明宿主没有完成前台交接，保留手动打开提示。
+        // 热路径会先尝试原地启动，1.2 秒没有 started 才降级到冷启动；
+        // 整条路径必须给出明确状态，不再永远停在“打开后即可说话”。
         // 收到 dictationStarted 会取消此 timer
         // 收到 dictationFailed 也会取消此 timer 并降级
         darwinFallbackTimer = Timer.scheduledTimer(
-            withTimeInterval: 1.5,
+            withTimeInterval: 3.0,
             repeats: false
         ) { [weak self] _ in
             guard let self = self, self.isWaitingForResult else { return }
@@ -1237,8 +1247,34 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
             self.showManualOpenFallback(sessionId: sessionId)
         }
 
-        // 不同时发送后台启动通知，避免宿主在处理深链前抢先消费同一设置。
-        requestContainingAppOpen(sessionId: sessionId)
+        routeDictationStart(sessionId: sessionId)
+    }
+
+    private func routeDictationStart(sessionId: String) {
+        guard DarwinBridge.canStartInPlace() else {
+            liveTextLabel.text = "正在打开 VoType…"
+            updateQuickTypeStatus("正在打开 VoType…", phase: .starting)
+            requestContainingAppOpen(sessionId: sessionId)
+            return
+        }
+
+        liveTextLabel.text = "已连接待命服务，正在开麦…"
+        updateQuickTypeStatus("已连接待命服务，正在开麦…", phase: .starting)
+        DarwinBridge.postNotification(DarwinNotificationName.requestStartDictation)
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
+            guard let self,
+                  self.keyboardIsVisible,
+                  self.isWaitingForResult,
+                  self.currentSessionId == sessionId,
+                  self.currentLivePhase == .starting else { return }
+            self.liveTextLabel.text = "待命响应超时，正在打开 VoType…"
+            self.updateQuickTypeStatus(
+                "待命响应超时，正在打开 VoType…",
+                phase: .starting
+            )
+            self.requestContainingAppOpen(sessionId: sessionId)
+        }
     }
 
     /// Apple does not guarantee `NSExtensionContext.open` for custom keyboards.
@@ -1417,10 +1453,46 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
     /// 恢复麦克风按钮到默认状态 (录音结束/结果插入后调用)
     private func restoreMicButton() {
         let config = UIImage.SymbolConfiguration(pointSize: 34, weight: .bold)
-        micButton.setImage(UIImage(systemName: "mic.fill", withConfiguration: config), for: .normal)
+        let canStartHere = DarwinBridge.canStartInPlace()
+        micButton.setImage(
+            UIImage(
+                systemName: canStartHere ? "mic.fill" : "mic",
+                withConfiguration: config
+            ),
+            for: .normal
+        )
         micButton.backgroundColor = UIColor.systemBlue
         micButton.isEnabled = true
+        micButton.accessibilityLabel = canStartHere
+            ? "语音输入，已待命，可原地开始"
+            : "语音输入，需要打开 VoType"
         stopPulse()
+    }
+
+    private func startReadinessPolling() {
+        readinessPollTimer?.invalidate()
+        updateReadinessAppearance()
+        readinessPollTimer = Timer.scheduledTimer(
+            withTimeInterval: 1.0,
+            repeats: true
+        ) { [weak self] _ in
+            self?.updateReadinessAppearance()
+        }
+    }
+
+    private func updateReadinessAppearance() {
+        guard keyboardIsVisible,
+              !isWaitingForResult,
+              recoveredPendingSessionId == nil else { return }
+        restoreMicButton()
+        let message = DarwinBridge.canStartInPlace()
+            ? "已待命，点实心麦克风原地说话"
+            : "点空心麦克风，VoType 将短暂打开"
+        if liveTextLabel.text == "点击麦克风开始语音输入"
+            || liveTextLabel.text?.hasPrefix("已待命") == true
+            || liveTextLabel.text?.hasPrefix("点空心") == true {
+            liveTextLabel.text = message
+        }
     }
 
     // MARK: - 处理识别结果
