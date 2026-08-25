@@ -18,6 +18,10 @@ ipa-output/
 # Swift Package Manager
 .swiftpm/
 
+# Python test cache
+__pycache__/
+*.pyc
+
 # Info.plist 由 XcodeGen 从 project.yml 自动生成,不纳入版本控制
 VoiceInputApp/Info.plist
 KeyboardExtension/Info.plist
