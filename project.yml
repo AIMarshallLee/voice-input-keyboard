@@ -144,3 +144,18 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
     dependencies:
       - target: VoiceInputApp
+
+  # 模拟器 UI 冒烟：保证宿主的免切换入口、隐私状态和恢复操作真实可见。
+  VoTypeUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: VoTypeUITests
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.daseanle.votype.uitests
+        SWIFT_VERSION: "5.9"
+        IPHONEOS_DEPLOYMENT_TARGET: "16.0"
+        GENERATE_INFOPLIST_FILE: YES
+    dependencies:
+      - target: VoiceInputApp
