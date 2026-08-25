@@ -401,7 +401,7 @@ struct ContentView: View {
                     VStack(alignment: .leading, spacing: 8) {
                         Text("隐私说明").font(.headline).foregroundColor(.green)
 
-                        Text("• 语音识别使用 Apple Speech 框架,识别请求经 Apple 服务器处理")
+                        Text("• 语音识别优先使用设备端 Apple Speech；设备端识别不可用时，Apple 可能通过网络处理")
                         Text("• LLM 润色和翻译使用 Apple 设备端模型(iOS 26+),零网络传输")
                         Text("• 使用统计仅存储在本地,不上传任何信息")
                         Text("• 拼音候选选择仅用于本机排序学习,不上传输入内容")
