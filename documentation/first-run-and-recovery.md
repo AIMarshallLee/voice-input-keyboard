@@ -42,4 +42,3 @@
 Do not diagnose final-device failures from simulator behavior alone. Record the
 candidate build number, device, iOS version, target app, permission state,
 network state, audio route and exact recovery result.
-

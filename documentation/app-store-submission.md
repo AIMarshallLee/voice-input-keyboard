@@ -49,4 +49,3 @@ These values are external metadata and are not proven by CI.
 - Run Fastlane precheck against the final store version.
 - Upload metadata does not submit the build for App Review.
 - App Review submission is manual and requires explicit owner approval.
-

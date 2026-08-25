@@ -105,4 +105,3 @@ There is no network crossing or developer telemetry in this flow.
 5. `pilot upload` sends the IPA to App Store Connect. Metadata/screenshots are
    skipped unless the separate `upload_metadata=true` gate is also chosen.
 6. The workflow has no App Review submission step.
-

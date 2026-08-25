@@ -39,4 +39,3 @@ always-run cleanup step.
   Team ID, Bundle IDs, embedded profile UUIDs and App Group.
 - Confirm the generated Info.plist validator passes before upload.
 - Revoke unused/old API keys and certificates; never paste their values into an issue or document.
-

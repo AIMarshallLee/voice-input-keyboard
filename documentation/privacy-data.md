@@ -50,4 +50,3 @@ background cleanup exactly at that second.
 The public policy is `docs/privacy-policy.html`. App Store Privacy Details must
 be answered from the final binary and this map; CI cannot submit those account
 answers on behalf of the owner.
-

@@ -40,4 +40,3 @@ commercial candidate until final device testing and App Review are complete.
 - Add the VoType keyboard, enable Allow Full Access for local App Group exchange,
   and grant microphone and Speech permission before using voice input.
 - In-place standby is optional and must be started explicitly from VoType.
-

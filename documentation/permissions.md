@@ -38,4 +38,3 @@ control system.
   policy explain why.
 - Both products include Privacy Manifests declaring no tracking/collected data
   and the approved UserDefaults required-reason API.
-
