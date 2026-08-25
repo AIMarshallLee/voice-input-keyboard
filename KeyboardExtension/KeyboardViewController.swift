@@ -1239,7 +1239,7 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
         // 收到 dictationStarted 会取消此 timer
         // 收到 dictationFailed 也会取消此 timer 并降级
         darwinFallbackTimer = Timer.scheduledTimer(
-            withTimeInterval: 3.0,
+            withTimeInterval: DictationLaunchPolicy.manualRecoveryDeadline,
             repeats: false
         ) { [weak self] _ in
             guard let self = self, self.isWaitingForResult else { return }
@@ -1251,7 +1251,10 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
     }
 
     private func routeDictationStart(sessionId: String) {
-        guard DarwinBridge.canStartInPlace() else {
+        let initialAction = DictationLaunchPolicy.initialAction(
+            canStartInPlace: DarwinBridge.canStartInPlace()
+        )
+        guard initialAction == .requestInPlace else {
             liveTextLabel.text = "正在打开 VoType…"
             updateQuickTypeStatus("正在打开 VoType…", phase: .starting)
             requestContainingAppOpen(sessionId: sessionId)
@@ -1262,7 +1265,9 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
         updateQuickTypeStatus("已连接待命服务，正在开麦…", phase: .starting)
         DarwinBridge.postNotification(DarwinNotificationName.requestStartDictation)
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + DictationLaunchPolicy.inPlaceResponseDeadline
+        ) { [weak self] in
             guard let self,
                   self.keyboardIsVisible,
                   self.isWaitingForResult,
@@ -1331,8 +1336,11 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
         darwinFallbackTimer = nil
         guard isWaitingForResult, currentSessionId == sessionId else { return }
         currentLivePhase = .starting
-        liveTextLabel.text = "打开 VoType 后即可返回这里说话"
-        updateQuickTypeStatus("打开 VoType 后即可返回这里说话", phase: .starting)
+        liveTextLabel.text = "系统未允许自动打开，请从主屏幕点 VoType"
+        updateQuickTypeStatus(
+            "系统未允许自动打开，请从主屏幕点 VoType",
+            phase: .starting
+        )
         micButton.backgroundColor = .systemOrange
         stopPulse()
     }
@@ -1369,7 +1377,18 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
         print("[KB] Background recognition failed; foreground handoff required")
         darwinFallbackTimer?.invalidate()
         darwinFallbackTimer = nil
-        showManualOpenFallback(sessionId: sessionId)
+        liveTextLabel.text = "原地录音未启动，正在打开 VoType…"
+        updateQuickTypeStatus(
+            "原地录音未启动，正在打开 VoType…",
+            phase: .starting
+        )
+        requestContainingAppOpen(sessionId: sessionId)
+        darwinFallbackTimer = Timer.scheduledTimer(
+            withTimeInterval: 1.8,
+            repeats: false
+        ) { [weak self] _ in
+            self?.showManualOpenFallback(sessionId: sessionId)
+        }
     }
 
     private func refreshLiveState(for sessionId: String) {
