@@ -88,12 +88,9 @@ final class PiPStandbyManager: NSObject, ObservableObject {
         pushFrame()
         controller.invalidatePlaybackState()
 
-        // 先让 AVSampleBufferDisplayLayer 得到可展示的一帧，再从本次用户操作
-        // 启动画中画；失败会通过 delegate 变成明确错误，而不是假装已待命。
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
-            guard let self, self.state == .starting else { return }
-            controller.startPictureInPicture()
-        }
+        // pushFrame 已同步提交可展示内容；紧接本次用户点击启动，失败会通过
+        // delegate 变成明确错误，而不是假装已待命。
+        controller.startPictureInPicture()
     }
 
     func stopStandby() {

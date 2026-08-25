@@ -121,6 +121,25 @@ final class PinyinInputEngineTests: XCTestCase {
         XCTAssertEqual(engine.candidates(for: "nihao", limit: 4).first, "你好")
     }
 
+    func testAdaptiveLearningCanBeReset() throws {
+        let suite = "PinyinInputEngineTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let learned = PinyinInputEngine(
+            dictionaryText: dictionary,
+            learningStore: defaults
+        )
+        learned.recordSelection(input: "nihao", candidate: "尼号")
+        XCTAssertEqual(learned.candidates(for: "nihao", limit: 4).first, "尼号")
+
+        PinyinInputEngine.resetAdaptiveLearning(in: defaults)
+        let reset = PinyinInputEngine(
+            dictionaryText: dictionary,
+            learningStore: defaults
+        )
+        XCTAssertEqual(reset.candidates(for: "nihao", limit: 4).first, "你好")
+    }
+
     func testBundledLexiconCommonPhrasesMeetTopOneGate() throws {
         let engine = try XCTUnwrap(Self.bundledEngine)
 

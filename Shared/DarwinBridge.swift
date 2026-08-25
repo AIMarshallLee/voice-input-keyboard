@@ -12,6 +12,7 @@ enum DarwinNotificationName {
     static let liveStateChanged = "com.daseanle.votype.liveStateChanged"
     static let heartbeat = "com.daseanle.votype.heartbeat"
     static let readinessChanged = "com.daseanle.votype.readinessChanged"
+    static let pinyinLearningReset = "com.daseanle.votype.pinyinLearningReset"
 }
 
 /// Darwin 通知只负责发送“有新状态”的信号，业务数据全部放在 App Group 文件中。

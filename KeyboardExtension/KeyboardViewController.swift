@@ -39,6 +39,7 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
     private var dictationStoppedObserver: DarwinNotificationObserver?
     private var dictationFailedObserver: DarwinNotificationObserver?
     private var liveStateChangedObserver: DarwinNotificationObserver?
+    private var pinyinLearningResetObserver: DarwinNotificationObserver?
 
     // MARK: - 通信状态
     private var isWaitingForResult = false
@@ -78,6 +79,7 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
     private var pinyinComposition = ""
     private var visiblePinyinCandidates: [String] = []
     private var pinyinEngine: PinyinInputEngine?
+    private var pinyinLoadGeneration: UInt = 0
 
     // MARK: - 快捷符号
     private let symbols = ["，", "。", "！", "？", "、", "：", "；", "\u{201C}", "\u{201D}", "（", "）", "…", "—", "～", "😊", "👍", "✅"]
@@ -171,6 +173,14 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
             name: DarwinNotificationName.dictationStopped
         ) {
             print("[KB] Received dictationStopped")
+        }
+
+        pinyinLearningResetObserver = DarwinNotificationObserver(
+            name: DarwinNotificationName.pinyinLearningReset
+        ) { [weak self] in
+            self?.pinyinEngine = nil
+            self?.refreshPinyinCandidates()
+            self?.preloadPinyinEngine()
         }
     }
 
@@ -969,11 +979,14 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
     /// 6 万词条解析不占用键盘首帧主线程。用户立刻打开普通键盘时仍可先
     /// 输入拼音，词库就绪后自动刷新当前组合，不制造卡死或丢键。
     private func preloadPinyinEngine() {
+        pinyinLoadGeneration &+= 1
+        let generation = pinyinLoadGeneration
         let resourceBundle = Bundle.main
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let engine = PinyinInputEngine(bundle: resourceBundle)
             DispatchQueue.main.async {
-                guard let self else { return }
+                guard let self,
+                      self.pinyinLoadGeneration == generation else { return }
                 self.pinyinEngine = engine
                 if self.typingLanguage == .chinese,
                    !self.pinyinComposition.isEmpty {

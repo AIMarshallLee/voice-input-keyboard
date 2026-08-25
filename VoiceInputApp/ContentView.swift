@@ -268,6 +268,16 @@ struct ContentView: View {
                             }
                         }
 
+                        Button(role: .destructive) {
+                            PinyinInputEngine.resetAdaptiveLearning()
+                            DarwinBridge.postNotification(
+                                DarwinNotificationName.pinyinLearningReset
+                            )
+                        } label: {
+                            Label("重置拼音候选学习", systemImage: "arrow.counterclockwise")
+                                .font(.caption)
+                        }
+
                         if dictionaryEntries.isEmpty {
                             Text("暂无自定义词条。添加后,语音识别中的匹配词会自动替换为目标词。")
                                 .font(.caption2)
@@ -394,6 +404,7 @@ struct ContentView: View {
                         Text("• 语音识别使用 Apple Speech 框架,识别请求经 Apple 服务器处理")
                         Text("• LLM 润色和翻译使用 Apple 设备端模型(iOS 26+),零网络传输")
                         Text("• 使用统计仅存储在本地,不上传任何信息")
+                        Text("• 拼音候选选择仅用于本机排序学习,不上传输入内容")
                         Text("• 不收集任何用户信息,无账号,无追踪")
                         Text("• 语音数据仅在识别期间使用,不被存储或保留")
                         Text("• 键盘仅在您点击麦克风时才使用麦克风")

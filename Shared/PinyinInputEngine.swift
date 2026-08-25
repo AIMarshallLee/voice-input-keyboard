@@ -55,6 +55,12 @@ final class PinyinInputEngine {
 
     var isReady: Bool { !entries.isEmpty }
 
+    static func resetAdaptiveLearning(
+        in store: UserDefaults = SharedDefaults.shared
+    ) {
+        store.removeObject(forKey: learningStorageKey)
+    }
+
     func candidates(for rawInput: String, limit: Int = 10) -> [String] {
         let code = Self.normalize(rawInput)
         guard !code.isEmpty, limit > 0 else { return [] }
