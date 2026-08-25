@@ -100,6 +100,7 @@ final class PinyinInputEngine {
                 uniqueKeysWithValues: counts
                     .sorted { $0.value > $1.value }
                     .prefix(Self.maximumLearnedCandidatesPerCode)
+                    .map { ($0.key, $0.value) }
             )
         }
         selectionCounts[code] = counts

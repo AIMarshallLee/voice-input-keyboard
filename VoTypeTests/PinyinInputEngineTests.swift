@@ -2,6 +2,19 @@ import XCTest
 @testable import VoiceInputApp
 
 final class PinyinInputEngineTests: XCTestCase {
+    private let commonPhraseCorpus: [(pinyin: String, expected: String)] = [
+        ("beijing", "北京"), ("pinyin", "拼音"), ("pingguo", "苹果"),
+        ("meiyou", "没有"), ("mingtian", "明天"), ("diannao", "电脑"),
+        ("tianqi", "天气"), ("nihao", "你好"), ("gongzuo", "工作"),
+        ("kaifa", "开发"), ("keyi", "可以"), ("huiyi", "会议"),
+        ("jianpan", "键盘"), ("jintian", "今天"), ("xiaoxi", "消息"),
+        ("xiangmu", "项目"), ("xiexie", "谢谢"), ("zhongguo", "中国"),
+        ("zhongwen", "中文"), ("shanghai", "上海"), ("shijian", "时间"),
+        ("shouji", "手机"), ("ceshi", "测试"), ("youjian", "邮件"),
+        ("wancheng", "完成"), ("wenti", "问题"), ("women", "我们"),
+        ("shurufa", "输入法")
+    ]
+
     private let dictionary = """
     # minimal test dictionary
     ---
@@ -98,5 +111,42 @@ final class PinyinInputEngineTests: XCTestCase {
         engine.recordSelection(input: "nihao", candidate: "不存在的词")
 
         XCTAssertEqual(engine.candidates(for: "nihao", limit: 4).first, "你好")
+    }
+
+    func testBundledLexiconCommonPhrasesMeetTopOneGate() throws {
+        let bundle = Bundle(for: Self.self)
+        let engine = try XCTUnwrap(PinyinInputEngine(bundle: bundle))
+
+        for sample in commonPhraseCorpus {
+            XCTAssertEqual(
+                engine.candidates(for: sample.pinyin, limit: 5).first,
+                sample.expected,
+                "Top-1 mismatch for \(sample.pinyin)"
+            )
+        }
+    }
+
+    func testBundledLexiconWarmQueryP95IsUnderFortyMilliseconds() throws {
+        let bundle = Bundle(for: Self.self)
+        let engine = try XCTUnwrap(PinyinInputEngine(bundle: bundle))
+        for sample in commonPhraseCorpus {
+            _ = engine.candidates(for: sample.pinyin, limit: 12)
+        }
+
+        var durations: [TimeInterval] = []
+        for _ in 0..<10 {
+            for sample in commonPhraseCorpus {
+                let start = ProcessInfo.processInfo.systemUptime
+                _ = engine.candidates(for: sample.pinyin, limit: 12)
+                durations.append(ProcessInfo.processInfo.systemUptime - start)
+            }
+        }
+        durations.sort()
+        let p95Index = min(durations.count - 1, Int(Double(durations.count) * 0.95))
+        XCTAssertLessThan(
+            durations[p95Index],
+            0.040,
+            "Warm candidate query p95 exceeded 40 ms"
+        )
     }
 }
