@@ -23,6 +23,7 @@ final class PinyinInputEngine {
     }
 
     private var entries: [String: [PinyinCandidate]] = [:]
+    private var sortedCodes: [String] = []
     private var maximumCodeLength = 0
     private let perCodeLimit: Int
     private let learningStore: UserDefaults?
@@ -63,7 +64,9 @@ final class PinyinInputEngine {
         // first, then fill remaining slots with beam-search compositions.
         var result: [String] = []
         var seen: Set<String> = []
-        let ranked = (entries[code] ?? [])
+        let exact = entries[code] ?? []
+        let ranked = exact
+            + (exact.isEmpty ? prefixCandidates(for: code, limit: limit) : [])
             + composedCandidates(for: code, limit: limit * 2)
         for candidate in ranked where !candidate.text.isEmpty {
             guard seen.insert(candidate.text).inserted else { continue }
@@ -162,6 +165,48 @@ final class PinyinInputEngine {
             entries[code] = Array(best.prefix(perCodeLimit))
             maximumCodeLength = max(maximumCodeLength, code.count)
         }
+        sortedCodes = entries.keys.sorted()
+    }
+
+    /// 连续拼音尚未敲完时提供词条补全。排序数组 + lower-bound 避免每次
+    /// 扫描 6 万条词库；最多检查 96 个相邻 code，内存也不复制整棵前缀树。
+    private func prefixCandidates(
+        for code: String,
+        limit: Int
+    ) -> [PinyinCandidate] {
+        guard code.count >= 2, !sortedCodes.isEmpty else { return [] }
+        var lower = 0
+        var upper = sortedCodes.count
+        while lower < upper {
+            let middle = (lower + upper) / 2
+            if sortedCodes[middle] < code {
+                lower = middle + 1
+            } else {
+                upper = middle
+            }
+        }
+
+        var result: [PinyinCandidate] = []
+        var inspected = 0
+        var index = lower
+        while index < sortedCodes.count,
+              sortedCodes[index].hasPrefix(code),
+              inspected < 96,
+              result.count < max(limit * 2, 12) {
+            let completedCode = sortedCodes[index]
+            let completionPenalty = Double(completedCode.count - code.count) * 0.45
+            for candidate in (entries[completedCode] ?? []).prefix(2) {
+                result.append(
+                    PinyinCandidate(
+                        text: candidate.text,
+                        score: candidate.score - completionPenalty
+                    )
+                )
+            }
+            inspected += 1
+            index += 1
+        }
+        return result.sorted { $0.score > $1.score }
     }
 
     private func composedCandidates(for code: String, limit: Int) -> [PinyinCandidate] {

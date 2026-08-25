@@ -77,7 +77,7 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
     private var typingLanguage: TypingLanguage = .chinese
     private var pinyinComposition = ""
     private var visiblePinyinCandidates: [String] = []
-    private lazy var pinyinEngine = PinyinInputEngine()
+    private var pinyinEngine: PinyinInputEngine?
 
     // MARK: - 快捷符号
     private let symbols = ["，", "。", "！", "？", "、", "：", "；", "\u{201C}", "\u{201D}", "（", "）", "…", "—", "～", "😊", "👍", "✅"]
@@ -90,6 +90,7 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
         setupUI()
         setupQuickTypingUI()
         setupDarwinObservers()
+        preloadPinyinEngine()
     }
 
     override func viewWillAppear(_ animated: Bool) {
@@ -929,10 +930,15 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
         }
 
         pinyinCompositionLabel.text = pinyinComposition
-        visiblePinyinCandidates = pinyinEngine?.candidates(
+        guard let pinyinEngine else {
+            visiblePinyinCandidates = []
+            addPinyinHint("正在加载中文词库…")
+            return
+        }
+        visiblePinyinCandidates = pinyinEngine.candidates(
             for: pinyinComposition,
             limit: 12
-        ) ?? []
+        )
 
         if visiblePinyinCandidates.isEmpty {
             addPinyinHint("继续输入或空格上屏拼音")
@@ -958,6 +964,23 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
             }
         }
         pinyinCandidateScrollView.setContentOffset(.zero, animated: false)
+    }
+
+    /// 6 万词条解析不占用键盘首帧主线程。用户立刻打开普通键盘时仍可先
+    /// 输入拼音，词库就绪后自动刷新当前组合，不制造卡死或丢键。
+    private func preloadPinyinEngine() {
+        let resourceBundle = Bundle.main
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let engine = PinyinInputEngine(bundle: resourceBundle)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.pinyinEngine = engine
+                if self.typingLanguage == .chinese,
+                   !self.pinyinComposition.isEmpty {
+                    self.refreshPinyinCandidates()
+                }
+            }
+        }
     }
 
     private func addPinyinHint(_ text: String) {

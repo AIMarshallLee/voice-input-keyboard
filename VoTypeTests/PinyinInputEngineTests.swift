@@ -2,6 +2,9 @@ import XCTest
 @testable import VoiceInputApp
 
 final class PinyinInputEngineTests: XCTestCase {
+    private static let bundledEngine = PinyinInputEngine(
+        bundle: Bundle(for: PinyinInputEngineTests.self)
+    )
     private let commonPhraseCorpus: [(pinyin: String, expected: String)] = [
         ("beijing", "北京"), ("pinyin", "拼音"), ("pingguo", "苹果"),
         ("meiyou", "没有"), ("mingtian", "明天"), ("diannao", "电脑"),
@@ -60,6 +63,11 @@ final class PinyinInputEngineTests: XCTestCase {
         XCTAssertTrue(engine.candidates(for: "n").isEmpty)
     }
 
+    func testIncompleteContinuousPinyinSuggestsKnownPhrase() {
+        let engine = PinyinInputEngine(dictionaryText: dictionary)
+        XCTAssertEqual(engine.candidates(for: "niha", limit: 4).first, "你好")
+    }
+
     func testCandidatesAreDeduplicatedAndLimited() {
         let engine = PinyinInputEngine(dictionaryText: dictionary)
         let candidates = engine.candidates(for: "nihao", limit: 2)
@@ -75,11 +83,11 @@ final class PinyinInputEngineTests: XCTestCase {
             dictionaryText: dictionary,
             learningStore: defaults
         )
-        XCTAssertTrue(engine.candidates(for: "nihao", limit: 16).contains("泥号"))
+        XCTAssertTrue(engine.candidates(for: "nihao", limit: 16).contains("尼号"))
 
-        engine.recordSelection(input: "Ni' Hao", candidate: "泥号")
+        engine.recordSelection(input: "Ni' Hao", candidate: "尼号")
 
-        XCTAssertEqual(engine.candidates(for: "nihao", limit: 4).first, "泥号")
+        XCTAssertEqual(engine.candidates(for: "nihao", limit: 4).first, "尼号")
     }
 
     func testAdaptiveSelectionPersistsAcrossEngineRecreation() throws {
@@ -90,13 +98,13 @@ final class PinyinInputEngineTests: XCTestCase {
         PinyinInputEngine(
             dictionaryText: dictionary,
             learningStore: defaults
-        ).recordSelection(input: "nihao", candidate: "泥号")
+        ).recordSelection(input: "nihao", candidate: "尼号")
 
         let reloaded = PinyinInputEngine(
             dictionaryText: dictionary,
             learningStore: defaults
         )
-        XCTAssertEqual(reloaded.candidates(for: "nihao", limit: 4).first, "泥号")
+        XCTAssertEqual(reloaded.candidates(for: "nihao", limit: 4).first, "尼号")
     }
 
     func testLearningRejectsFabricatedCandidate() throws {
@@ -114,8 +122,7 @@ final class PinyinInputEngineTests: XCTestCase {
     }
 
     func testBundledLexiconCommonPhrasesMeetTopOneGate() throws {
-        let bundle = Bundle(for: Self.self)
-        let engine = try XCTUnwrap(PinyinInputEngine(bundle: bundle))
+        let engine = try XCTUnwrap(Self.bundledEngine)
 
         for sample in commonPhraseCorpus {
             XCTAssertEqual(
@@ -127,8 +134,7 @@ final class PinyinInputEngineTests: XCTestCase {
     }
 
     func testBundledLexiconWarmQueryP95IsUnderFortyMilliseconds() throws {
-        let bundle = Bundle(for: Self.self)
-        let engine = try XCTUnwrap(PinyinInputEngine(bundle: bundle))
+        let engine = try XCTUnwrap(Self.bundledEngine)
         for sample in commonPhraseCorpus {
             _ = engine.candidates(for: sample.pinyin, limit: 12)
         }
