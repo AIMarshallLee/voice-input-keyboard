@@ -43,6 +43,11 @@ jobs:
       - name: Generate Xcode Project
         run: xcodegen generate
 
+      - name: Validate Generated Distribution Info
+        run: |
+          python3 -m unittest scripts.tests.test_validate_distribution_info
+          python3 scripts/validate_distribution_info.py VoiceInputApp/Info.plist
+
       - name: Run Unit and UI Smoke Tests
         run: |
           set -o pipefail
