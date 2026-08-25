@@ -8,6 +8,12 @@ for commit `e8bfb57296ff4aab98b49b71adfe7b38fd744119`:
 build, packaged IPA, and artifact ID `9572186636` (artifact ZIP SHA-256
 `2bfa727b9661ab14b24a1dc591c7c5e2e1f711d90e78205ed7143bec64065835`).
 
+The commercial-candidate branch adds a third UI privacy-disclosure test. [PR #8
+Build IPA #129](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/32874031911)
+for commit `19bb538e8a136c766150cb84a25eddec4520e8f4` passed 73 unit
+tests and 3 UI tests, including the 20-round stress case and the new Apple
+Speech fallback disclosure, then built and packaged the Release device IPA.
+
 | Use case | Rule and negative case | Evidence | Status |
 | --- | --- | --- | --- |
 | Session IPC | Only matching, fresh sessions can read/write; cancellation and first terminal state reject late callbacks | `DictationConstantsTests.swift` | Existing automated unit |
@@ -17,7 +23,7 @@ build, packaged IPA, and artifact ID `9572186636` (artifact ZIP SHA-256
 | Pinyin quality | Common phrases rank Top-1, learning is bounded/persistent/resettable, fabricated candidates denied | `PinyinInputEngineTests.swift` | Existing automated unit |
 | Pinyin latency | Warm-query p95 stays below 40 ms in the test environment | `testBundledLexiconWarmQueryP95IsUnderFortyMilliseconds` | Existing automated performance gate |
 | Text processing | Delete is a dedicated result, empty results fail, per-session language/translation settings are honored | `TextProcessorTests.swift` | Existing automated unit |
-| Host disclosures | Standby entry shows mic-off/privacy state and Pinyin reset is discoverable | `VoTypeUITests.swift` | Existing simulator UI smoke |
+| Host disclosures | Standby shows mic-off state, Pinyin reset is discoverable, and Speech copy distinguishes device processing from Apple service fallback | `VoTypeUITests.swift` | Existing simulator UI smoke |
 | App Store Info.plist | Unknown `UIBackgroundModes` values fail before build/upload | `scripts/tests/test_validate_distribution_info.py`, workflow step 6 | Existing automated CI gate |
 | Device package | Main app and extension compile for generic iphoneos and an IPA artifact is produced | Build #127 steps 16-18 | Existing automated build gate |
 | Distribution signature | Team, Bundle IDs, App Group, signer SHA and profile UUID match | `build.yml` distribution steps; last successful evidence build 115 | Existing guarded live gate |
@@ -55,4 +61,3 @@ blocked every possible direct push.
 
 Simulator/CI evidence must never be substituted for any final-device or App
 Review item above.
-

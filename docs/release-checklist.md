@@ -69,7 +69,7 @@
 - [ ] 支持 URL `https://aimarshalllee.github.io/voice-input-keyboard/support.html` 返回 200。
 - [ ] App Store Connect 的 Privacy Details 与隐私政策、代码行为一致。
 - [ ] 中文和英文描述只宣称真机端到端验证过的能力。
-- [ ] 删除“完全离线、语音不离开设备、无需切 App、无限时长、自动语言检测、日期自动格式化”等不准确表述。
+- [x] 已从 App 内、Fastlane 文案和公开政策删除“完全离线、语音不离开设备、保证无需切 App、无限时长、自动语言检测、日期自动格式化”等不准确表述。
 - [ ] 现有 `fastlane/screenshots` 不得用于发布：它们包含缺字方框、重叠文字、与实际键盘不一致的界面和未实现宣称。
 - [ ] 使用当前候选 TestFlight build 在真机重新截图；逐张以 100% 比例检查文字、图标、语言和隐私表述。
 - [ ] 支持 URL、隐私 URL、截图尺寸和所有本地化元数据通过 Fastlane precheck。
