@@ -2,8 +2,9 @@ VoType is a voice-to-text keyboard for iOS. The keyboard extension starts a sess
 
 [KEY FEATURES]
 • Start voice input from a custom keyboard
+• Explicitly enable visible in-place standby; when fresh, start from the keyboard while standby keeps the microphone off
 • See connecting, listening, processing, and live transcript status; tap the microphone again to stop
-• Swipe left for an English QWERTY fallback with letters, numbers, symbols, and hold-to-delete
+• Local Chinese Pinyin candidates and English QWERTY with letters, numbers, symbols, and hold-to-delete
 • Choose from 20 fixed speech-recognition locales
 • Automatic punctuation, filler-word cleanup, and spoken self-correction
 • Numbered-list formatting for spoken sequences
@@ -19,10 +20,11 @@ VoType contains no advertising, third-party analytics, or tracking SDKs and oper
 1. Open VoType and follow the guide to add the keyboard
 2. Enable Allow Full Access so the keyboard can exchange the current session locally with the containing app
 3. Grant microphone and speech-recognition permission
-4. Switch to VoType in a text field and tap the microphone
-5. If prompted, open VoType; once listening starts, return to the original text field and keep speaking
-6. Watch live status in the keyboard and tap the microphone again to stop; the matching result is inserted when ready
+4. Optionally enable In-place Voice in VoType and confirm standby says the microphone is off
+5. Switch to VoType in a text field and tap the microphone
+6. A solid microphone starts in place; an outline microphone may open VoType or show a manual-open recovery action
+7. Watch live status in the keyboard and tap the microphone again to stop; the matching result is inserted when ready
 
-iOS does not let a custom keyboard extension record from the microphone directly. If iOS has terminated VoType, the next session still requires opening the app. Apple Speech availability, offline support, languages, and session duration depend on the device and system.
+iOS does not let a custom keyboard extension record from the microphone directly. If iOS closes PiP or terminates VoType, the next session may still require opening the app. Apple Speech availability, offline support, languages, and session duration depend on the device and system.
 
 Free, with no subscription, in-app purchase, or advertising. The current app interface is optimized for Simplified Chinese.

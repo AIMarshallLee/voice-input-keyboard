@@ -38,4 +38,26 @@ final class VoTypeUITests: XCTestCase {
         }
         XCTAssertTrue(reset.exists)
     }
+
+    func testPrivacyCopyDisclosesSpeechServiceFallbackAccurately() {
+        let app = XCUIApplication()
+        app.launchArguments += ["-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN"]
+        app.launch()
+
+        let disclosure = app.staticTexts.matching(
+            NSPredicate(
+                format: "label CONTAINS %@",
+                "设备端识别不可用时，Apple 可能通过网络处理"
+            )
+        ).firstMatch
+        var attempts = 0
+        while !disclosure.exists, attempts < 12 {
+            app.swipeUp()
+            attempts += 1
+        }
+        XCTAssertTrue(
+            disclosure.exists,
+            "The in-app privacy copy must distinguish on-device recognition from Apple service fallback"
+        )
+    }
 }

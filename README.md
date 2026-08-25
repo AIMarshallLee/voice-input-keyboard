@@ -2,7 +2,7 @@
 
 VoType 是一个 iOS 语音转文字键盘原型，由宿主 App 负责录音与文字处理，键盘扩展负责发起会话和插入结果。
 
-当前仓库的目标是得到一个可重复构建、可真机验收的 1.0 稳定版。源码可以在 Xcode 26 上构建；App Store 发布仍需完成真机测试、App Group 描述文件更新和真实商店截图，详见 [发布验收清单](docs/release-checklist.md)。
+当前仓库的目标是得到一个可重复构建、可审计、可真机验收的 1.0 商用候选。源码、CI、签名、隐私、支持和发布材料与最终真机/App Review 门禁严格分开，详见 [发布验收清单](docs/release-checklist.md) 和 [交付架构](documentation/architecture.md)。
 
 ## 已实现能力
 
@@ -42,8 +42,10 @@ group.com.daseanle.votype.container
 
 - 键盘扩展不能直接录音。
 - 从键盘扩展启动宿主 App 的 responder-chain 兼容路径不属于 Apple 支持的扩展 API，不能作为 App Store 版的可靠前提。
-- 点麦克风后键盘保存会话并打开 VoType。看到“正在聆听”后可立即返回原输入框继续说话、看实时文字并再次点麦克风停止；若系统拒绝跳转，会话仍会保留供手动打开后继续。
-- 发布版不使用近静音音频或合成画中画保活。iOS 结束宿主进程后，下一次会话仍需要用户打开 VoType；公共 API 无法保证每次都零切换。
+- 用户可在 VoType 前台明确开启一个显示真实待命/录音/整理状态的画中画待命；待命阶段不启用麦克风，有效待命时键盘实心麦克风可原地开始。
+- 画中画被用户或系统关闭后会立即撤销 readiness；iOS 结束宿主进程后，下一次会话仍可能需要手动打开 VoType，公共 API 无法保证每次都零切换。
+- 空心麦克风会先保存会话再尝试打开 VoType；若系统拒绝，3 秒内显示明确的主屏幕手动恢复操作，不无限等待。
+- 发布版不播放近静音音频，也不在待命阶段录音。
 - Apple Speech 的可用性、时长和离线能力由设备、语言与系统状态决定；本项目不承诺无限时长或所有语言离线。
 
 Apple 平台边界可参考 [Custom Keyboard Programming Guide](https://developer.apple.com/library/archive/documentation/General/Conceptual/ExtensibilityPG/CustomKeyboard.html) 与 [App Review Guidelines](https://developer.apple.com/app-store/review/guidelines/)。
@@ -59,7 +61,9 @@ Apple 平台边界可参考 [Custom Keyboard Programming Guide](https://develope
 ├── VoTypeTests/                        # XCTest 回归测试
 ├── .github/workflows/build.yml         # CI 与手动发布
 ├── fastlane/metadata/                  # App Store 元数据
-└── docs/                               # 隐私政策与发布清单
+├── documentation/                      # 架构、流程、权限、测试与发布运维
+├── CHANGELOG.md                        # 用户可见版本变更
+└── docs/                               # 公共隐私/支持页与发布清单
 ```
 
 仓库中历史生成的 Xcode 工程不是权威配置。修改目标、Info.plist、版本或签名设置时只改 `project.yml`，然后重新运行 XcodeGen。
@@ -96,6 +100,7 @@ xcodebuild test \
 
 - Pull Request 和 `main` push 只运行测试、构建并上传 CI 产物，不会上传 App Store Connect。
 - App Store 上传只能从 `workflow_dispatch` 手动触发，并显式设置 `publish=true`。
+- XcodeGen 生成的真实 `Info.plist` 会在测试和上传前校验 App Store 支持的后台模式。
 - CI build number 使用 GitHub Actions run number，避免重复上传同一个 `CFBundleVersion`。
 - 签名描述文件缺少 App Group 时，普通 CI 会安全回退为无签名构建；发布任务则应失败，不能生成一个跨进程功能失效的 IPA。
 
@@ -108,8 +113,9 @@ xcodebuild test \
 - 会话设置、选中文本和识别结果会暂存在 App Group 共享容器，用于宿主 App 与键盘扩展交换；结果在匹配消费或过期后删除。
 - 个人词典、功能设置、拼音候选选择次数和聚合使用次数保存在设备本地，不上传到开发者服务器。
 - iOS 26+ 的 Foundation Models 处理在设备端完成。
+- 免切换画中画必须由用户在前台明确开启，显示真实状态；待命不录音，关闭后撤销原地可用状态。
 
-完整说明见 [隐私政策](docs/privacy-policy.html)。
+完整说明见 [隐私政策](docs/privacy-policy.html)、[数据保留与删除](documentation/privacy-data.md) 和 [支持页](docs/support.html)。
 
 ## 系统要求
 

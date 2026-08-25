@@ -6,16 +6,20 @@
 
 - [x] `xcodegen generate` 成功，`project.yml` 是唯一项目配置源。
 - [x] `VoTypeTests` 在可用 iPhone 模拟器全部通过；找不到模拟器时 CI 必须失败。
-- [ ] `VoTypeUITests` 在模拟器验证免切换入口、麦克风关闭披露和拼音学习重置入口；以最新 PR CI 为准。
+- [x] `VoTypeUITests` 在模拟器验证免切换入口、麦克风关闭披露和拼音学习重置入口。
 - [x] Release 的无签名 device build 通过。
+- [x] 无签名 Release `.xcarchive` 同时包含主 App 与 Keyboard Extension。
 - [x] App 与 Keyboard Extension 都包含 `PrivacyInfo.xcprivacy`。
-- [x] `project.yml` 中源码构建号为 35；TestFlight CI 已使用 run number 覆盖并上传 build 115。
+- [x] `project.yml` 中源码构建号为 35；CI 使用 run number 覆盖候选构建号。
 - [x] 普通 PR / push 不会调用 `pilot upload` 或 `deliver`。
 - [x] 手动发布只有在 `publish=true` 时才会访问 App Store Connect。
+- [x] 生成后的主 App `Info.plist` 在测试/上传前拒绝 Apple 不支持的 `UIBackgroundModes` 值。
 
-验证证据：2026-08-24 的 [PR #1 / Build IPA #90](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/32686345974) 已通过全部 XCTest、无签名 iphoneos Release 构建、IPA 打包与 artifact 上传；发布相关步骤均按条件跳过。
+验证证据：2026-08-26 的 [Build IPA #131](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/32876433386) 在 PR #8 提交 `acea1f46a8dd4e1952ae80cb60b5464412139f37` 上通过 73 个单元测试、3 个 UI 冒烟用例、20 轮顺序会话压力、无签名 iphoneos Release 构建与 `.xcarchive`；归档同时包含主 App 和 Keyboard Extension。IPA 与归档保存在 artifact `9574372803`，artifact ZIP SHA-256 为 `6101515c0e8d0b4e4a02b517901c4936bb462eff3b9af3af03fb467a1ddca56c`。合并后的 `main` 仍需重新通过同一门禁。
 
 ## 2. Apple Developer 与签名
+
+当前商用候选的 Apple Developer 登录、证书/描述文件操作和分发签名状态：**EXTERNAL / NOT_RUN**。下列已完成项是历史流水线能力/旧构建证据，不代表当前候选已经签名。
 
 - [x] 主 App ID `com.daseanle.votype` 和键盘 App ID `com.daseanle.votype.keyboard` 已启用 `group.com.daseanle.votype.container`。
 - [x] CI 已重新生成两份 App Store provisioning profile，并验证均包含该 App Group。
@@ -26,6 +30,8 @@
 验证证据：2026-08-25 的 [Build IPA #115](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/32768276379) 已通过 XCTest、profile、证书、Bundle ID、App Group、嵌入 profile 与嵌套签名校验。
 
 ## 3. 真机功能
+
+本节全部属于 **EXTERNAL / NOT_RUN**，模拟器与 CI 不得将任一项改为通过。
 
 至少覆盖 iOS 16 的最低兼容设备、当前正式 iOS、iOS 26，以及一台 iPad。
 
@@ -60,21 +66,31 @@
 
 ## 5. 隐私与商店材料
 
+- [x] `documentation/` 已覆盖架构、权限流程、配置/Secrets、自动化、测试映射、首次启动、数据保留/删除、签名归档和回滚。
+- [x] `LICENSE`、`THIRD_PARTY_NOTICES.md`、拼音词库作者与 Apache-2.0 许可文件存在并与实际依赖一致。
+- [x] `CHANGELOG.md` 只写用户可见能力和必要操作，不宣称已通过真机或审核。
+- [x] 公共支持页已写入 `docs/support.html`，Fastlane 中英文支持 URL 已指向该页。
 - [ ] 隐私政策 URL `https://aimarshalllee.github.io/voice-input-keyboard/privacy-policy.html` 返回 200。
+- [ ] 支持 URL `https://aimarshalllee.github.io/voice-input-keyboard/support.html` 返回 200。
 - [ ] App Store Connect 的 Privacy Details 与隐私政策、代码行为一致。
 - [ ] 中文和英文描述只宣称真机端到端验证过的能力。
-- [ ] 删除“完全离线、语音不离开设备、无需切 App、无限时长、自动语言检测、日期自动格式化”等不准确表述。
+- [x] 已从 App 内、Fastlane 文案和公开政策删除“完全离线、语音不离开设备、保证无需切 App、无限时长、自动语言检测、日期自动格式化”等不准确表述。
 - [ ] 现有 `fastlane/screenshots` 不得用于发布：它们包含缺字方框、重叠文字、与实际键盘不一致的界面和未实现宣称。
 - [ ] 使用当前候选 TestFlight build 在真机重新截图；逐张以 100% 比例检查文字、图标、语言和隐私表述。
 - [ ] 支持 URL、隐私 URL、截图尺寸和所有本地化元数据通过 Fastlane precheck。
+- [x] `upload_metadata` 默认并继续保持关闭；没有明确选择不会上传元数据/截图。
 
 ## 6. TestFlight 与发布
 
+当前商用候选的 TestFlight 上传、processing、内部测试和 App Review：**EXTERNAL / NOT_RUN**。本轮不触发上传或审核。
+
 - [x] 手动运行发布 workflow，签名 IPA 已保存为可追溯的 GitHub Actions artifact。
 - [x] App Store Connect 已完成 build 115 processing，而不只是上传命令成功。
+- [x] Build 125 的 profile/证书/签名/IPA 均通过，但 App Store Connect 以 90112 拒绝无效 `picture-in-picture` Info.plist 值；根因已修复并加入 CI 门禁，build 125 不可测试。
+- [ ] 新商用候选完成签名、App Store Connect processing 和 Internal testers 分发。
 - [ ] 安装处理完成的 TestFlight build，执行一次完整回归。
 - [ ] 填写加密出口、隐私问卷、审核说明和键盘测试步骤。
 - [x] Build 1.0 (115) 已分发给 Internal testers；真机稳定且用户明确确认后再考虑提交 App Review。
 - [ ] App Review 通过且公开商店页可查询后，才把项目状态改为“已发布”。
 
-TestFlight 证据：同一 [Build IPA #115](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/32768276379) 日志确认 `Successfully finished processing the build 1.0 - 115` 及 `Successfully distributed build to Internal testers`；`Upload Metadata and Screenshots` 明确跳过。
+历史 TestFlight 证据：[Build IPA #115](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/32768276379) 日志确认 `Successfully finished processing the build 1.0 - 115` 及 `Successfully distributed build to Internal testers`；它早于 PR #6/#7，不是本次真机候选。Build 125 上传失败，必须由新的处理完成构建替代。所有发布运行都必须让 `Upload Metadata and Screenshots` 保持跳过，直到真实截图验收完成。
