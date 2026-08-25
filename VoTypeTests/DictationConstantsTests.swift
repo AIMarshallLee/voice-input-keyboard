@@ -596,6 +596,54 @@ final class DictationConstantsTests: XCTestCase {
         XCTAssertNil(DarwinBridge.peekPendingDictationSettings())
     }
 
+    func testTwentySequentialSessionRoundTripsLeaveNoStaleState() {
+        for index in 0..<20 {
+            let session = UUID().uuidString
+            let settings = DictationSettings(
+                language: "zh-CN",
+                whisper: false,
+                translateEnabled: false,
+                translateTarget: "en-US",
+                selectedText: nil,
+                keyboardType: 0,
+                session: session
+            )
+            XCTAssertTrue(DarwinBridge.writeDictationSettings(settings))
+            XCTAssertEqual(
+                DarwinBridge.readAndConsumeDictationSettings(
+                    expectedSession: session
+                ),
+                settings
+            )
+            XCTAssertTrue(
+                DarwinBridge.writeLiveState(
+                    phase: .listening,
+                    partialTranscript: "第\(index)轮",
+                    session: session
+                )
+            )
+            XCTAssertTrue(
+                DarwinBridge.writeLiveState(
+                    phase: .processing,
+                    partialTranscript: "第\(index)轮",
+                    session: session
+                )
+            )
+            XCTAssertTrue(
+                DarwinBridge.writeTranscription("结果\(index)", session: session)
+            )
+            XCTAssertEqual(
+                DarwinBridge.readAndConsumeResult(
+                    expectedSession: session
+                )?.transcription,
+                "结果\(index)"
+            )
+            XCTAssertNil(DarwinBridge.readLiveState(expectedSession: session))
+        }
+        XCTAssertNil(DarwinBridge.peekPendingDictationSettings())
+        XCTAssertNil(DarwinBridge.peekResult())
+    }
+
     func testExpiredSettingsAreRemoved() {
         let now = Date().timeIntervalSince1970
         let settings = DictationSettings(
