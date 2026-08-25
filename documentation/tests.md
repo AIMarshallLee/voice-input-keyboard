@@ -14,6 +14,11 @@ for commit `19bb538e8a136c766150cb84a25eddec4520e8f4` passed 73 unit
 tests and 3 UI tests, including the 20-round stress case and the new Apple
 Speech fallback disclosure, then built and packaged the Release device IPA.
 
+[PR #8 Build IPA #131](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/32876433386)
+for commit `acea1f46a8dd4e1952ae80cb60b5464412139f37` reran all 73
+unit and 3 UI tests, built the unsigned Release device app, and produced an
+unsigned `.xcarchive` containing both the main app and Keyboard Extension.
+
 | Use case | Rule and negative case | Evidence | Status |
 | --- | --- | --- | --- |
 | Session IPC | Only matching, fresh sessions can read/write; cancellation and first terminal state reject late callbacks | `DictationConstantsTests.swift` | Existing automated unit |
@@ -25,7 +30,7 @@ Speech fallback disclosure, then built and packaged the Release device IPA.
 | Text processing | Delete is a dedicated result, empty results fail, per-session language/translation settings are honored | `TextProcessorTests.swift` | Existing automated unit |
 | Host disclosures | Standby shows mic-off state, Pinyin reset is discoverable, and Speech copy distinguishes device processing from Apple service fallback | `VoTypeUITests.swift` | Existing simulator UI smoke |
 | App Store Info.plist | Unknown `UIBackgroundModes` values fail before build/upload | `scripts/tests/test_validate_distribution_info.py`, workflow step 6 | Existing automated CI gate |
-| Device package | Main app and extension compile for generic iphoneos and an IPA artifact is produced | Build #127 steps 16-18 | Existing automated build gate |
+| Device package | Main app and extension compile for generic iphoneos; an IPA and `.xcarchive` containing both bundles are produced | Build #131 steps 16-19 | Existing automated build/archive gate |
 | Distribution signature | Team, Bundle IDs, App Group, signer SHA and profile UUID match | `build.yml` distribution steps; last successful evidence build 115 | Existing guarded live gate |
 
 The workflow runs on every pull request and `main` push. Repository branch
@@ -38,7 +43,7 @@ blocked every possible direct push.
 | Use case | Expected behavior / deny case | Type | Status |
 | --- | --- | --- | --- |
 | Signed candidate install | App and extension install, launch and access the App Group on minimum/current/iOS 26/iPad devices | Guarded live | Proposed final-device gate |
-| Keyboard accessibility | VoiceOver focus/order/labels for the real custom keyboard, candidate bar and recovery actions | Manual review | Proposed final-device gate |
+| Keyboard accessibility | Controls, candidate/status text and recovery actions have explicit labels/hints in source; real VoiceOver focus/order remains device-dependent | Source audit + compile; physical-device VoiceOver | Labels implemented; physical-device gate EXTERNAL / NOT_RUN |
 | PiP standby | Explicit start creates visible truthful PiP, mic remains off, stop clears readiness within 3.5 s | Manual review + guarded live | Proposed final-device gate |
 | Third-party app insertion | Hot and cold paths insert once into WeChat, Notes and a browser without cross-field recovery | Manual review | Proposed final-device gate |
 | Permissions | First grant, deny, revoke, Settings re-grant and Full Access off all recover/fail closed | Manual review | Proposed final-device gate |

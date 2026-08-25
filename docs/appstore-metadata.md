@@ -21,7 +21,8 @@
 
 ## 准确性边界
 
-商店文案只能描述已经在候选 TestFlight build 上完成端到端验证的能力：
+商店文案只能描述已经在当前签名候选和真机上完成端到端验证的能力；
+当前候选尚未签名或上传 TestFlight，因此以下边界继续生效：
 
 - “20 个语言”指 20 个可手动选择的固定识别 locale，不是自动语言检测或任意混输。
 - 设备支持时优先请求 Apple 设备端识别；不支持时 Apple Speech 可能联网处理，不得写“完全离线”或“语音不离开设备”。
@@ -30,7 +31,7 @@
 - 当前格式化实现覆盖编号列表和标点，不宣称日期格式化。
 - 不承诺无限会话时长。
 - 用户可在前台明确开启显示真实状态的画中画待命；待命不录音，关闭后撤销 readiness。有效待命时可原地开始，但不承诺系统始终保留待命或每次都无需打开 VoType。
-- 键盘包含离线中文拼音/英文 QWERTY 补字层和实时会话反馈，但只有在候选 TestFlight build 真机通过后才能加入正式卖点。
+- 键盘包含离线中文拼音/英文 QWERTY 补字层和实时会话反馈，但只有在当前候选签名并通过真机后才能加入正式卖点。
 
 中文和英文正式描述分别维护在：
 
@@ -59,7 +60,7 @@ VoType 包含一个自定义键盘扩展和宿主 App。由于 iOS 不允许自�
 
 现有 `fastlane/screenshots/` 仅是历史占位素材，存在缺字方框、文字重叠、虚假离线宣称和与实际键盘不一致的界面，不能发布。
 
-必须从当前候选 TestFlight build 真机重新截取：
+必须从当前候选完成签名、TestFlight processing 后的同一 build 真机重新截取：
 
 1. 宿主 App 安装与权限引导；
 2. 实际键盘界面；
@@ -71,8 +72,8 @@ VoType 包含一个自定义键盘扩展和宿主 App。由于 iOS 不允许自�
 
 ## 发布状态
 
-- 2026-08-26 的 [Build IPA #127](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/32870175097) 在 `main` 提交 `e8bfb57` 上通过 73 个单元测试、2 个 UI 冒烟、20 轮会话压力、无签名 Release device build 和 IPA artifact。
+- 2026-08-26 的 [Build IPA #131](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/32876433386) 在 PR #8 提交 `acea1f4` 上通过 73 个单元测试、3 个 UI 冒烟、20 轮会话压力、无签名 Release device build、IPA 和包含主 App/键盘扩展的 `.xcarchive`。
 - Build 125 的签名包通过构建但被 App Store Connect 以 90112 拒收；无效 `picture-in-picture` 后台值已移除并加入生成后 Info.plist 门禁。
-- 新签名候选仍需上传、完成 processing、分发内部测试并通过最终真机矩阵。
+- 当前候选的 Apple 分发签名、真机、TestFlight 上传/processing/内部测试和 App Review 均为 **EXTERNAL / NOT_RUN**；本轮不触发。
 - `upload_metadata` 保持关闭；现有截图不得上传。当前没有提交审核或公开上架。
 - 完整门槛见 [发布验收清单](release-checklist.md) 和 [App Store 提交清单](../documentation/app-store-submission.md)。

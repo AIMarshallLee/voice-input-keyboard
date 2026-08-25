@@ -8,14 +8,14 @@
 - [x] `VoTypeTests` 在可用 iPhone 模拟器全部通过；找不到模拟器时 CI 必须失败。
 - [x] `VoTypeUITests` 在模拟器验证免切换入口、麦克风关闭披露和拼音学习重置入口。
 - [x] Release 的无签名 device build 通过。
-- [ ] 无签名 Release `.xcarchive` 同时包含主 App 与 Keyboard Extension；等待新增 CI 门禁证据。
+- [x] 无签名 Release `.xcarchive` 同时包含主 App 与 Keyboard Extension。
 - [x] App 与 Keyboard Extension 都包含 `PrivacyInfo.xcprivacy`。
 - [x] `project.yml` 中源码构建号为 35；CI 使用 run number 覆盖候选构建号。
 - [x] 普通 PR / push 不会调用 `pilot upload` 或 `deliver`。
 - [x] 手动发布只有在 `publish=true` 时才会访问 App Store Connect。
 - [x] 生成后的主 App `Info.plist` 在测试/上传前拒绝 Apple 不支持的 `UIBackgroundModes` 值。
 
-验证证据：2026-08-26 的 [Build IPA #127](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/32870175097) 在 `main` 提交 `e8bfb57296ff4aab98b49b71adfe7b38fd744119` 上通过 73 个单元测试、2 个独立 UI 冒烟用例、20 轮顺序会话压力、无签名 iphoneos Release 构建、IPA 打包与 artifact `9572186636`；artifact ZIP SHA-256 为 `2bfa727b9661ab14b24a1dc591c7c5e2e1f711d90e78205ed7143bec64065835`。
+验证证据：2026-08-26 的 [Build IPA #131](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/32876433386) 在 PR #8 提交 `acea1f46a8dd4e1952ae80cb60b5464412139f37` 上通过 73 个单元测试、3 个 UI 冒烟用例、20 轮顺序会话压力、无签名 iphoneos Release 构建与 `.xcarchive`；归档同时包含主 App 和 Keyboard Extension。IPA 与归档保存在 artifact `9574372803`，artifact ZIP SHA-256 为 `6101515c0e8d0b4e4a02b517901c4936bb462eff3b9af3af03fb467a1ddca56c`。合并后的 `main` 仍需重新通过同一门禁。
 
 ## 2. Apple Developer 与签名
 

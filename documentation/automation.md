@@ -9,7 +9,7 @@
 | Automatic side effects | Tests, builds and GitHub artifact upload |
 | Approval gate | App Store upload requires manual `publish=true`; metadata additionally requires `upload_metadata=true` |
 | External APIs/tools | Homebrew/XcodeGen, Xcode, GitHub artifacts, Fastlane/App Store Connect |
-| Output contract | Green/failed Actions run, IPA artifact; on publish, an App Store Connect build |
+| Output contract | Green/failed Actions run; non-publish runs upload an IPA plus unsigned `.xcarchive`; on publish, an App Store Connect build |
 | Failure handling | Fail closed; no automatic retry; cleanup runs even after failure |
 | Kill switch | Cancel run, disable workflow, revoke App Store API key/certificate |
 
@@ -19,7 +19,8 @@ identity count, exact Team/Bundle/App Group checks, embedded profile UUID checks
 nested signature verification and manual publish inputs. The workflow contains
 no App Review submission action.
 
-GitHub Actions retains development and App Store IPA artifacts for 30 days.
+GitHub Actions retains development IPA/archive and App Store IPA artifacts for
+30 days.
 Permanent evidence is the immutable run/build/artifact identifiers recorded in
 the release evidence document, not a copied secret or local runner file.
 
@@ -45,4 +46,3 @@ does not read signing secrets or App Store credentials.
 
 There are no autonomous agents, tool-calling model loops, webhooks, scheduled
 jobs or unattended user-data processing paths.
-
