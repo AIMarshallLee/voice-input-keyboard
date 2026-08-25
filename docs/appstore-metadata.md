@@ -72,7 +72,8 @@ VoType 包含一个自定义键盘扩展和宿主 App。由于 iOS 不允许自�
 
 ## 发布状态
 
-- 2026-08-26 的 [Build IPA #131](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/32876433386) 在 PR #8 提交 `acea1f4` 上通过 73 个单元测试、3 个 UI 冒烟、20 轮会话压力、无签名 Release device build、IPA 和包含主 App/键盘扩展的 `.xcarchive`。
+- 2026-08-26 的 [Build IPA #134](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/32884927580) 在 `main` 提交 `4aee78b` 上通过 73 个单元测试、3 个 UI 冒烟、20 轮会话压力、无签名 Release device build、IPA 和包含主 App/键盘扩展的 `.xcarchive`。
+- [Deploy Pages #6](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/32884927637) 成功后，公开隐私政策与支持 URL 均已实际返回 HTTP 200。
 - Build 125 的签名包通过构建但被 App Store Connect 以 90112 拒收；无效 `picture-in-picture` 后台值已移除并加入生成后 Info.plist 门禁。
 - 当前候选的 Apple 分发签名、真机、TestFlight 上传/processing/内部测试和 App Review 均为 **EXTERNAL / NOT_RUN**；本轮不触发。
 - `upload_metadata` 保持关闭；现有截图不得上传。当前没有提交审核或公开上架。

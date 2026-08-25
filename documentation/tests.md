@@ -19,6 +19,11 @@ for commit `acea1f46a8dd4e1952ae80cb60b5464412139f37` reran all 73
 unit and 3 UI tests, built the unsigned Release device app, and produced an
 unsigned `.xcarchive` containing both the main app and Keyboard Extension.
 
+The authoritative merged-code evidence is [main Build IPA #134](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/32884927580)
+for commit `4aee78b880bc69d63f00272f74e9d7ae0c8989de`: all 73 unit
+and 3 UI tests passed, as did the 20-round pressure case, unsigned Release
+device build, archive bundle checks and artifact upload.
+
 | Use case | Rule and negative case | Evidence | Status |
 | --- | --- | --- | --- |
 | Session IPC | Only matching, fresh sessions can read/write; cancellation and first terminal state reject late callbacks | `DictationConstantsTests.swift` | Existing automated unit |
@@ -30,7 +35,7 @@ unsigned `.xcarchive` containing both the main app and Keyboard Extension.
 | Text processing | Delete is a dedicated result, empty results fail, per-session language/translation settings are honored | `TextProcessorTests.swift` | Existing automated unit |
 | Host disclosures | Standby shows mic-off state, Pinyin reset is discoverable, and Speech copy distinguishes device processing from Apple service fallback | `VoTypeUITests.swift` | Existing simulator UI smoke |
 | App Store Info.plist | Unknown `UIBackgroundModes` values fail before build/upload | `scripts/tests/test_validate_distribution_info.py`, workflow step 6 | Existing automated CI gate |
-| Device package | Main app and extension compile for generic iphoneos; an IPA and `.xcarchive` containing both bundles are produced | Build #131 steps 16-19 | Existing automated build/archive gate |
+| Device package | Main app and extension compile for generic iphoneos; an IPA and `.xcarchive` containing both bundles are produced | Main Build #134 steps 16-19 | Existing automated build/archive gate |
 | Distribution signature | Team, Bundle IDs, App Group, signer SHA and profile UUID match | `build.yml` distribution steps; last successful evidence build 115 | Existing guarded live gate |
 
 The workflow runs on every pull request and `main` push. Repository branch

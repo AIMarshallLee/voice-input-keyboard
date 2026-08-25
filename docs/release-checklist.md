@@ -15,7 +15,7 @@
 - [x] 手动发布只有在 `publish=true` 时才会访问 App Store Connect。
 - [x] 生成后的主 App `Info.plist` 在测试/上传前拒绝 Apple 不支持的 `UIBackgroundModes` 值。
 
-验证证据：2026-08-26 的 [Build IPA #131](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/32876433386) 在 PR #8 提交 `acea1f46a8dd4e1952ae80cb60b5464412139f37` 上通过 73 个单元测试、3 个 UI 冒烟用例、20 轮顺序会话压力、无签名 iphoneos Release 构建与 `.xcarchive`；归档同时包含主 App 和 Keyboard Extension。IPA 与归档保存在 artifact `9574372803`，artifact ZIP SHA-256 为 `6101515c0e8d0b4e4a02b517901c4936bb462eff3b9af3af03fb467a1ddca56c`。合并后的 `main` 仍需重新通过同一门禁。
+验证证据：2026-08-26 的 [Build IPA #134](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/32884927580) 在 `main` 提交 `4aee78b880bc69d63f00272f74e9d7ae0c8989de` 上通过 73 个单元测试、3 个 UI 冒烟用例、20 轮顺序会话压力、无签名 iphoneos Release 构建与 `.xcarchive`；归档同时包含主 App 和 Keyboard Extension。IPA 与归档保存在 artifact `9577650532`，artifact ZIP SHA-256 为 `c5bdcdddf4a6c3bfab6e73d1e49f5e7240691466c5679ac4dd0dc9e9887accad`。
 
 ## 2. Apple Developer 与签名
 
@@ -70,8 +70,8 @@
 - [x] `LICENSE`、`THIRD_PARTY_NOTICES.md`、拼音词库作者与 Apache-2.0 许可文件存在并与实际依赖一致。
 - [x] `CHANGELOG.md` 只写用户可见能力和必要操作，不宣称已通过真机或审核。
 - [x] 公共支持页已写入 `docs/support.html`，Fastlane 中英文支持 URL 已指向该页。
-- [ ] 隐私政策 URL `https://aimarshalllee.github.io/voice-input-keyboard/privacy-policy.html` 返回 200。
-- [ ] 支持 URL `https://aimarshalllee.github.io/voice-input-keyboard/support.html` 返回 200。
+- [x] 隐私政策 URL `https://aimarshalllee.github.io/voice-input-keyboard/privacy-policy.html` 返回 200。
+- [x] 支持 URL `https://aimarshalllee.github.io/voice-input-keyboard/support.html` 返回 200。
 - [ ] App Store Connect 的 Privacy Details 与隐私政策、代码行为一致。
 - [ ] 中文和英文描述只宣称真机端到端验证过的能力。
 - [x] 已从 App 内、Fastlane 文案和公开政策删除“完全离线、语音不离开设备、保证无需切 App、无限时长、自动语言检测、日期自动格式化”等不准确表述。
@@ -79,6 +79,8 @@
 - [ ] 使用当前候选 TestFlight build 在真机重新截图；逐张以 100% 比例检查文字、图标、语言和隐私表述。
 - [ ] 支持 URL、隐私 URL、截图尺寸和所有本地化元数据通过 Fastlane precheck。
 - [x] `upload_metadata` 默认并继续保持关闭；没有明确选择不会上传元数据/截图。
+
+公共页面证据：2026-08-26 的 [Deploy Pages #6](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/32884927637) 在提交 `4aee78b880bc69d63f00272f74e9d7ae0c8989de` 上成功，随后分别请求隐私政策与支持 URL，均真实返回 HTTP 200。
 
 ## 6. TestFlight 与发布
 
