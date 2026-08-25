@@ -524,6 +524,48 @@ final class DictationConstantsTests: XCTestCase {
         XCTAssertTrue(DarwinBridge.isMainAppAlive(threshold: 3.0))
     }
 
+    func testFreshStandbyReadinessAllowsInPlaceStart() {
+        let now = Date().timeIntervalSince1970
+        XCTAssertTrue(DarwinBridge.writeReadiness(.standby, timestamp: now))
+
+        XCTAssertEqual(
+            DarwinBridge.readReadiness(now: now)?.mode,
+            .standby
+        )
+        XCTAssertTrue(DarwinBridge.canStartInPlace(now: now + 1))
+    }
+
+    func testReadinessExpiresInsteadOfLeavingFalseReadyState() {
+        let now = Date().timeIntervalSince1970
+        XCTAssertTrue(DarwinBridge.writeReadiness(.standby, timestamp: now))
+
+        XCTAssertNil(
+            DarwinBridge.readReadiness(
+                now: now + DarwinBridge.readinessMaxAge + 0.1
+            )
+        )
+        XCTAssertFalse(
+            DarwinBridge.canStartInPlace(
+                now: now + DarwinBridge.readinessMaxAge + 0.1
+            )
+        )
+    }
+
+    func testRecordingReadinessDoesNotAcceptAnotherStart() {
+        let now = Date().timeIntervalSince1970
+        XCTAssertTrue(DarwinBridge.writeReadiness(.recording, timestamp: now))
+
+        XCTAssertEqual(DarwinBridge.readReadiness(now: now)?.mode, .recording)
+        XCTAssertFalse(DarwinBridge.canStartInPlace(now: now))
+    }
+
+    func testClearReadinessIsIdempotent() {
+        XCTAssertTrue(DarwinBridge.writeReadiness(.standby))
+        XCTAssertTrue(DarwinBridge.clearReadiness())
+        XCTAssertNil(DarwinBridge.readReadiness())
+        XCTAssertTrue(DarwinBridge.clearReadiness())
+    }
+
     func testDarwinBridgeDictationSettings() {
         let settings = DictationSettings(
             language: "zh-CN",
@@ -552,6 +594,54 @@ final class DictationConstantsTests: XCTestCase {
         XCTAssertEqual(read?.keyboardType, 1)
         XCTAssertEqual(read?.session, "test-settings-session")
         XCTAssertNil(DarwinBridge.peekPendingDictationSettings())
+    }
+
+    func testTwentySequentialSessionRoundTripsLeaveNoStaleState() {
+        for index in 0..<20 {
+            let session = UUID().uuidString
+            let settings = DictationSettings(
+                language: "zh-CN",
+                whisper: false,
+                translateEnabled: false,
+                translateTarget: "en-US",
+                selectedText: nil,
+                keyboardType: 0,
+                session: session
+            )
+            XCTAssertTrue(DarwinBridge.writeDictationSettings(settings))
+            XCTAssertEqual(
+                DarwinBridge.readAndConsumeDictationSettings(
+                    expectedSession: session
+                ),
+                settings
+            )
+            XCTAssertTrue(
+                DarwinBridge.writeLiveState(
+                    phase: .listening,
+                    partialTranscript: "第\(index)轮",
+                    session: session
+                )
+            )
+            XCTAssertTrue(
+                DarwinBridge.writeLiveState(
+                    phase: .processing,
+                    partialTranscript: "第\(index)轮",
+                    session: session
+                )
+            )
+            XCTAssertTrue(
+                DarwinBridge.writeTranscription("结果\(index)", session: session)
+            )
+            XCTAssertEqual(
+                DarwinBridge.readAndConsumeResult(
+                    expectedSession: session
+                )?.transcription,
+                "结果\(index)"
+            )
+            XCTAssertNil(DarwinBridge.readLiveState(expectedSession: session))
+        }
+        XCTAssertNil(DarwinBridge.peekPendingDictationSettings())
+        XCTAssertNil(DarwinBridge.peekResult())
     }
 
     func testExpiredSettingsAreRemoved() {

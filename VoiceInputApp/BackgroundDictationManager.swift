@@ -19,7 +19,6 @@ class BackgroundDictationManager: ObservableObject {
     }
 
     @Published private(set) var state: State = .idle
-    private let pipStandbyKey = "pipStandbyEnabled"
 
     // MARK: - 录音相关
 
@@ -53,10 +52,13 @@ class BackgroundDictationManager: ObservableObject {
         setupAudioInterruptionHandling()
     }
 
-    /// 迁移旧版本的实验性近静音待命设置。该能力不再用于发布构建。
+    /// App 冷启动时先撤销可能遗留的旧快照。PiP 必须由用户在当前前台会话
+    /// 明确开启，真正 active 后才会重新发布 standby readiness。
     func autoRestoreIfNeeded() {
-        SharedDefaults.shared.set(false, forKey: pipStandbyKey)
-        stopHeartbeat()
+        if !PiPStandbyManager.shared.isActive {
+            DarwinBridge.clearReadiness()
+            stopHeartbeat()
+        }
     }
 
     deinit {
@@ -179,6 +181,14 @@ class BackgroundDictationManager: ObservableObject {
     private func handleDictationRequest() {
         // 宿主仍可运行时尝试直接录音；只有音频引擎成功后才确认 started。
 
+        guard PiPStandbyManager.shared.isActive else {
+            // readiness 文件即使因进程被系统冻结而短暂残留，也不能让宿主在
+            // 没有真实后台执行资格时消费会话。键盘会自动降级到冷启动。
+            DarwinBridge.clearReadiness()
+            print("[BGDictation] Ignoring in-place request without active PiP")
+            return
+        }
+
         guard let pending = DarwinBridge.peekPendingDictationSettings() else {
             print("[BGDictation] No fresh settings request")
             return
@@ -249,6 +259,7 @@ class BackgroundDictationManager: ObservableObject {
 
         state = .idle
         stopHeartbeat()
+        PiPStandbyManager.shared.returnToStandby()
         currentSettings = nil
         currentSessionId = ""
         recognizedText = ""
@@ -281,6 +292,7 @@ class BackgroundDictationManager: ObservableObject {
 
         state = .idle
         stopHeartbeat()
+        PiPStandbyManager.shared.returnToStandby()
         currentSettings = nil
         currentSessionId = ""
         recognizedText = ""
@@ -314,6 +326,7 @@ class BackgroundDictationManager: ObservableObject {
         }
         state = .idle
         stopHeartbeat()
+        PiPStandbyManager.shared.returnToStandby()
         currentSettings = nil
         currentSessionId = ""
         recognizedText = ""
@@ -372,6 +385,7 @@ class BackgroundDictationManager: ObservableObject {
         state = .idle
         stopHeartbeat()
         cleanupAudio()
+        PiPStandbyManager.shared.returnToStandby()
 
         currentSettings = nil
         currentSessionId = ""
@@ -457,6 +471,7 @@ class BackgroundDictationManager: ObservableObject {
                         let text = result.bestTranscription.formattedString
                         self.recognizedText = text
                         self.lastTextUpdateTime = CFAbsoluteTimeGetCurrent()
+                        PiPStandbyManager.shared.setRecording(text: text)
                         if self.publishesLivePartials {
                             self.liveStatePublisher.publishPartial(
                                 text,
@@ -538,6 +553,7 @@ class BackgroundDictationManager: ObservableObject {
                 return false
             }
             startHeartbeat()
+            PiPStandbyManager.shared.setRecording()
 
             print("[BGDictation] Recording started, format: \(recordingFormat.sampleRate)Hz, \(recordingFormat.channelCount)ch")
             return true
@@ -569,6 +585,9 @@ class BackgroundDictationManager: ObservableObject {
             phase: .processing,
             partialTranscript: publishesLivePartials ? recognizedText : "",
             session: session
+        )
+        PiPStandbyManager.shared.setProcessing(
+            text: publishesLivePartials ? recognizedText : ""
         )
 
         DarwinBridge.postNotification(DarwinNotificationName.dictationStopped)
@@ -666,6 +685,7 @@ class BackgroundDictationManager: ObservableObject {
         state = .idle
         stopHeartbeat()
         cleanupAudio()
+        PiPStandbyManager.shared.returnToStandby()
 
         currentSettings = nil
         currentSessionId = ""
