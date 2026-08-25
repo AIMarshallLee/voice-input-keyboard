@@ -1,6 +1,6 @@
 # App Store 元数据工作稿
 
-> 状态：待真机与 TestFlight 验收，不得直接提交。权威上传文本位于 `fastlane/metadata/`。
+> 状态：商用候选材料。仍待最终真机、真实截图、Apple 账号字段和人工审核提交；不得直接提交。权威上传文本位于 `fastlane/metadata/`。
 
 ## 基本信息
 
@@ -16,7 +16,7 @@
 - 次要类别：效率（Productivity）
 - 内容分级：4+
 - 价格：免费
-- 支持 URL：https://github.com/AIMarshallLee/voice-input-keyboard
+- 支持 URL：https://aimarshalllee.github.io/voice-input-keyboard/support.html
 - 隐私政策 URL：https://aimarshalllee.github.io/voice-input-keyboard/privacy-policy.html
 
 ## 准确性边界
@@ -29,7 +29,7 @@
 - Foundation Models 润色和翻译仅限模型可用的 iOS 26+ 设备。
 - 当前格式化实现覆盖编号列表和标点，不宣称日期格式化。
 - 不承诺无限会话时长。
-- 用户主动开始听写后可返回原输入框继续录音；发布版不使用近静音音频或合成画中画长期保活，不承诺每次会话都无需打开 VoType。
+- 用户可在前台明确开启显示真实状态的画中画待命；待命不录音，关闭后撤销 readiness。有效待命时可原地开始，但不承诺系统始终保留待命或每次都无需打开 VoType。
 - 键盘包含离线中文拼音/英文 QWERTY 补字层和实时会话反馈，但只有在候选 TestFlight build 真机通过后才能加入正式卖点。
 
 中文和英文正式描述分别维护在：
@@ -47,9 +47,11 @@ VoType 包含一个自定义键盘扩展和宿主 App。由于 iOS 不允许自�
 2. 设置 → 通用 → 键盘 → 键盘 → 添加新键盘 → 声入。
 3. 为声入开启“允许完全访问”，该权限用于 App Group 本地会话交换。
 4. 在测试 App 的普通文本框中切换到声入键盘。
-5. 点击麦克风，确认键盘打开 VoType；如系统拒绝跳转，再手动打开 VoType。
-6. 看到“正在聆听”后返回原输入框，确认键盘显示实时状态；再次点击麦克风停止。
-7. 确认匹配结果自动插入；左滑进入 QWERTY 并验证普通补字。
+5. 在 VoType 明确开启“免切换语音”，确认画中画显示“待命不录音”。
+6. 回到输入框，确认实心麦克风原地进入聆听；再次点击停止并检查结果只插入一次。
+7. 关闭画中画，等待 3.5 秒，确认麦克风变为空心且不显示假待命。
+8. 点击空心麦克风；若系统拒绝跳转，确认 3 秒内提示从主屏幕打开 VoType。
+9. 左滑进入拼音/英文键盘，验证候选、数字、符号和长按删除。
 
 隐私政策：https://aimarshalllee.github.io/voice-input-keyboard/privacy-policy.html
 
@@ -69,7 +71,8 @@ VoType 包含一个自定义键盘扩展和宿主 App。由于 iOS 不允许自�
 
 ## 发布状态
 
-- GitHub Actions 已在 2026-08-20 对 build 33 完成构建和上传动作。
-- 工作流使用过跳过处理等待的上传方式，因此这不证明 TestFlight processing 成功。
-- 当前没有证据表明版本已经提交审核或公开上架。
-- 完整门槛见 [发布验收清单](release-checklist.md)。
+- 2026-08-26 的 [Build IPA #127](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/32870175097) 在 `main` 提交 `e8bfb57` 上通过 73 个单元测试、2 个 UI 冒烟、20 轮会话压力、无签名 Release device build 和 IPA artifact。
+- Build 125 的签名包通过构建但被 App Store Connect 以 90112 拒收；无效 `picture-in-picture` 后台值已移除并加入生成后 Info.plist 门禁。
+- 新签名候选仍需上传、完成 processing、分发内部测试并通过最终真机矩阵。
+- `upload_metadata` 保持关闭；现有截图不得上传。当前没有提交审核或公开上架。
+- 完整门槛见 [发布验收清单](release-checklist.md) 和 [App Store 提交清单](../documentation/app-store-submission.md)。

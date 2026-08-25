@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VoType 声入 - 支持与故障排查</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 760px; margin: 0 auto; padding: 28px 18px 48px; color: #1a1a1a; line-height: 1.7; }
+        h1 { color: #1e7aff; line-height: 1.25; }
+        h2 { margin-top: 30px; line-height: 1.35; }
+        .notice { padding: 14px 16px; border-radius: 10px; background: #eef5ff; }
+        code { background: #f2f2f2; border-radius: 4px; padding: 1px 4px; }
+        dt { font-weight: 700; margin-top: 14px; }
+        dd { margin: 4px 0 0; }
+    </style>
+</head>
+<body>
+    <h1>VoType 声入支持</h1>
+    <p class="notice">语音功能需要启用声入键盘的“允许完全访问”，并授予 VoType 麦克风和语音识别权限。中文拼音、英文、数字、符号、空格、删除和回车不依赖麦克风。</p>
+
+    <h2>首次设置</h2>
+    <ol>
+        <li>打开 VoType。</li>
+        <li>前往“设置 → 通用 → 键盘 → 键盘 → 添加新键盘”，添加声入。</li>
+        <li>点击声入键盘并开启“允许完全访问”，用于本机 App Group 会话交换。</li>
+        <li>返回 VoType，授权麦克风和语音识别。</li>
+        <li>可选：在 VoType 中开启“免切换语音”，确认画中画显示“待命不录音”。</li>
+    </ol>
+
+    <h2>常见问题</h2>
+    <dl>
+        <dt>点击麦克风没有打开 VoType</dt>
+        <dd>iOS 不保证自定义键盘可以拉起宿主 App。等待键盘显示恢复提示，然后从主屏幕手动打开 VoType。待处理请求会在 60 秒后过期。</dd>
+
+        <dt>麦克风是空心的</dt>
+        <dd>当前没有有效的免切换待命。打开 VoType 并开启免切换语音；若设备或系统不支持画中画，请使用手动打开路径。</dd>
+
+        <dt>画中画已关闭但麦克风仍是实心</dt>
+        <dd>最多等待 3.5 秒并重新打开键盘。若仍未恢复，请停止使用该构建并报告设备、iOS 版本和构建号。</dd>
+
+        <dt>没有语音结果或提示权限不足</dt>
+        <dd>在 iOS 设置中检查 VoType 的麦克风、语音识别权限，以及声入键盘的“允许完全访问”。重新前台打开 VoType 后再试。</dd>
+
+        <dt>断网后无法识别</dt>
+        <dd>设备和语言支持设备端 Apple Speech 时可本地识别；否则 Apple Speech 可能需要网络。VoType 不会改用开发者服务器。</dd>
+
+        <dt>候选词排序不合适</dt>
+        <dd>在 VoType 的个人词典区域点击“重置拼音候选学习”。个人词典条目可以逐项删除。</dd>
+
+        <dt>需要删除本地数据</dt>
+        <dd>在 App 内重置拼音学习和使用统计、删除个人词典条目；撤销权限会停止后续访问但不会自动删除偏好。卸载 VoType 可请求 iOS 清理 App 与共享容器数据。</dd>
+    </dl>
+
+    <h2>报告问题</h2>
+    <p>请提供构建号、设备型号、iOS 版本、目标 App、语言、网络/蓝牙状态、麦克风图标状态和可重复步骤。不要提交真实听写内容、证书、API Key 或其他敏感信息。</p>
+    <p><a href="https://github.com/AIMarshallLee/voice-input-keyboard/issues">提交 GitHub Issue</a></p>
+
+    <h2>English support</h2>
+    <p>Enable the VoType keyboard and Allow Full Access for local App Group exchange, then grant Microphone and Speech Recognition permission. If an outline microphone cannot open VoType, open the app manually from the Home Screen. In-place standby is optional, user-initiated, and must show that the microphone is off before a session starts.</p>
+    <p>When reporting an issue, include build, device, iOS version, target app, locale, network/audio route, and reproduction steps. Do not include dictated text or credentials.</p>
+
+    <p><a href="privacy-policy.html">隐私政策 / Privacy Policy</a> · <a href="https://github.com/AIMarshallLee/voice-input-keyboard">Source and license</a></p>
+</body>
+</html>
+

@@ -1,10 +1,8 @@
-Version 1.0 stability candidate:
-• Reliable App Group exchange for dictation settings and results
-• Session validation and expired-result cleanup
-• Correct per-session language, punctuation, and translation settings
-• Fixes for voice deletion, spoken correction, and permission errors
+Version 1.0 candidate:
+• Adds user-initiated in-place voice standby that clearly keeps the microphone off while waiting
+• Adds local Chinese Pinyin candidates, English QWERTY, numbers, and symbols
+• Shows connecting, listening, live text, and processing in the keyboard; tap again to stop
+• Falls back from an unresponsive route and gives a clear manual-open recovery action
+• Improves common Pinyin phrase ranking and learns explicit candidate choices locally
+• Strengthens session isolation across app switches, field changes, cancellation, and late results
 • Requests on-device Apple Speech recognition when supported
-• Adds privacy manifests and accurate privacy disclosures
-• Adds live in-keyboard transcription status and tap-again-to-stop
-• Adds an English QWERTY fallback keyboard usable during voice sessions
-• Improves recovery across app switches, extension recreation, interruptions, and cancellation
