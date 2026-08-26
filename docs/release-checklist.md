@@ -19,7 +19,7 @@
 
 ## 2. Apple Developer 与签名
 
-当前商用候选的 Apple Developer 登录、证书/描述文件操作和分发签名状态：**EXTERNAL / NOT_RUN**。下列已完成项是历史流水线能力/旧构建证据，不代表当前候选已经签名。
+当前商用候选 1.0 (137) 已由受控发布流水线完成分发证书、两份 App Store profile、App Group、嵌套签名与 embedded profile UUID 校验。流水线使用 App Store Connect API Key，无需交互式 Apple Developer 登录，且未把凭据写入日志或仓库。
 
 - [x] 主 App ID `com.daseanle.votype` 和键盘 App ID `com.daseanle.votype.keyboard` 已启用 `group.com.daseanle.votype.container`。
 - [x] CI 已重新生成两份 App Store provisioning profile，并验证均包含该 App Group。
@@ -27,7 +27,7 @@
 - [x] CI 不再依赖仓库中的 App Store profile secrets；证书、密码、API Key 或 profile 内容均不写入仓库或文档。
 - [x] 签名候选包中主 App 与扩展的 entitlement 均包含正确 App Group，且证书 SHA 与 embedded profile UUID 已逐一核对。
 
-验证证据：2026-08-25 的 [Build IPA #115](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/32768276379) 已通过 XCTest、profile、证书、Bundle ID、App Group、嵌入 profile 与嵌套签名校验。
+当前验证证据：2026-08-26 的 [Build IPA #137](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/32926693256) 在提交 `668383d1996687781fdc6e68b5e045c9d5dc3b49` 上重新通过 XCTest、profile、证书、Bundle ID、App Group、嵌入 profile 与嵌套签名校验。
 
 ## 3. 真机功能
 
@@ -84,15 +84,14 @@
 
 ## 6. TestFlight 与发布
 
-当前商用候选的 TestFlight 上传、processing、内部测试和 App Review：**EXTERNAL / NOT_RUN**。本轮不触发上传或审核。
+当前商用候选 1.0 (137) 已完成 TestFlight 上传、processing 和 Internal Testers 分发。App Review 仍为 **EXTERNAL / NOT_RUN**，本轮未上传元数据/截图，也未提交审核。
 
 - [x] 手动运行发布 workflow，签名 IPA 已保存为可追溯的 GitHub Actions artifact。
-- [x] App Store Connect 已完成 build 115 processing，而不只是上传命令成功。
+- [x] App Store Connect 已完成 build 137 processing，而不只是上传命令成功。
 - [x] Build 125 的 profile/证书/签名/IPA 均通过，但 App Store Connect 以 90112 拒绝无效 `picture-in-picture` Info.plist 值；根因已修复并加入 CI 门禁，build 125 不可测试。
-- [ ] 新商用候选完成签名、App Store Connect processing 和 Internal testers 分发。
 - [ ] 安装处理完成的 TestFlight build，执行一次完整回归。
 - [ ] 填写加密出口、隐私问卷、审核说明和键盘测试步骤。
-- [x] Build 1.0 (115) 已分发给 Internal testers；真机稳定且用户明确确认后再考虑提交 App Review。
+- [x] Build 1.0 (137) 已分发给 Internal Testers；真机稳定且用户明确确认后再考虑提交 App Review。
 - [ ] App Review 通过且公开商店页可查询后，才把项目状态改为“已发布”。
 
-历史 TestFlight 证据：[Build IPA #115](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/32768276379) 日志确认 `Successfully finished processing the build 1.0 - 115` 及 `Successfully distributed build to Internal testers`；它早于 PR #6/#7，不是本次真机候选。Build 125 上传失败，必须由新的处理完成构建替代。所有发布运行都必须让 `Upload Metadata and Screenshots` 保持跳过，直到真实截图验收完成。
+当前 TestFlight 证据：[Build IPA #137](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/32926693256) 日志确认 `Successfully finished processing the build 1.0 - 137 for IOS` 及 `Successfully distributed build to Internal testers`。签名 IPA artifact `9592012663` 的 ZIP SHA-256 为 `81f39ce93f2bafb07cfe4668a04547fcb30c7ee6856d10b4fa3a483c3e44bb06`。历史 build 115 早于 PR #6/#7；build 125 上传失败，均不得替代当前候选。`Upload Metadata and Screenshots` 在 build 137 中保持跳过，App Review 未触发。

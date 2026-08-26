@@ -22,7 +22,7 @@
 ## 准确性边界
 
 商店文案只能描述已经在当前签名候选和真机上完成端到端验证的能力；
-当前候选尚未签名或上传 TestFlight，因此以下边界继续生效：
+当前候选 1.0 (137) 已签名、完成 TestFlight processing 并分发内部测试，但尚未完成真机端到端矩阵，因此以下边界继续生效：
 
 - “20 个语言”指 20 个可手动选择的固定识别 locale，不是自动语言检测或任意混输。
 - 设备支持时优先请求 Apple 设备端识别；不支持时 Apple Speech 可能联网处理，不得写“完全离线”或“语音不离开设备”。
@@ -72,9 +72,9 @@ VoType 包含一个自定义键盘扩展和宿主 App。由于 iOS 不允许自�
 
 ## 发布状态
 
-- 2026-08-26 的 [Build IPA #134](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/32884927580) 在 `main` 提交 `4aee78b` 上通过 73 个单元测试、3 个 UI 冒烟、20 轮会话压力、无签名 Release device build、IPA 和包含主 App/键盘扩展的 `.xcarchive`。
+- 2026-08-26 的 [Build IPA #137](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/32926693256) 在 `main` 提交 `668383d` 上通过 73 个单元测试、3 个 UI 冒烟、20 轮会话压力、分发 profile/证书/App Group/嵌套签名门禁，并生成签名 App Store IPA。
 - [Deploy Pages #6](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/32884927637) 成功后，公开隐私政策与支持 URL 均已实际返回 HTTP 200。
 - Build 125 的签名包通过构建但被 App Store Connect 以 90112 拒收；无效 `picture-in-picture` 后台值已移除并加入生成后 Info.plist 门禁。
-- 当前候选的 Apple 分发签名、真机、TestFlight 上传/processing/内部测试和 App Review 均为 **EXTERNAL / NOT_RUN**；本轮不触发。
+- 当前候选已完成 Apple 分发签名、TestFlight 上传/processing 和 Internal Testers 分发；真机矩阵与 App Review 仍为 **EXTERNAL / NOT_RUN**。
 - `upload_metadata` 保持关闭；现有截图不得上传。当前没有提交审核或公开上架。
 - 完整门槛见 [发布验收清单](release-checklist.md) 和 [App Store 提交清单](../documentation/app-store-submission.md)。
