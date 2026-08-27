@@ -65,4 +65,29 @@ final class KeyboardSetupStatusTests: XCTestCase {
             KeyboardSetupStatus(keyboardObserved: true, fullAccessObserved: false)
         )
     }
+
+    @MainActor
+    func testForegroundRefreshReadsSetupWrittenAfterAppLaunch() {
+        let checklist = KeyboardSetupChecklist(defaults: defaults)
+        XCTAssertEqual(
+            checklist.status,
+            KeyboardSetupStatus(keyboardObserved: false, fullAccessObserved: false)
+        )
+
+        KeyboardSetupStatusStore.recordExtensionAppearance(
+            hasFullAccess: true,
+            defaults: defaults
+        )
+        XCTAssertEqual(
+            checklist.status,
+            KeyboardSetupStatus(keyboardObserved: false, fullAccessObserved: false)
+        )
+
+        checklist.refresh()
+
+        XCTAssertEqual(
+            checklist.status,
+            KeyboardSetupStatus(keyboardObserved: true, fullAccessObserved: true)
+        )
+    }
 }

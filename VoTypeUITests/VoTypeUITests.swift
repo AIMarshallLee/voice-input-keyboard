@@ -25,6 +25,24 @@ final class VoTypeUITests: XCTestCase {
         )
     }
 
+    func testCompletedKeyboardSetupRendersTwoCompletedSteps() {
+        let app = XCUIApplication()
+        app.launchArguments += [
+            "-AppleLanguages", "(zh-Hans)",
+            "-AppleLocale", "zh_CN",
+            "-keyboardSetup.keyboardObserved", "YES",
+            "-keyboardSetup.fullAccessObserved", "YES"
+        ]
+        app.launch()
+
+        let keyboardStep = app.descendants(matching: .any)["setup-step-1-status"]
+        let fullAccessStep = app.descendants(matching: .any)["setup-step-2-status"]
+        XCTAssertTrue(keyboardStep.waitForExistence(timeout: 8))
+        XCTAssertTrue(fullAccessStep.exists)
+        XCTAssertEqual(keyboardStep.value as? String, "已完成")
+        XCTAssertEqual(fullAccessStep.value as? String, "已完成")
+    }
+
     func testPinyinLearningResetIsDiscoverable() {
         let app = XCUIApplication()
         app.launchArguments += ["-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN"]
