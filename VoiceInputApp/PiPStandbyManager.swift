@@ -4,6 +4,17 @@ import CoreVideo
 import SwiftUI
 import UIKit
 
+@MainActor
+protocol PiPControlling: AnyObject {
+    var isPictureInPictureActive: Bool { get }
+    var isPictureInPicturePossible: Bool { get }
+    func startPictureInPicture()
+    func stopPictureInPicture()
+    func invalidatePlaybackState()
+}
+
+extension AVPictureInPictureController: PiPControlling {}
+
 /// 用户主动开启的、具有真实产品信息的画中画待命面板。
 ///
 /// 待命时麦克风保持关闭；只有键盘写入一个新会话后才开始录音。PiP 一旦被
@@ -26,7 +37,8 @@ final class PiPStandbyManager: NSObject, ObservableObject {
     @Published private(set) var isStartPossible = false
 
     private let displayLayer = AVSampleBufferDisplayLayer()
-    private var controller: AVPictureInPictureController?
+    private var controller: PiPControlling?
+    private let supportProvider: () -> Bool
     private var possibleObservation: NSKeyValueObservation?
     private weak var hostView: UIView?
     private var frameTimer: Timer?
@@ -35,9 +47,29 @@ final class PiPStandbyManager: NSObject, ObservableObject {
     private var lastText = ""
     private var lastPresentationTime = CMTime.zero
 
+    override init() {
+        supportProvider = {
+            AVPictureInPictureController.isPictureInPictureSupported()
+        }
+        super.init()
+    }
+
+    init(controller: PiPControlling, isSupported: Bool) {
+        self.controller = controller
+        supportProvider = { isSupported }
+        super.init()
+        state = isSupported ? .ready : .unavailable
+        isStartPossible = controller.isPictureInPicturePossible
+    }
+
     var isActive: Bool { controller?.isPictureInPictureActive == true }
     var isSupported: Bool {
-        AVPictureInPictureController.isPictureInPictureSupported()
+        supportProvider()
+    }
+    var canToggleStandby: Bool {
+        isSupported
+            && state != .starting
+            && (isActive || isStartPossible)
     }
 
     func attach(to view: UIView) {
@@ -182,18 +214,24 @@ final class PiPStandbyManager: NSObject, ObservableObject {
         ) { [weak self] _ in
             Task { @MainActor in
                 guard let self, self.state == .starting else { return }
-                let isActive = self.controller?.isPictureInPictureActive == true
-                if isActive {
-                    self.enterStandby()
-                } else if PiPLaunchPolicy.didStartupTimeOut(
-                    elapsed: CFAbsoluteTimeGetCurrent() - startedAt,
-                    isActive: isActive
-                ) {
-                    self.failStartup(
-                        message: "系统未启动画中画，请关闭其他画中画后重试"
-                    )
-                }
+                self.handleStartupDeadline(
+                    elapsed: CFAbsoluteTimeGetCurrent() - startedAt
+                )
             }
+        }
+    }
+
+    func handleStartupDeadline(elapsed: TimeInterval) {
+        guard state == .starting else { return }
+        if isActive {
+            handleDidStart()
+        } else if PiPLaunchPolicy.didStartupTimeOut(
+            elapsed: elapsed,
+            isActive: false
+        ) {
+            failStartup(
+                message: "系统未启动画中画，请关闭其他画中画后重试"
+            )
         }
     }
 
@@ -208,12 +246,26 @@ final class PiPStandbyManager: NSObject, ObservableObject {
         pushFrame()
     }
 
-    private func updateStartAvailability(_ isPossible: Bool) {
+    func updateStartAvailability(_ isPossible: Bool) {
         isStartPossible = isPossible
         if isPossible, case .failed = state {
             state = .ready
             pushFrame()
         }
+    }
+
+    func handleDidStart() {
+        enterStandby()
+    }
+
+    func handleFailedToStart(message: String) {
+        failStartup(message: message)
+    }
+
+    func handleDidStop() {
+        leaveStandby()
+        state = isSupported ? .ready : .unavailable
+        pushFrame()
     }
 
     private func startFrameTimer() {
@@ -477,7 +529,7 @@ extension PiPStandbyManager: AVPictureInPictureControllerDelegate {
     nonisolated func pictureInPictureControllerDidStartPictureInPicture(
         _ pictureInPictureController: AVPictureInPictureController
     ) {
-        Task { @MainActor in self.enterStandby() }
+        Task { @MainActor in self.handleDidStart() }
     }
 
     nonisolated func pictureInPictureController(
@@ -485,20 +537,14 @@ extension PiPStandbyManager: AVPictureInPictureControllerDelegate {
         failedToStartPictureInPictureWithError error: Error
     ) {
         Task { @MainActor in
-            self.leaveStandby()
-            self.state = .failed(message: error.localizedDescription)
-            self.pushFrame()
+            self.handleFailedToStart(message: error.localizedDescription)
         }
     }
 
     nonisolated func pictureInPictureControllerDidStopPictureInPicture(
         _ pictureInPictureController: AVPictureInPictureController
     ) {
-        Task { @MainActor in
-            self.leaveStandby()
-            self.state = self.isSupported ? .ready : .unavailable
-            self.pushFrame()
-        }
+        Task { @MainActor in self.handleDidStop() }
     }
 
     nonisolated func pictureInPictureController(

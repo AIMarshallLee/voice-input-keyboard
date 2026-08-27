@@ -7,11 +7,8 @@ struct ContentView: View {
 
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var pipStandby = PiPStandbyManager.shared
+    @StateObject private var keyboardSetup = KeyboardSetupChecklist()
 
-    @State private var keyboardSetupStatus = KeyboardSetupStatus(
-        keyboardObserved: false,
-        fullAccessObserved: false
-    )
     @State private var speechAuthorized = false
     @State private var micAuthorized = false
     @State private var autoPunctuation = true
@@ -68,7 +65,7 @@ struct ContentView: View {
                             number: 1,
                             title: "添加键盘",
                             description: "设置 → 通用 → 键盘 → 键盘 → 添加新键盘 → 选择「语音输入」",
-                            isDone: keyboardSetupStatus.keyboardObserved,
+                            isDone: keyboardSetup.status.keyboardObserved,
                             action: openKeyboardSettings
                         )
 
@@ -76,7 +73,7 @@ struct ContentView: View {
                             number: 2,
                             title: "允许完全访问",
                             description: "在键盘列表中点击「语音输入」→ 开启「允许完全访问」\n完成后在任意输入框切换到 VoType 一次，状态会自动确认",
-                            isDone: keyboardSetupStatus.fullAccessObserved,
+                            isDone: keyboardSetup.status.fullAccessObserved,
                             action: openKeyboardSettings
                         )
 
@@ -135,9 +132,7 @@ struct ContentView: View {
                         }
                         .buttonStyle(.borderedProminent)
                         .disabled(
-                            !pipStandby.isSupported
-                                || pipStandby.state == .starting
-                                || (!pipStandby.isActive && !pipStandby.isStartPossible)
+                            !pipStandby.canToggleStandby
                         )
                     }
                     .padding()
@@ -596,7 +591,7 @@ struct ContentView: View {
     // MARK: - 状态检查
 
     private func checkStatus() {
-        keyboardSetupStatus = KeyboardSetupStatusStore.read()
+        keyboardSetup.refresh()
 
         let speechStatus = SFSpeechRecognizer.authorizationStatus()
         speechAuthorized = (speechStatus == .authorized)
@@ -684,6 +679,10 @@ struct StepRow: View {
                         .font(.caption.bold())
                 }
             }
+            .accessibilityElement(children: .ignore)
+            .accessibilityIdentifier("setup-step-\(number)-status")
+            .accessibilityLabel(title)
+            .accessibilityValue(isDone ? "已完成" : "未完成")
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(title)
