@@ -88,6 +88,9 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        KeyboardSetupStatusStore.recordExtensionAppearance(
+            hasFullAccess: hasFullAccess
+        )
         hasDictationKey = true
         setupUI()
         setupQuickTypingUI()
@@ -97,6 +100,9 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
+        KeyboardSetupStatusStore.recordExtensionAppearance(
+            hasFullAccess: hasFullAccess
+        )
         keyboardIsVisible = true
         // 同步设置(用户可能在宿主 App 中修改了设置)
         updateTranslateButton()

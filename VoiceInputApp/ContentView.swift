@@ -5,7 +5,9 @@ import AVFoundation
 /// 主 App:引导安装 + 设置 + 词典管理 + 隐私说明
 struct ContentView: View {
 
+    @Environment(\.scenePhase) private var scenePhase
     @StateObject private var pipStandby = PiPStandbyManager.shared
+    @StateObject private var keyboardSetup = KeyboardSetupChecklist()
 
     @State private var speechAuthorized = false
     @State private var micAuthorized = false
@@ -63,15 +65,15 @@ struct ContentView: View {
                             number: 1,
                             title: "添加键盘",
                             description: "设置 → 通用 → 键盘 → 键盘 → 添加新键盘 → 选择「语音输入」",
-                            isDone: false,
+                            isDone: keyboardSetup.status.keyboardObserved,
                             action: openKeyboardSettings
                         )
 
                         StepRow(
                             number: 2,
                             title: "允许完全访问",
-                            description: "在键盘列表中点击「语音输入」→ 开启「允许完全访问」\n键盘需要该权限与 VoType App 交换本次听写设置和结果",
-                            isDone: false,
+                            description: "在键盘列表中点击「语音输入」→ 开启「允许完全访问」\n完成后在任意输入框切换到 VoType 一次，状态会自动确认",
+                            isDone: keyboardSetup.status.fullAccessObserved,
                             action: openKeyboardSettings
                         )
 
@@ -129,7 +131,9 @@ struct ContentView: View {
                             .padding(.vertical, 10)
                         }
                         .buttonStyle(.borderedProminent)
-                        .disabled(!pipStandby.isSupported || pipStandby.state == .starting)
+                        .disabled(
+                            !pipStandby.canToggleStandby
+                        )
                     }
                     .padding()
                     .background(Color(.systemGray6))
@@ -426,6 +430,11 @@ struct ContentView: View {
                 checkStatus()
                 BackgroundDictationManager.shared.autoRestoreIfNeeded()
             }
+            .onChange(of: scenePhase) { phase in
+                if phase == .active {
+                    checkStatus()
+                }
+            }
             .onChange(of: autoPunctuation) { v in saveSetting("autoPunctuation", v) }
             .onChange(of: fillerWordRemoval) { v in saveSetting("fillerWordRemoval", v) }
             .onChange(of: livePreview) { v in saveSetting("livePreview", v) }
@@ -462,7 +471,10 @@ struct ContentView: View {
     private var pipStatusText: String {
         switch pipStandby.state {
         case .unavailable: return "此设备不支持画中画"
-        case .ready: return "未开启 · 键盘将使用冷启动"
+        case .ready:
+            return pipStandby.isStartPossible
+                ? "未开启 · 键盘将使用冷启动"
+                : "系统画中画暂不可用"
         case .starting: return "正在请求系统开启画中画…"
         case .standby: return "已待命 · 麦克风关闭"
         case .recording: return "正在录音"
@@ -579,6 +591,8 @@ struct ContentView: View {
     // MARK: - 状态检查
 
     private func checkStatus() {
+        keyboardSetup.refresh()
+
         let speechStatus = SFSpeechRecognizer.authorizationStatus()
         speechAuthorized = (speechStatus == .authorized)
 
@@ -665,6 +679,10 @@ struct StepRow: View {
                         .font(.caption.bold())
                 }
             }
+            .accessibilityElement(children: .ignore)
+            .accessibilityIdentifier("setup-step-\(number)-status")
+            .accessibilityLabel(title)
+            .accessibilityValue(isDone ? "已完成" : "未完成")
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(title)
