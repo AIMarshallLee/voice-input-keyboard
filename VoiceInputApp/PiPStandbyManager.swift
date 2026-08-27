@@ -23,11 +23,14 @@ final class PiPStandbyManager: NSObject, ObservableObject {
     static let shared = PiPStandbyManager()
 
     @Published private(set) var state: State = .unavailable
+    @Published private(set) var isStartPossible = false
 
     private let displayLayer = AVSampleBufferDisplayLayer()
     private var controller: AVPictureInPictureController?
+    private var possibleObservation: NSKeyValueObservation?
     private weak var hostView: UIView?
     private var frameTimer: Timer?
+    private var startupWatchdog: Timer?
     private var recordingStartedAt: Date?
     private var lastText = ""
     private var lastPresentationTime = CMTime.zero
@@ -59,6 +62,15 @@ final class PiPStandbyManager: NSObject, ObservableObject {
             controller.canStartPictureInPictureAutomaticallyFromInline = false
             controller.requiresLinearPlayback = true
             self.controller = controller
+            possibleObservation = controller.observe(
+                \.isPictureInPicturePossible,
+                options: [.initial, .new]
+            ) { [weak self] controller, _ in
+                let isPossible = controller.isPictureInPicturePossible
+                Task { @MainActor [weak self] in
+                    self?.updateStartAvailability(isPossible)
+                }
+            }
         }
 
         if isSupported, state == .unavailable {
@@ -74,13 +86,27 @@ final class PiPStandbyManager: NSObject, ObservableObject {
 
     /// 必须由前台中的明确按钮点击调用。这里不请求麦克风，也不激活录音音频。
     func startStandby() {
-        guard isSupported, let controller else {
-            state = .failed(message: "此设备不支持画中画")
+        guard let controller else {
+            failStartup(message: "画中画尚未准备好，请稍后重试")
             return
         }
         guard !controller.isPictureInPictureActive else {
             enterStandby()
             return
+        }
+
+        switch PiPLaunchPolicy.initialDecision(
+            isSupported: isSupported,
+            isPossible: controller.isPictureInPicturePossible
+        ) {
+        case .fail(.unsupported):
+            failStartup(message: "此设备不支持画中画")
+            return
+        case .fail(.currentlyUnavailable):
+            failStartup(message: "系统当前无法开启画中画，请关闭其他画中画后重试")
+            return
+        case .start:
+            break
         }
 
         state = .starting
@@ -91,6 +117,7 @@ final class PiPStandbyManager: NSObject, ObservableObject {
         // pushFrame 已同步提交可展示内容；紧接本次用户点击启动，失败会通过
         // delegate 变成明确错误，而不是假装已待命。
         controller.startPictureInPicture()
+        scheduleStartupWatchdog()
     }
 
     func stopStandby() {
@@ -128,6 +155,7 @@ final class PiPStandbyManager: NSObject, ObservableObject {
     }
 
     private func enterStandby() {
+        cancelStartupWatchdog()
         recordingStartedAt = nil
         lastText = ""
         state = .standby
@@ -137,11 +165,55 @@ final class PiPStandbyManager: NSObject, ObservableObject {
     }
 
     private func leaveStandby() {
+        cancelStartupWatchdog()
         frameTimer?.invalidate()
         frameTimer = nil
         recordingStartedAt = nil
         lastText = ""
         DarwinBridge.clearReadiness()
+    }
+
+    private func scheduleStartupWatchdog() {
+        cancelStartupWatchdog()
+        let startedAt = CFAbsoluteTimeGetCurrent()
+        startupWatchdog = Timer.scheduledTimer(
+            withTimeInterval: PiPLaunchPolicy.startupTimeout,
+            repeats: false
+        ) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, self.state == .starting else { return }
+                let isActive = self.controller?.isPictureInPictureActive == true
+                if isActive {
+                    self.enterStandby()
+                } else if PiPLaunchPolicy.didStartupTimeOut(
+                    elapsed: CFAbsoluteTimeGetCurrent() - startedAt,
+                    isActive: isActive
+                ) {
+                    self.failStartup(
+                        message: "系统未启动画中画，请关闭其他画中画后重试"
+                    )
+                }
+            }
+        }
+    }
+
+    private func cancelStartupWatchdog() {
+        startupWatchdog?.invalidate()
+        startupWatchdog = nil
+    }
+
+    private func failStartup(message: String) {
+        leaveStandby()
+        state = .failed(message: message)
+        pushFrame()
+    }
+
+    private func updateStartAvailability(_ isPossible: Bool) {
+        isStartPossible = isPossible
+        if isPossible, case .failed = state {
+            state = .ready
+            pushFrame()
+        }
     }
 
     private func startFrameTimer() {
@@ -211,7 +283,9 @@ final class PiPStandbyManager: NSObject, ObservableObject {
                 tint = .systemOrange
             case .ready:
                 title = "VoType 免切换语音"
-                subtitle = "点 App 内按钮开启 · 麦克风未开启"
+                subtitle = isStartPossible
+                    ? "点 App 内按钮开启 · 麦克风未开启"
+                    : "系统画中画暂不可用"
                 symbol = "mic.slash.circle.fill"
                 tint = .systemBlue
             case .starting:

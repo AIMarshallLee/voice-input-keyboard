@@ -17,13 +17,15 @@ enum PiPLaunchPolicy {
         isSupported: Bool,
         isPossible: Bool
     ) -> PiPLaunchDecision {
-        .start
+        guard isSupported else { return .fail(.unsupported) }
+        guard isPossible else { return .fail(.currentlyUnavailable) }
+        return .start
     }
 
     static func didStartupTimeOut(
         elapsed: TimeInterval,
         isActive: Bool
     ) -> Bool {
-        false
+        !isActive && elapsed >= startupTimeout
     }
 }

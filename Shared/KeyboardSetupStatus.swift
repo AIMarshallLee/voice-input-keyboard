@@ -6,19 +6,23 @@ struct KeyboardSetupStatus: Equatable {
 }
 
 enum KeyboardSetupStatusStore {
+    private static let keyboardObservedKey = "keyboardSetup.keyboardObserved"
+    private static let fullAccessObservedKey = "keyboardSetup.fullAccessObserved"
+
     static func recordExtensionAppearance(
         hasFullAccess: Bool,
         defaults: UserDefaults = SharedDefaults.shared
     ) {
-        // Implemented after the regression tests prove the missing behavior.
+        defaults.set(true, forKey: keyboardObservedKey)
+        defaults.set(hasFullAccess, forKey: fullAccessObservedKey)
     }
 
     static func read(
         defaults: UserDefaults = SharedDefaults.shared
     ) -> KeyboardSetupStatus {
         KeyboardSetupStatus(
-            keyboardObserved: false,
-            fullAccessObserved: false
+            keyboardObserved: defaults.bool(forKey: keyboardObservedKey),
+            fullAccessObserved: defaults.bool(forKey: fullAccessObservedKey)
         )
     }
 }
