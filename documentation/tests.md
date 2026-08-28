@@ -24,11 +24,13 @@ for commit `4aee78b880bc69d63f00272f74e9d7ae0c8989de`: all 73 unit
 and 3 UI tests passed, as did the 20-round pressure case, unsigned Release
 device build, archive bundle checks and artifact upload.
 
-The signed distribution evidence is [Build IPA #137](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/32926693256)
-for the final candidate source commit `668383d1996687781fdc6e68b5e045c9d5dc3b49`:
-73 unit and 3 UI tests passed, both App Store profiles were resolved, both
-bundle signatures/entitlements/App Group/profile UUIDs passed, and Apple
-finished processing 1.0 (137) before distributing it to Internal Testers.
+The current signed distribution evidence is [Build IPA #146](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/33088265846)
+for source commit `01b3db482fb25821e8f4281ee66a3a8991e9051e`: 88 unit
+and 4 UI tests passed, including setup-state and bounded PiP-startup regression
+coverage. Both App Store profiles and both bundle signatures, entitlements,
+App Group and profile UUIDs passed; Apple finished processing 1.0 (146) before
+distributing it to Internal Testers. Build 137 was invalidated by real-device
+feedback and is not the current candidate.
 
 | Use case | Rule and negative case | Evidence | Status |
 | --- | --- | --- | --- |
@@ -42,7 +44,7 @@ finished processing 1.0 (137) before distributing it to Internal Testers.
 | Host disclosures | Standby shows mic-off state, Pinyin reset is discoverable, and Speech copy distinguishes device processing from Apple service fallback | `VoTypeUITests.swift` | Existing simulator UI smoke |
 | App Store Info.plist | Unknown `UIBackgroundModes` values fail before build/upload | `scripts/tests/test_validate_distribution_info.py`, workflow step 6 | Existing automated CI gate |
 | Device package | Main app and extension compile for generic iphoneos; an IPA and `.xcarchive` containing both bundles are produced | Main Build #134 steps 16-19 | Existing automated build/archive gate |
-| Distribution signature | Team, Bundle IDs, App Group, signer SHA and profile UUID match | Build #137 steps 20-23 | Current guarded live gate passed |
+| Distribution signature | Team, Bundle IDs, App Group, signer SHA and profile UUID match | Build #146 steps 20-23 | Current guarded live gate passed |
 
 The workflow runs on every pull request and `main` push. Repository branch
 protection settings were not audited here, so “CI-required” means the project
@@ -62,7 +64,7 @@ blocked every possible direct push.
 | Audio interruption | Phone/Siri/Bluetooth/headset/media reset leaves no stuck mic and next session works | Manual review | Proposed final-device gate |
 | Resource budget | Keyboard peak memory <45 MB; standby/recording energy and mic indicators match disclosure | Instruments/manual review | Proposed final-device gate |
 | Store materials | Every localized string and screenshot matches the installed candidate at 100% scale | Manual review | Proposed submission gate |
-| App Store processing | Uploaded build completes processing and is assigned to internal testers | Build #137 step 25 | Current guarded live gate passed |
+| App Store processing | Uploaded build completes processing and is assigned to internal testers | Build #146 step 25 | Current guarded live gate passed |
 
 ## Gaps
 
