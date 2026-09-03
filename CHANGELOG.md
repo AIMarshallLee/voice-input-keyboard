@@ -29,6 +29,11 @@ commercial candidate until final device testing and App Review are complete.
 
 ### Fixes
 
+- Installation setup now reflects keyboard/full-access observations reported by
+  the keyboard extension instead of leaving the first two steps incomplete.
+- In-place voice standby now checks current PiP availability and exits with a
+  retryable error after four seconds instead of waiting indefinitely when iOS
+  does not start Picture in Picture.
 - Fixed an App Store Connect rejection caused by the invalid
   `picture-in-picture` Info.plist background-mode value; the supported `audio`
   mode is used for Audio/AirPlay/PiP capability.
