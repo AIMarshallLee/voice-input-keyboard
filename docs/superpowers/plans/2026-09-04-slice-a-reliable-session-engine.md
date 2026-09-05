@@ -123,7 +123,7 @@ Expected failure means an assertion failure, a missing symbol named by the step,
 - Consumes: existing `DictationSettings`, `DictationIPCResult`, App Group atomic write/receipt behavior, and `TextProcessingResult`.
 - Produces: `SessionToken`, `DictationSessionRequest`, `DictationSessionEventEnvelope`, `DictationFailure`, `EditPlan`, `DictationTerminal`, `DictationOutputCommitStatus`, `DarwinBridge.commit(_:token:timestamp:)`, and safe legacy decoding used by every later task.
 
-- [ ] **Step 1: Write failing token and wire-format tests**
+- [x] **Step 1: Write failing token and wire-format tests**
 
 Create `VoTypeTests/DictationSessionModelsTests.swift` with these cases:
 
@@ -206,13 +206,13 @@ final class DictationSessionModelsTests: XCTestCase {
 }
 ```
 
-- [ ] **Step 2: Run the focused tests and confirm the contract is absent**
+- [x] **Step 2: Run the focused tests and confirm the contract is absent**
 
 Run the single-test command from “Execution Conventions” for all five methods in `DictationSessionModelsTests`.
 
 Expected: FAIL because `SessionToken`, `EditPlan`, and the new `DictationIPCResult` initializer do not exist.
 
-- [ ] **Step 3: Add the canonical models**
+- [x] **Step 3: Add the canonical models**
 
 Create `Shared/DictationSessionModels.swift` with these exact public-to-module shapes:
 
@@ -397,7 +397,7 @@ static func isValidSession(_ session: String) -> Bool {
 }
 ```
 
-- [ ] **Step 4: Implement new encoding and safe legacy decoding**
+- [x] **Step 4: Implement new encoding and safe legacy decoding**
 
 Add `expectedContextFingerprint: String? = nil` to `DictationSettings` and its initializer. Replace the stored `deleteSelected` field in `DictationIPCResult` with `editPlan: EditPlan?`, a safe computed compatibility view, and custom `Codable`:
 
@@ -509,7 +509,7 @@ It validates `SessionToken(rawValue:)`, reads only that UUID's settings file und
 
 Map `.completed(plan)` to a completed `DictationIPCResult`, `.failed(failure)` to `failure.userMessage`, and `.cancelled` to the existing cancellation tombstone without creating a transcription payload. Rename private `TerminalWriteOutcome` to the shared `DictationOutputCommitStatus` type. Keep first-writer-wins, terminal receipt, cancellation, and atomic write behavior unchanged.
 
-- [ ] **Step 5: Add typed commit regression tests**
+- [x] **Step 5: Add typed commit regression tests**
 
 Append focused cases to `VoTypeTests/DictationConstantsTests.swift`:
 
@@ -594,7 +594,7 @@ func testCancelNotificationNameRequiresValidSessionToken() {
 }
 ```
 
-- [ ] **Step 6: Run IPC and model suites**
+- [x] **Step 6: Run IPC and model suites**
 
 Run:
 
@@ -612,7 +612,7 @@ xcodebuild test \
 
 Expected: PASS, including all pre-existing cancellation, receipt, stale-write, and 20-round IPC tests.
 
-- [ ] **Step 7: Commit the contract slice**
+- [x] **Step 7: Commit the contract slice**
 
 ```bash
 git add Shared/DictationSessionModels.swift Shared/DictationConstants.swift Shared/DarwinBridge.swift VoTypeTests/DictationSessionModelsTests.swift VoTypeTests/DictationConstantsTests.swift

@@ -8,8 +8,8 @@
 - 职责机制：[窗口 Agent 规划书](../docs/superpowers/specs/2026-09-05-votype-continuous-delivery-agent-charter.md)，用户已回复“同意”。
 - 规格：[商用 V1](../docs/superpowers/specs/2026-09-04-voice-first-commercial-v1-design.md)。
 - 实施计划：[Slice A 九任务](../docs/superpowers/plans/2026-09-04-slice-a-reliable-session-engine.md)。
-- 当前断点：Task 1 已取得真实 RED，契约/IPC 最小实现已就绪。正在准备 macOS GREEN，实施验收进度仍为 **0/9**。
-- 下一动作：推送 Task 1 实现到同一 PR 运行 macOS 回归，并进行独立任务审查。
+- 当前断点：Task 1 已取得真实 RED、GREEN 和独立审查 PASS，实施验收进度 **1/9**。Task 2 正在编写同步音频屏障的失败测试。
+- 下一动作：提交 Task 2 测试并取得 macOS RED，再实现依赖端口与同步关闭屏障。
 
 ## 源码与工作区身份
 
@@ -20,7 +20,7 @@
 - 原有规格、实施计划、职责稿与台账已在授权后提交为 `a5045f2`；没有丢弃原差异。
 - 草稿 [PR #13](https://github.com/AIMarshallLee/voice-input-keyboard/pull/13) 已创建，未合并。
 - `project.yml` 是生成工程的唯一来源；现有测试 target 包含整个 `VoTypeTests` 目录。
-- 实施前 Task 1 预检确认 SessionToken/EditPlan/typed commit 缺失；现已添加最小实现，等待测试与审查。新测试通过 `xcodegen generate` 编入。
+- Task 1 的 SessionToken/EditPlan/typed commit 和 IPC 兼容已验收；新测试通过 `xcodegen generate` 编入。Task 2 基线为 `f5a1fb7`。
 
 ## 授权状态
 
@@ -39,8 +39,8 @@
 
 | 任务 | 交付内容 | 实施/验收状态 |
 |---|---|---|
-| 1 | Canonical Session 与向后兼容 IPC | 进行中：RED 已确认，实施待 GREEN/审查 |
-| 2 | 依赖端口与同步音频屏障 | 待做，依赖 Task 1 |
+| 1 | Canonical Session 与向后兼容 IPC | 完成：`f5a1fb7`，#151 GREEN，独立审查 PASS |
+| 2 | 依赖端口与同步音频屏障 | 进行中：失败测试编写，未实施生产代码 |
 | 3 | 引擎主路径与命令语义 | 待做 |
 | 4 | 截止时间、迟到回调、竞态与重用 | 待做 |
 | 5 | Apple、文本、Darwin 生产适配 | 待做 |
@@ -58,7 +58,10 @@
 - `.github/workflows/build.yml`：现有测试运行在 `macos-26`；执行 XcodeGen、VoTypeTests 和 VoTypeUITests。
 - 该流水线由 PR、main push 或手动 dispatch 触发；普通开发分支 push 本身不会触发。优先使用 PR 路径，它跳过 `Check Development Signing Secrets`；不能将 `publish=false` 手动运行描述为必定不接触现有开发签名配置。
 - [基线 CI #149](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/33952292055) **SUCCESS**，源码 `a5045f2`；88 单元、4 个独立 UI 测试、unsigned Release/Archive/打包通过，Apple 签名和分发步骤跳过。工作流报告 Node20 action 迁移提示，未借此升级无关依赖。
-- [Task 1 RED #150](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/33952943674)，源码 `b15505687c3054b7a008c264e3a0534fbc2af0bf`：Unit/UI 编译按预期失败，缺少 SessionToken/EditPlan/commit/peek/cancel notification/fingerprint。测试已先于生产实现提交；新实现 GREEN 尚未运行。
+- [Task 1 RED #150](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/33952943674)，源码 `b15505687c3054b7a008c264e3a0534fbc2af0bf`：Unit/UI 编译按预期失败，缺少 SessionToken/EditPlan/commit/peek/cancel notification/fingerprint。测试先于生产实现提交。
+- [Task 1 GREEN #151](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/33954007796) **SUCCESS**（9m51s），源码 `f5a1fb71b75f58ff22d7314092aa9dec1c7581e0`：实际日志确认 Constants 41、Models 5、总单元 100、4 个独立 UI 均零失败，unsigned Release/Archive 成功。artifact `9965882959`（VoType-IPA，4,761,899 bytes）是无签名 CI 产物。独立 reviewer_sol 完成源码审查与证据收口，Task 1 PASS；本地 Python plist 检查 2/2 PASS。
+- 已知警告未掩盖：计划要求保留的 deprecated Bool wrappers、旧前台/后台 main-actor 调用警告由 Task 6/7 迁移处理；已有 UIKit/AppIntents/模拟器目标和 Node/Homebrew runner 提示在最终门禁复核。#151 checkout 曾连接失败后自动恢复，未修改 runner trust 或项目依赖。没有将有警告的输出描述为零警告。
+- 本机 Git 直连失败后，Task 1 通过精确 blob/tree/commit 哈希校验的 GitHub Git Data API 以 `force=false` 同步，未改变历史或凭据；随后单命令使用现有系统代理的普通 Git 读取已恢复。后续优先普通 Git，不修改全局配置。
 - 真机语音/跨 App/权限/PiP：**EXTERNAL / NOT_RUN（本轮）**。历史用户测试曾暴露缺陷，不抹去历史结果。
 
 ## 发布基线
@@ -71,6 +74,6 @@
 
 | 缺口 | 责任方/解除条件 | 解锁后首动作 |
 |---|---|---|
-| 本机无 Apple 测试运行时 | Git/PR CI 已明确获准，使用现有 macOS 流水线；不再是授权阻塞 | 建立基线后提交 Task 1 失败测试并实施 |
+| 本机无 Apple 测试运行时 | 使用获准的现有 macOS PR 流水线；已验证可用，不是当前阻塞 | 按任务继续 RED → 最小实现 → GREEN → 审查 |
 
 此前的 Git/CI 授权阻塞已解除；继续实际实施，不通过改写验收标准或假造 Windows 测试结果绕开门禁。
