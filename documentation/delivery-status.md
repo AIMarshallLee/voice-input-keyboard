@@ -8,8 +8,8 @@
 - 职责机制：[窗口 Agent 规划书](../docs/superpowers/specs/2026-09-05-votype-continuous-delivery-agent-charter.md)，用户已回复“同意”。
 - 规格：[商用 V1](../docs/superpowers/specs/2026-09-04-voice-first-commercial-v1-design.md)。
 - 实施计划：[Slice A 九任务](../docs/superpowers/plans/2026-09-04-slice-a-reliable-session-engine.md)。
-- 当前断点：Task 1 已取得真实 RED、GREEN 和独立审查 PASS，实施验收进度 **1/9**。Task 2 正在编写同步音频屏障的失败测试。
-- 下一动作：提交 Task 2 测试并取得 macOS RED，再实现依赖端口与同步关闭屏障。
+- 当前断点：Task 1、2 已取得真实 RED、GREEN 和独立审查 PASS，实施验收进度 **2/9**。Task 3 正在编写统一引擎的生命周期及交错请求失败测试。
+- 下一动作：提交 Task 3 测试并取得 macOS RED，再实现单一 actor 会话引擎；按已复核的同步所有权/冻结终态方案实施。
 
 ## 源码与工作区身份
 
@@ -20,7 +20,7 @@
 - 原有规格、实施计划、职责稿与台账已在授权后提交为 `a5045f2`；没有丢弃原差异。
 - 草稿 [PR #13](https://github.com/AIMarshallLee/voice-input-keyboard/pull/13) 已创建，未合并。
 - `project.yml` 是生成工程的唯一来源；现有测试 target 包含整个 `VoTypeTests` 目录。
-- Task 1 的 SessionToken/EditPlan/typed commit 和 IPC 兼容已验收；新测试通过 `xcodegen generate` 编入。Task 2 基线为 `f5a1fb7`。
+- Task 1 的模型/IPC 和 Task 2 的依赖端口/同步音频屏障已验收；新测试通过 `xcodegen generate` 编入。Task 3 基线为 `c6ed787`。
 
 ## 授权状态
 
@@ -40,8 +40,8 @@
 | 任务 | 交付内容 | 实施/验收状态 |
 |---|---|---|
 | 1 | Canonical Session 与向后兼容 IPC | 完成：`f5a1fb7`，#151 GREEN，独立审查 PASS |
-| 2 | 依赖端口与同步音频屏障 | 进行中：失败测试编写，未实施生产代码 |
-| 3 | 引擎主路径与命令语义 | 待做 |
+| 2 | 依赖端口与同步音频屏障 | 完成：`c6ed787`，#153 GREEN，独立审查 PASS |
+| 3 | 引擎主路径与命令语义 | 进行中：测试先行，尚未实现生产 actor |
 | 4 | 截止时间、迟到回调、竞态与重用 | 待做 |
 | 5 | Apple、文本、Darwin 生产适配 | 待做 |
 | 6 | PiP/原地输入迁移 | 待做 |
@@ -62,6 +62,9 @@
 - [Task 1 GREEN #151](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/33954007796) **SUCCESS**（9m51s），源码 `f5a1fb71b75f58ff22d7314092aa9dec1c7581e0`：实际日志确认 Constants 41、Models 5、总单元 100、4 个独立 UI 均零失败，unsigned Release/Archive 成功。artifact `9965882959`（VoType-IPA，4,761,899 bytes）是无签名 CI 产物。独立 reviewer_sol 完成源码审查与证据收口，Task 1 PASS；本地 Python plist 检查 2/2 PASS。
 - 已知警告未掩盖：计划要求保留的 deprecated Bool wrappers、旧前台/后台 main-actor 调用警告由 Task 6/7 迁移处理；已有 UIKit/AppIntents/模拟器目标和 Node/Homebrew runner 提示在最终门禁复核。#151 checkout 曾连接失败后自动恢复，未修改 runner trust 或项目依赖。没有将有警告的输出描述为零警告。
 - 本机 Git 直连失败后，Task 1 通过精确 blob/tree/commit 哈希校验的 GitHub Git Data API 以 `force=false` 同步，未改变历史或凭据；随后单命令使用现有系统代理的普通 Git 读取已恢复。后续优先普通 Git，不修改全局配置。
+- [Task 2 RED #152](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/33954833600)，源码 `815350d88535987ec924d72fd88a089a16ad127c`：环境准备成功后，08:18:39Z 测试编译因缺少 `DictationSpeechSession` 按预期失败。
+- [Task 2 GREEN #153](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/33955132256) **SUCCESS**（13m08s），源码 `c6ed78713fb0d271a659544496c5c6276814903d`：同步屏障 2/2（0.066s）、全单元 102/102、4 个独立 UI、unsigned Release/Archive 通过；实际日志没有点名三个 Task 2 文件的 warning/error。独立 reviewer_sol 源码与证据收口 PASS；真实麦克风/PiP 不在此结论内。
+- Task 3 实施前架构复核纠正了计划竞态：同步保留旧会话结束信息并释放旧资源后才接受新会话，异步保存仅操作冻结流；授权恢复后再次核对 token/generation/phase。加入三个请求交错、授权发布挂起和资源关闭顺序测试，不将已知不安全的中间实现留给后续任务修复。Task 4 的 partial timer 按固定窗口合并，不按每次 partial 重置为 debounce。
 - 真机语音/跨 App/权限/PiP：**EXTERNAL / NOT_RUN（本轮）**。历史用户测试曾暴露缺陷，不抹去历史结果。
 
 ## 发布基线

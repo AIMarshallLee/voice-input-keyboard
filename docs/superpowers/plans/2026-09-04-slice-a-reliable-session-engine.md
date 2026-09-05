@@ -632,7 +632,7 @@ git commit -m "feat: add typed dictation session contract"
 - Consumes: request/event/terminal types from Task 1 and `AVAudioPCMBuffer` from AVFoundation.
 - Produces: all injectable engine ports, `DictationSessionDeadlines`, `DictationAudioSystemEvent`, `DictationRecognitionUpdate`, `DictationSessionRunning`, and `DictationAudioBufferGate` used by Tasks 3-7.
 
-- [ ] **Step 1: Write the failing audio-path tests**
+- [x] **Step 1: Write the failing audio-path tests**
 
 Create `VoTypeTests/DictationAudioBufferGateTests.swift`. Use a lock-protected fake sink and two semaphores so the test proves that `close` waits behind an in-flight append and rejects every later buffer:
 
@@ -718,7 +718,7 @@ private final class BlockingSpeechSession: @unchecked Sendable, DictationSpeechS
 }
 ```
 
-- [ ] **Step 2: Run the gate tests and confirm the types are missing**
+- [x] **Step 2: Run the gate tests and confirm the types are missing**
 
 Run:
 
@@ -728,7 +728,7 @@ xcodebuild test -project VoType.xcodeproj -scheme VoTypeTests -destination "plat
 
 Expected: FAIL because `DictationAudioBufferGate`, `DictationSpeechSession`, and `DictationAudioBufferCloseMode` do not exist.
 
-- [ ] **Step 3: Define the narrow dependency ports**
+- [x] **Step 3: Define the narrow dependency ports**
 
 Create `VoiceInputApp/DictationSessionDependencies.swift` with these signatures:
 
@@ -840,7 +840,7 @@ protocol DictationSessionRunning: Sendable {
 }
 ```
 
-- [ ] **Step 4: Implement the direct audio gate**
+- [x] **Step 4: Implement the direct audio gate**
 
 Create `VoiceInputApp/DictationAudioBufferGate.swift`:
 
@@ -884,7 +884,7 @@ final class DictationAudioBufferGate: @unchecked Sendable {
 
 The lock intentionally surrounds the synchronous `append` call: `close` cannot release or cancel the Speech request until the current append returns. No callback in this file may create a Swift `Task`.
 
-- [ ] **Step 5: Run the gate suite and a clean app build**
+- [x] **Step 5: Run the gate suite and a clean app build**
 
 Run:
 
@@ -895,7 +895,7 @@ xcodebuild build -project VoType.xcodeproj -scheme VoiceInputApp -destination "p
 
 Expected: both commands PASS; Thread Sanitizer is not a substitute for the semaphore assertion.
 
-- [ ] **Step 6: Commit the dependency seam**
+- [x] **Step 6: Commit the dependency seam**
 
 ```bash
 git add VoiceInputApp/DictationSessionDependencies.swift VoiceInputApp/DictationAudioBufferGate.swift VoTypeTests/DictationAudioBufferGateTests.swift
@@ -1339,6 +1339,14 @@ private extension DictationSessionEvent {
 }
 ```
 
+Before RED, extend the same test-only harness with explicitly gated output calls and add these ownership regressions:
+
+1. `testThreeStartsKeepLatestOwnerWhileOlderCommitsAreSuspended`: admit A, B, then C while A/B terminal commits are gated; release the older commits in reverse order. C alone may complete as current; A/B each finish with one cancelled terminal; each token reaches output commit at most once.
+2. `testSupersessionDuringAuthorizingPublicationSkipsOldPermissionWork`: gate A's authorizing publication, admit B, then release A. A must not start a permission request or create Speech/audio resources after resumption. B stays current and A's stream closes once.
+3. `testSupersessionClosesOldResourcesBeforeNewCaptureStarts`: make A listening, admit B, and assert the operation journal closes A's capture/gate/Speech/audio session before B starts capture, with A's Speech `cancelCount == 1`; deliver A's late callbacks and assert no B stream/output/state change. Task 4 adds deadline callbacks to the same guarantee.
+
+All readiness waits and stream collection must have explicit finite deadlines and cleanup; an incorrect actor must fail the test rather than hang the CI job. Do not assume a spawned `Task` has started, or use a fixed number of `Task.yield` calls as synchronization. Keep gated-output controls in test doubles only. These tests enforce the existing single-owner/exactly-one-terminal specification; they do not change the public runner interface.
+
 - [ ] **Step 3: Run the engine suite and observe the missing actor**
 
 Run:
@@ -1417,14 +1425,19 @@ actor DictationSessionEngine: DictationSessionRunning {
 }
 ```
 
-`start` increments `nextGeneration`, finishes a superseded active session as cancelled, creates one `AsyncStream` continuation, emits `.authorizing` at sequence 1, and launches one permission task. Every callback captures both the immutable token and generation:
+`start` is linearized at actor admission: “latest” means the latest call admitted by the actor, not the wall-clock order of concurrent callers. Before its first suspension, synchronously reserve/close any superseded active session, install the incoming generation and stream, and yield `.authorizing` at sequence 1. Complete older streams only through their frozen reservations. Use the reservation implementation in Step 5 now; do not defer this ownership protection to Task 4. Every callback captures both the immutable token and generation:
 
 ```swift
 func start(
     _ request: DictationSessionRequest
 ) async -> AsyncStream<DictationSessionEventEnvelope> {
-    if let previous = active {
-        await finish(.cancelled, token: previous.request.token, generation: previous.generation)
+    if let previous = active,
+       let reservation = reserveFinish(
+           .cancelled,
+           token: previous.request.token,
+           generation: previous.generation
+       ) {
+        Task { await self.completeFinish(reservation) }
     }
 
     nextGeneration &+= 1
@@ -1453,6 +1466,9 @@ func start(
     await emit(.authorizing, token: request.token, generation: generation)
 
     Task { [permissions] in
+        guard let current = self.matching(token: request.token, generation: generation),
+              current.phase == .authorizing,
+              !current.finishStarted else { return }
         let result = await permissions.authorize(policy: request.authorizationPolicy)
         await self.authorizationResolved(result, token: request.token, generation: generation)
     }
@@ -1497,7 +1513,9 @@ private func authorizationResolved(
     current.phase = .preparing
     active = current
     await emit(.preparing, token: token, generation: generation)
-    guard let prepared = matching(token: token, generation: generation) else { return }
+    guard let prepared = matching(token: token, generation: generation),
+          prepared.phase == .preparing,
+          !prepared.finishStarted else { return }
 
     do {
         try audioSession.activate(whisper: prepared.request.whisper)
@@ -1660,45 +1678,75 @@ private func processingFinished(
 }
 ```
 
-`finish` must set `finishStarted` before its first suspension:
+`finish` must reserve and detach the active record before its first suspension. Its async completion uses only the frozen reservation and never reads or writes a later `active` record. This is required in Task 3, not an unsafe intermediate state to replace in Task 4:
 
 ```swift
+private struct FinishReservation {
+    let token: SessionToken
+    let terminal: DictationTerminal
+    let sequence: UInt64
+    let continuation: AsyncStream<DictationSessionEventEnvelope>.Continuation
+}
+
+private func reserveFinish(
+    _ terminal: DictationTerminal,
+    token: SessionToken,
+    generation: UInt64
+) -> FinishReservation? {
+    guard var current = matching(token: token, generation: generation),
+          !current.finishStarted else { return nil }
+    current.finishStarted = true
+    cancelDeadlines(in: &current)
+    current.audioCapture?.stop()
+    if let gate = current.bufferGate {
+        gate.close(mode: terminal.bufferCloseMode)
+    } else {
+        current.speech?.cancel()
+    }
+    audioSession.deactivate()
+    active = nil
+    return FinishReservation(
+        token: token,
+        terminal: terminal,
+        sequence: current.nextSequence,
+        continuation: current.continuation
+    )
+}
+
 private func finish(
     _ terminal: DictationTerminal,
     token: SessionToken,
     generation: UInt64
 ) async {
-    guard var current = matching(token: token, generation: generation),
-          !current.finishStarted else { return }
-    current.finishStarted = true
-    cancelDeadlines(in: &current)
-    current.audioCapture?.stop()
-    current.bufferGate?.close(mode: terminal.bufferCloseMode)
-    current.speech?.cancel()
-    current.speech = nil
-    current.audioCapture = nil
-    current.bufferGate = nil
-    active = current
-    audioSession.deactivate()
+    guard let reservation = reserveFinish(
+        terminal,
+        token: token,
+        generation: generation
+    ) else { return }
+    await completeFinish(reservation)
+}
 
-    let commitStatus = await output.commit(terminal, token: token)
-    guard let latest = matching(token: token, generation: generation),
-          latest.finishStarted else { return }
-
+private func completeFinish(_ reservation: FinishReservation) async {
+    let commitStatus = await output.commit(reservation.terminal, token: reservation.token)
     let delivered: DictationSessionEvent
     switch commitStatus {
     case .written:
-        delivered = terminal.event
+        delivered = reservation.terminal.event
     case .cancelled:
         delivered = .cancelled
     case .alreadyTerminal:
-        delivered = terminal.event
+        delivered = reservation.terminal.event
     case .ioFailure:
         delivered = .failed(.outputPersistence)
     }
-    await emit(delivered, token: token, generation: generation)
-    active?.continuation.finish()
-    active = nil
+    reservation.continuation.yield(
+        DictationSessionEventEnvelope(
+            token: reservation.token,
+            sequence: reservation.sequence,
+            event: delivered
+        )
+    )
+    reservation.continuation.finish()
 }
 
 private func matching(
@@ -1983,7 +2031,6 @@ private func receivePartial(
     current.transcript = transcript
     current.pendingPartial = transcript
     current.silenceDeadline?.cancel()
-    current.partialDeadline?.cancel()
     current.silenceDeadline = schedule(
         deadlines.silence,
         token: token,
@@ -1991,12 +2038,14 @@ private func receivePartial(
     ) { engine in
         await engine.silenceExpired(token: token, generation: generation)
     }
-    current.partialDeadline = schedule(
-        deadlines.partialPublish,
-        token: token,
-        generation: generation
-    ) { engine in
-        await engine.publishPendingPartial(token: token, generation: generation)
+    if current.partialDeadline == nil {
+        current.partialDeadline = schedule(
+            deadlines.partialPublish,
+            token: token,
+            generation: generation
+        ) { engine in
+            await engine.publishPendingPartial(token: token, generation: generation)
+        }
     }
     active = current
 }
@@ -2043,11 +2092,11 @@ private func processingExpired(token: SessionToken, generation: UInt64) async {
 }
 ```
 
-Schedule `startDeadline` immediately after installing the active record; cancel it only after capture reaches listening. In `beginProcessing`, call `publishPendingPartial` before changing phase, then schedule `finalDeadline`. In `startTextProcessing`, cancel `finalDeadline` and schedule `processingDeadline`. `processingFinished` cancels `processingDeadline` before calling `finish`. Every assignment is written back to `active` before an awaited call.
+Schedule `startDeadline` immediately after installing the active record; cancel it only after capture reaches listening. In `beginProcessing`, call `publishPendingPartial` before changing phase, then re-fetch and recheck token/generation/listening phase before scheduling `finalDeadline`; never restore a pre-await record. In `startTextProcessing`, cancel `finalDeadline` and schedule `processingDeadline`. `processingFinished` cancels `processingDeadline` before calling `finish`. Every assignment is written back to `active` before an awaited call, and ownership is revalidated after every suspension. The partial publication timer is one pending window, not a debounce timer reset by every partial.
 
 - [ ] **Step 5: Make terminal arbitration re-entrancy safe**
 
-Split `finish` into a synchronous actor reservation and one async commit. The reservation sets `finishStarted`, detaches resources/deadlines from active state, and freezes the terminal envelope before any `await`. All later finish attempts return before calling the output port. After the commit awaits, recheck token/generation and emit exactly one terminal. Output `.ioFailure` yields only in-memory `.failed(.outputPersistence)` and creates no fabricated success result. Add this actor method to `RecordingSessionOutput` so the test changes commit behavior without unsafe cross-actor mutation:
+Retain Task 3's synchronous reservation plus async frozen completion and harden it with concurrent callback tests. The reservation sets `finishStarted`, detaches resources/deadlines, and freezes the terminal envelope before any `await`. All later finish attempts return before calling the output port. After awaiting commit, complete only the captured stream without reading or writing `active`. Output `.ioFailure` yields only in-memory `.failed(.outputPersistence)` and creates no fabricated success result. Add this actor method to `RecordingSessionOutput` so the test changes commit behavior without unsafe cross-actor mutation:
 
 ```swift
 func setCommitStatus(_ status: DictationOutputCommitStatus) {
@@ -2055,7 +2104,7 @@ func setCommitStatus(_ status: DictationOutputCommitStatus) {
 }
 ```
 
-Replace Task 3's `finish` with this reservation shape so an output suspension cannot strand an old stream or overwrite a newer active session:
+The reservation shape is already required in Task 3. Keep this shape while adding deadlines and race coverage; an output suspension cannot strand an old stream or overwrite a newer active session:
 
 ```swift
 private struct FinishReservation {
@@ -2075,8 +2124,11 @@ private func reserveFinish(
     current.finishStarted = true
     cancelDeadlines(in: &current)
     current.audioCapture?.stop()
-    current.bufferGate?.close(mode: terminal.bufferCloseMode)
-    current.speech?.cancel()
+    if let gate = current.bufferGate {
+        gate.close(mode: terminal.bufferCloseMode)
+    } else {
+        current.speech?.cancel()
+    }
     audioSession.deactivate()
     active = nil
     return FinishReservation(
@@ -2135,7 +2187,7 @@ if let previous = active,
 }
 ```
 
-Remove Task 3's `await finish` call from `start`. This preserves actor arrival order for concurrent starts while letting each older stream receive its own cancelled terminal.
+Keep `start` free of any awaited old-session finish, as implemented in Task 3. This preserves actor-admission order while each older stream receives its own cancelled terminal. Preserve the post-publication token/generation/authorizing ownership guard before requesting permission.
 
 - [ ] **Step 6: Add and pass the 50-session reuse gate**
 
