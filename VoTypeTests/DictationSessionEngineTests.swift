@@ -16,6 +16,12 @@ final class DictationSessionEngineTests: XCTestCase {
             .success(.init(transcript: "你好", isFinal: false)),
             index: 0
         )
+        try await waitUntil("partial publication deadline") {
+            harness.scheduler.pending.contains {
+                $0.interval == harness.deadlines.partialPublish && !$0.task.isCancelled
+            }
+        }
+        harness.scheduler.fire(interval: harness.deadlines.partialPublish)
         try await harness.waitForEvent(.listening(partial: "你好"), in: events)
 
         harness.speech.send(
@@ -142,6 +148,12 @@ final class DictationSessionEngineTests: XCTestCase {
             .success(.init(transcript: "不会提交", isFinal: false)),
             index: 0
         )
+        try await waitUntil("partial publication deadline") {
+            harness.scheduler.pending.contains {
+                $0.interval == harness.deadlines.partialPublish && !$0.task.isCancelled
+            }
+        }
+        harness.scheduler.fire(interval: harness.deadlines.partialPublish)
         try await harness.waitForEvent(.listening(partial: "不会提交"), in: events)
         try await runBoundedOperation("first cancel") {
             await harness.engine.cancel(token: request.token)
@@ -444,6 +456,12 @@ final class DictationSessionEngineTests: XCTestCase {
             .success(.init(transcript: "第二个会话仍在监听", isFinal: false)),
             index: 1
         )
+        try await waitUntil("second session partial publication deadline") {
+            harness.scheduler.pending.contains {
+                $0.interval == harness.deadlines.partialPublish && !$0.task.isCancelled
+            }
+        }
+        harness.scheduler.fire(interval: harness.deadlines.partialPublish)
         try await waitUntil("new session callback reaches gated live output") {
             let liveEvents = await harness.output.liveEvents
             return liveEvents.contains {
@@ -487,6 +505,397 @@ final class DictationSessionEngineTests: XCTestCase {
         let secondCommitCount = await harness.output.commitCount(for: second.token)
         XCTAssertEqual(firstCommitCount, 1)
         XCTAssertEqual(secondCommitCount, 1)
+    }
+
+    func testStartDeadlineFailsOnceBeforeListening() async throws {
+        let harness = EngineHarness(permissionSuspended: true)
+        defer { harness.releaseAllTestWaiters() }
+        let request = harness.makeRequest()
+        let events = try await harness.start(request)
+        defer { events.cancel() }
+
+        try await waitUntil("start deadline") {
+            harness.scheduler.pending.contains {
+                $0.interval == harness.deadlines.start && !$0.task.isCancelled
+            }
+        }
+        harness.scheduler.fire(interval: harness.deadlines.start)
+        harness.scheduler.fire(interval: harness.deadlines.start)
+        try await harness.waitForFinished(events)
+
+        let terminalCount = await harness.output.commitCount(for: request.token)
+        XCTAssertEqual(events.events.suffix(1).map(\.event), [.failed(.startTimeout)])
+        XCTAssertEqual(terminalCount, 1)
+        XCTAssertEqual(harness.speech.sessionCount, 0)
+    }
+
+    func testSilenceDeadlineProcessesNonemptyPartial() async throws {
+        let harness = EngineHarness()
+        defer { harness.releaseAllTestWaiters() }
+        let request = harness.makeRequest()
+        let events = try await harness.start(request)
+        defer { events.cancel() }
+        try await harness.waitForEvent(.listening(partial: ""), in: events)
+
+        await harness.engine.recognitionUpdated(
+            .success(.init(transcript: "静音前文本", isFinal: false)),
+            token: request.token,
+            generation: 1
+        )
+        try await waitUntil("silence deadline") {
+            harness.scheduler.pending.contains {
+                $0.interval == harness.deadlines.silence && !$0.task.isCancelled
+            }
+        }
+        harness.scheduler.fire(interval: harness.deadlines.silence)
+        try await harness.waitForEvent(.processing, in: events)
+        XCTAssertEqual(harness.audio.session(at: 0).stopCount, 1)
+
+        await harness.engine.recognitionUpdated(
+            .success(.init(transcript: "静音前文本", isFinal: true)),
+            token: request.token,
+            generation: 1
+        )
+        try await harness.waitForFinished(events)
+        XCTAssertEqual(events.events.last?.event, .completed(harness.completedPlan))
+    }
+
+    func testFinalRecognitionDeadlineProcessesLatestPartial() async throws {
+        let harness = EngineHarness()
+        defer { harness.releaseAllTestWaiters() }
+        let request = harness.makeRequest()
+        let events = try await harness.start(request)
+        defer { events.cancel() }
+        try await harness.waitForEvent(.listening(partial: ""), in: events)
+
+        await harness.engine.recognitionUpdated(
+            .success(.init(transcript: "最新部分", isFinal: false)),
+            token: request.token,
+            generation: 1
+        )
+        await harness.engine.stop(token: request.token)
+        try await harness.waitUntil("final-recognition deadline") {
+            harness.scheduler.pending.contains {
+                $0.interval == harness.deadlines.finalRecognition && !$0.task.isCancelled
+            }
+        }
+        harness.scheduler.fire(interval: harness.deadlines.finalRecognition)
+        try await harness.waitForFinished(events)
+
+        let transcripts = await harness.processor.calls.map(\.0)
+        XCTAssertEqual(events.events.last?.event, .completed(harness.completedPlan))
+        XCTAssertEqual(transcripts, ["最新部分"])
+    }
+
+    func testFinalRecognitionDeadlineFailsWithoutSpeech() async throws {
+        let harness = EngineHarness()
+        defer { harness.releaseAllTestWaiters() }
+        let request = harness.makeRequest()
+        let events = try await harness.start(request)
+        defer { events.cancel() }
+        try await harness.waitForEvent(.listening(partial: ""), in: events)
+
+        await harness.engine.stop(token: request.token)
+        try await waitUntil("final-recognition deadline") {
+            harness.scheduler.pending.contains {
+                $0.interval == harness.deadlines.finalRecognition && !$0.task.isCancelled
+            }
+        }
+        harness.scheduler.fire(interval: harness.deadlines.finalRecognition)
+        try await harness.waitForFinished(events)
+
+        XCTAssertEqual(events.events.last?.event, .failed(.noSpeech))
+        let terminalCount = await harness.output.commitCount(for: request.token)
+        XCTAssertEqual(terminalCount, 1)
+    }
+
+    func testProcessingDeadlineFailsOnceWhenProcessorDoesNotReturn() async throws {
+        let harness = EngineHarness(processingSuspended: true)
+        defer { harness.releaseAllTestWaiters() }
+        let request = harness.makeRequest()
+        let events = try await harness.start(request)
+        defer { events.cancel() }
+        try await harness.waitForEvent(.listening(partial: ""), in: events)
+
+        await harness.engine.recognitionUpdated(
+            .success(.init(transcript: "处理超时", isFinal: true)),
+            token: request.token,
+            generation: 1
+        )
+        try await waitUntil("text processor entry") {
+            await harness.processor.calls.count == 1
+        }
+        try await waitUntil("processing deadline") {
+            harness.scheduler.pending.contains {
+                $0.interval == harness.deadlines.processing && !$0.task.isCancelled
+            }
+        }
+        harness.scheduler.fire(interval: harness.deadlines.processing)
+        try await harness.waitForFinished(events)
+
+        XCTAssertEqual(events.events.last?.event, .failed(.processingTimeout))
+        let terminalCount = await harness.output.commitCount(for: request.token)
+        XCTAssertEqual(terminalCount, 1)
+    }
+
+    func testPartialBurstPublishesOnlyLatestValuePerWindow() async throws {
+        let harness = EngineHarness()
+        defer { harness.releaseAllTestWaiters() }
+        let request = harness.makeRequest()
+        let events = try await harness.start(request)
+        defer { events.cancel() }
+        try await harness.waitForEvent(.listening(partial: ""), in: events)
+
+        try await runBoundedOperation("500 partial callbacks") {
+            for index in 0..<500 {
+                await harness.engine.recognitionUpdated(
+                    .success(.init(transcript: "部分\(index)", isFinal: false)),
+                    token: request.token,
+                    generation: 1
+                )
+            }
+        }
+        try await waitUntil("coalesced partial deadline") {
+            harness.scheduler.pending.filter {
+                $0.interval == harness.deadlines.partialPublish && !$0.task.isCancelled
+            }.count == 1
+        }
+        harness.scheduler.fire(interval: harness.deadlines.partialPublish)
+        try await harness.waitForEvent(.listening(partial: "部分499"), in: events)
+        await harness.engine.cancel(token: request.token)
+        try await harness.waitForFinished(events)
+
+        let partials = events.events.compactMap { envelope -> String? in
+            guard case .listening(let partial) = envelope.event, !partial.isEmpty else { return nil }
+            return partial
+        }
+        XCTAssertEqual(partials, ["部分499"])
+    }
+
+    func testFinalRecognitionDeadlineUsesPartialReceivedAfterStop() async throws {
+        let harness = EngineHarness()
+        defer { harness.releaseAllTestWaiters() }
+        let request = harness.makeRequest()
+        let events = try await harness.start(request)
+        defer { events.cancel() }
+        try await harness.waitForEvent(.listening(partial: ""), in: events)
+
+        await harness.engine.stop(token: request.token)
+        try await harness.waitForEvent(.processing, in: events)
+        await harness.engine.recognitionUpdated(
+            .success(.init(transcript: "停止后的最新部分", isFinal: false)),
+            token: request.token,
+            generation: 1
+        )
+        XCTAssertFalse(events.events.contains { $0.event == .listening(partial: "停止后的最新部分") })
+        XCTAssertFalse(harness.scheduler.pending.contains {
+            $0.interval == harness.deadlines.silence && !$0.task.isCancelled
+        })
+        try await waitUntil("final-recognition deadline") {
+            harness.scheduler.pending.contains {
+                $0.interval == harness.deadlines.finalRecognition && !$0.task.isCancelled
+            }
+        }
+        harness.scheduler.fire(interval: harness.deadlines.finalRecognition)
+        try await harness.waitForFinished(events)
+
+        let transcripts = await harness.processor.calls.map(\.0)
+        XCTAssertEqual(transcripts, ["停止后的最新部分"])
+        XCTAssertEqual(events.events.last?.event, .completed(harness.completedPlan))
+    }
+
+    func testReplacedSilenceDeadlineCannotStopNewerPartial() async throws {
+        let harness = EngineHarness()
+        defer { harness.releaseAllTestWaiters() }
+        let request = harness.makeRequest()
+        let events = try await harness.start(request)
+        defer { events.cancel() }
+        try await harness.waitForEvent(.listening(partial: ""), in: events)
+
+        await harness.engine.recognitionUpdated(
+            .success(.init(transcript: "A", isFinal: false)),
+            token: request.token,
+            generation: 1
+        )
+        try await waitUntil("first silence deadline") {
+            harness.scheduler.pending.filter { $0.interval == harness.deadlines.silence }.count == 1
+        }
+        let firstDeadline = try XCTUnwrap(
+            harness.scheduler.pending.first { $0.interval == harness.deadlines.silence }
+        )
+
+        await harness.engine.recognitionUpdated(
+            .success(.init(transcript: "B", isFinal: false)),
+            token: request.token,
+            generation: 1
+        )
+        try await waitUntil("replacement silence deadline") {
+            harness.scheduler.pending.filter { $0.interval == harness.deadlines.silence }.count == 2
+        }
+        let silenceDeadlines = harness.scheduler.pending.filter {
+            $0.interval == harness.deadlines.silence
+        }
+        XCTAssertTrue(firstDeadline.task.isCancelled)
+        XCTAssertEqual(silenceDeadlines.filter { !$0.task.isCancelled }.count, 1)
+
+        try await runBoundedOperation("stale silence deadline callback") {
+            await harness.engine.silenceExpired(
+                token: request.token,
+                generation: 1,
+                attempt: 1
+            )
+        }
+        XCTAssertEqual(harness.audio.session(at: 0).stopCount, 0)
+        harness.scheduler.fire(interval: harness.deadlines.silence)
+        try await harness.waitForEvent(.processing, in: events)
+        XCTAssertEqual(harness.audio.session(at: 0).stopCount, 1)
+        XCTAssertEqual(events.events.filter { $0.event == .processing }.count, 1)
+
+        await harness.engine.cancel(token: request.token)
+        try await harness.waitForFinished(events)
+    }
+
+    func testSupersededStartDeadlineCannotFinishNewGeneration() async throws {
+        let harness = EngineHarness(permissionSuspended: true)
+        defer { harness.releaseAllTestWaiters() }
+        let first = harness.makeRequest()
+        let firstEvents = try await harness.start(first)
+        defer { firstEvents.cancel() }
+        try await waitUntil("first start deadline") {
+            harness.scheduler.pending.filter { $0.interval == harness.deadlines.start }.count == 1
+        }
+        let staleDeadline = try XCTUnwrap(
+            harness.scheduler.pending.first { $0.interval == harness.deadlines.start }
+        )
+
+        let second = harness.makeRequest()
+        let secondEvents = try await harness.start(second)
+        defer { secondEvents.cancel() }
+        try await harness.waitForFinished(firstEvents)
+        try await waitUntil("second start deadline") {
+            harness.scheduler.pending.filter { $0.interval == harness.deadlines.start }.count == 2
+        }
+
+        staleDeadline.action()
+        try await requireStableCondition("stale deadline leaves newest generation active") {
+            !secondEvents.isFinished
+                && secondEvents.events.filter { $0.event.isTerminal }.isEmpty
+                && harness.speech.sessionCount == 0
+        }
+        await harness.engine.cancel(token: second.token)
+        try await harness.waitForFinished(secondEvents)
+        XCTAssertEqual(secondEvents.events.last?.event, .cancelled)
+    }
+
+    func testSupersededGenerationCannotAffectNewSession() async throws {
+        let harness = EngineHarness()
+        defer { harness.releaseAllTestWaiters() }
+        let first = harness.makeRequest()
+        let firstEvents = try await harness.start(first)
+        defer { firstEvents.cancel() }
+        try await harness.waitForSpeechSessionCount(1)
+        try await harness.waitForEvent(.listening(partial: ""), in: firstEvents)
+
+        let second = harness.makeRequest()
+        let secondEvents = try await harness.start(second)
+        defer { secondEvents.cancel() }
+        try await harness.waitForSpeechSessionCount(2)
+        try await harness.waitForEvent(.listening(partial: ""), in: secondEvents)
+        harness.speech.send(.success(.init(transcript: "旧回调", isFinal: true)), index: 0)
+        harness.speech.send(.success(.init(transcript: "新结果", isFinal: true)), index: 1)
+        try await harness.waitForFinished(firstEvents)
+        try await harness.waitForFinished(secondEvents)
+
+        let processedTranscripts = await harness.processor.calls.map(\.0)
+        XCTAssertEqual(firstEvents.events.last?.event, .cancelled)
+        XCTAssertEqual(secondEvents.events.last?.event, .completed(harness.completedPlan))
+        XCTAssertFalse(processedTranscripts.contains("旧回调"))
+    }
+
+    func testConcurrentFinalCancelInterruptionAndTimeoutCommitOnce() async throws {
+        for _ in 0..<100 {
+            let harness = EngineHarness()
+            defer { harness.releaseAllTestWaiters() }
+            let request = harness.makeRequest()
+            let events = try await harness.start(request)
+            defer { events.cancel() }
+            try await harness.waitForSpeechSessionCount(1)
+            try await harness.waitForEvent(.listening(partial: ""), in: events)
+            await harness.engine.stop(token: request.token)
+            try await harness.waitForEvent(.processing, in: events)
+            try await waitUntil("final-recognition deadline") {
+                harness.scheduler.pending.contains {
+                    $0.interval == harness.deadlines.finalRecognition && !$0.task.isCancelled
+                }
+            }
+
+            try await runBoundedOperation("concurrent terminal arbitration") {
+                await withTaskGroup(of: Void.self) { group in
+                    group.addTask {
+                        harness.speech.send(
+                            .success(.init(transcript: "竞争结果", isFinal: true)),
+                            index: 0
+                        )
+                    }
+                    group.addTask { await harness.engine.cancel(token: request.token) }
+                    group.addTask { await harness.engine.handleAudioSystemEvent(.interruptionBegan) }
+                    group.addTask { harness.scheduler.fire(interval: harness.deadlines.finalRecognition) }
+                }
+            }
+
+            try await harness.waitForFinished(events)
+            let terminalCount = await harness.output.commitCount(for: request.token)
+            XCTAssertEqual(events.events.filter { $0.event.isTerminal }.count, 1)
+            XCTAssertEqual(terminalCount, 1)
+        }
+    }
+
+    func testOutputFailureNeverEmitsCompleted() async throws {
+        let harness = EngineHarness()
+        defer { harness.releaseAllTestWaiters() }
+        await harness.output.setCommitStatus(.ioFailure)
+        let request = harness.makeRequest()
+        let events = try await harness.start(request)
+        defer { events.cancel() }
+        try await harness.waitForSpeechSessionCount(1)
+        try await harness.waitForEvent(.listening(partial: ""), in: events)
+
+        harness.speech.send(.success(.init(transcript: "结果", isFinal: true)), index: 0)
+        try await harness.waitForFinished(events)
+
+        XCTAssertEqual(events.events.last?.event, .failed(.outputPersistence))
+        XCTAssertFalse(events.events.contains {
+            if case .completed = $0.event { return true }
+            return false
+        })
+        let terminalCount = await harness.output.commitCount(for: request.token)
+        XCTAssertEqual(terminalCount, 1)
+    }
+
+    func testFiftySequentialSessionsLeaveNoCrossSessionEffect() async throws {
+        let harness = EngineHarness()
+        defer { harness.releaseAllTestWaiters() }
+        var tokens: Set<SessionToken> = []
+
+        for index in 0..<50 {
+            let request = harness.makeRequest()
+            XCTAssertTrue(tokens.insert(request.token).inserted)
+            let events = try await harness.start(request)
+            defer { events.cancel() }
+            try await harness.waitForSpeechSessionCount(index + 1)
+            try await harness.waitForEvent(.listening(partial: ""), in: events)
+            harness.speech.send(
+                .success(.init(transcript: "结果\(index)", isFinal: true)),
+                index: index
+            )
+            try await harness.waitForFinished(events)
+            XCTAssertEqual(events.events.filter { $0.event.isTerminal }.count, 1)
+            XCTAssertTrue(events.events.allSatisfy { $0.token == request.token })
+        }
+
+        let terminals = await harness.output.terminals
+        XCTAssertEqual(terminals.count, 50)
+        XCTAssertEqual(Set(terminals.map(\.1)), tokens)
     }
 }
 

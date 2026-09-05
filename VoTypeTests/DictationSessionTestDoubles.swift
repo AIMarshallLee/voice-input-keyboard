@@ -571,10 +571,15 @@ final class ManualPermissionResolver: @unchecked Sendable, DictationPermissionRe
 
 actor RecordingTextProcessor: DictationTextProcessing {
     private var result: Result<EditPlan, DictationFailure>
+    private let gate: PermissionResultGate?
     private(set) var calls: [(String, TextProcessingSnapshot)] = []
 
-    init(result: Result<EditPlan, DictationFailure>) {
+    init(
+        result: Result<EditPlan, DictationFailure>,
+        gate: PermissionResultGate? = nil
+    ) {
         self.result = result
+        self.gate = gate
     }
 
     func setResult(_ result: Result<EditPlan, DictationFailure>) {
@@ -586,8 +591,12 @@ actor RecordingTextProcessor: DictationTextProcessing {
         snapshot: TextProcessingSnapshot
     ) async -> Result<EditPlan, DictationFailure> {
         calls.append((transcript, snapshot))
+        if let gate {
+            _ = await gate.wait()
+        }
         return result
     }
+
 }
 
 final class OutputGateBank: @unchecked Sendable {
@@ -659,6 +668,7 @@ actor RecordingSessionOutput: DictationSessionOutput {
     private(set) var liveEvents: [DictationSessionEventEnvelope] = []
     private(set) var terminals: [(DictationTerminal, SessionToken)] = []
     private var commitStatuses: [SessionToken: DictationOutputCommitStatus] = [:]
+    private var defaultCommitStatus: DictationOutputCommitStatus?
 
     init(gates: OutputGateBank) {
         self.gates = gates
@@ -666,6 +676,10 @@ actor RecordingSessionOutput: DictationSessionOutput {
 
     func setCommitStatus(_ status: DictationOutputCommitStatus, token: SessionToken) {
         commitStatuses[token] = status
+    }
+
+    func setCommitStatus(_ status: DictationOutputCommitStatus) {
+        defaultCommitStatus = status
     }
 
     func publishLive(
@@ -682,7 +696,7 @@ actor RecordingSessionOutput: DictationSessionOutput {
     ) async -> DictationOutputCommitStatus {
         terminals.append((terminal, token))
         await gates.waitIfEnabled(.commit, token: token)
-        return commitStatuses[token] ?? .written
+        return commitStatuses[token] ?? defaultCommitStatus ?? .written
     }
 
     func commitCount(for token: SessionToken) -> Int {
@@ -699,12 +713,16 @@ final class EngineHarness: @unchecked Sendable {
     let speech: ManualSpeechFactory
     let audio: ManualAudioCaptureFactory
     let scheduler: ManualDeadlineScheduler
+    let processorGate: PermissionResultGate?
     let processor: RecordingTextProcessor
     let outputGates: OutputGateBank
     let output: RecordingSessionOutput
     let engine: DictationSessionEngine
 
-    init(permissionSuspended: Bool = false) {
+    init(
+        permissionSuspended: Bool = false,
+        processingSuspended: Bool = false
+    ) {
         let deadlines = DictationSessionDeadlines(
             start: 4,
             silence: 3,
@@ -726,7 +744,11 @@ final class EngineHarness: @unchecked Sendable {
         let speech = ManualSpeechFactory(journal: journal)
         let audio = ManualAudioCaptureFactory(journal: journal)
         let scheduler = ManualDeadlineScheduler()
-        let processor = RecordingTextProcessor(result: .success(plan))
+        let processorGate = processingSuspended ? PermissionResultGate() : nil
+        let processor = RecordingTextProcessor(
+            result: .success(plan),
+            gate: processorGate
+        )
         let outputGates = OutputGateBank()
         let output = RecordingSessionOutput(gates: outputGates)
 
@@ -738,6 +760,7 @@ final class EngineHarness: @unchecked Sendable {
         self.speech = speech
         self.audio = audio
         self.scheduler = scheduler
+        self.processorGate = processorGate
         self.processor = processor
         self.outputGates = outputGates
         self.output = output
@@ -820,5 +843,6 @@ final class EngineHarness: @unchecked Sendable {
     func releaseAllTestWaiters() {
         outputGates.releaseAll()
         permissions.releaseForCleanup()
+        processorGate?.resume(with: .success(()))
     }
 }
