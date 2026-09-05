@@ -190,6 +190,106 @@ final class DictationSessionEngineTests: XCTestCase {
         }
     }
 
+    func testCaptureStartFailureStopsCreatedCaptureAndClosesSpeechOnce() async throws {
+        let harness = EngineHarness()
+        defer { harness.releaseAllTestWaiters() }
+        harness.audio.setNextStartError(DictationTestStubError.audioCaptureStart)
+        let failedRequest = harness.makeRequest()
+
+        let failedEvents = try await harness.start(failedRequest)
+        defer { failedEvents.cancel() }
+        try await harness.waitForFinished(failedEvents)
+        try await harness.waitForAudioCaptureSessionCount(1)
+        try await harness.waitForSpeechSessionCount(1)
+
+        XCTAssertEqual(harness.audio.sessionCount, 1)
+        XCTAssertEqual(harness.audio.session(at: 0).startCount, 1)
+        XCTAssertEqual(harness.audio.session(at: 0).stopCount, 1)
+        XCTAssertEqual(harness.speech.session(at: 0).cancelCount, 1)
+        XCTAssertEqual(harness.speech.session(at: 0).endAudioCount, 0)
+        XCTAssertEqual(harness.audioSession.deactivateCount, 1)
+        XCTAssertEqual(
+            failedEvents.events.filter { $0.event.isTerminal }.map(\.event),
+            [.failed(.audioCapture)]
+        )
+        let terminalsAfterFailure = await harness.output.terminals
+        XCTAssertEqual(
+            terminalsAfterFailure.filter { $0.1 == failedRequest.token }.map(\.0),
+            [.failed(.audioCapture)]
+        )
+
+        let nextRequest = harness.makeRequest()
+        let nextEvents = try await harness.start(nextRequest)
+        defer { nextEvents.cancel() }
+        try await harness.waitForEvent(.listening(partial: ""), in: nextEvents)
+        XCTAssertEqual(harness.audio.sessionCount, 2)
+        XCTAssertEqual(harness.speech.sessionCount, 2)
+        XCTAssertEqual(harness.audio.session(at: 0).stopCount, 1)
+        XCTAssertEqual(harness.speech.session(at: 0).cancelCount, 1)
+
+        harness.speech.send(
+            .success(.init(transcript: "第二个会话正常完成", isFinal: true)),
+            index: 1
+        )
+        try await harness.waitForFinished(nextEvents)
+        XCTAssertEqual(nextEvents.events.last?.event, .completed(harness.completedPlan))
+        let failedCommitCount = await harness.output.commitCount(for: failedRequest.token)
+        let nextCommitCount = await harness.output.commitCount(for: nextRequest.token)
+        XCTAssertEqual(failedCommitCount, 1)
+        XCTAssertEqual(nextCommitCount, 1)
+    }
+
+    func testFinalRecognitionCannotBeOverwrittenWhileProcessingPublicationIsSuspended() async throws {
+        let harness = EngineHarness()
+        defer { harness.releaseAllTestWaiters() }
+        let request = harness.makeRequest()
+        let events = try await harness.start(request)
+        defer { events.cancel() }
+        try await harness.waitForEvent(.listening(partial: ""), in: events)
+        harness.outputGates.enable(.publishLive, token: request.token)
+
+        let finalCompleted = LockedTestBox(false)
+        let finalTask = Task {
+            await harness.engine.recognitionUpdated(
+                .success(.init(transcript: "FINAL", isFinal: true)),
+                token: request.token,
+                generation: 1
+            )
+            finalCompleted.set(true)
+        }
+        defer { finalTask.cancel() }
+        try await waitUntil("processing publication entry") {
+            let liveEvents = await harness.output.liveEvents
+            return liveEvents.contains {
+                $0.token == request.token && $0.event == .processing
+            }
+        }
+
+        try await runBoundedOperation("late partial recognition callback") {
+            await harness.engine.recognitionUpdated(
+                .success(.init(transcript: "STALE", isFinal: false)),
+                token: request.token,
+                generation: 1
+            )
+        }
+        harness.outputGates.release(.publishLive, token: request.token)
+        try await waitUntil("accepted final callback completion") {
+            finalCompleted.value
+        }
+        try await harness.waitForFinished(events)
+
+        let processingCalls = await harness.processor.calls
+        XCTAssertEqual(processingCalls.count, 1)
+        XCTAssertEqual(processingCalls.first?.0, "FINAL")
+        XCTAssertEqual(events.events.filter { $0.event.isTerminal }.map(\.event), [
+            .completed(harness.completedPlan)
+        ])
+        let terminals = await harness.output.terminals
+        XCTAssertEqual(terminals.filter { $0.1 == request.token }.map(\.0), [
+            .completed(harness.completedPlan)
+        ])
+    }
+
     func testThreeStartsKeepLatestOwnerWhileOlderCommitsAreSuspended() async throws {
         let harness = EngineHarness()
         defer { harness.releaseAllTestWaiters() }
@@ -388,6 +488,10 @@ final class DictationSessionEngineTests: XCTestCase {
         XCTAssertEqual(firstCommitCount, 1)
         XCTAssertEqual(secondCommitCount, 1)
     }
+}
+
+private enum DictationTestStubError: Error, Sendable {
+    case audioCaptureStart
 }
 
 private extension DictationSessionEvent {

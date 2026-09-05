@@ -8,8 +8,8 @@
 - 职责机制：[窗口 Agent 规划书](../docs/superpowers/specs/2026-09-05-votype-continuous-delivery-agent-charter.md)，用户已回复“同意”。
 - 规格：[商用 V1](../docs/superpowers/specs/2026-09-04-voice-first-commercial-v1-design.md)。
 - 实施计划：[Slice A 九任务](../docs/superpowers/plans/2026-09-04-slice-a-reliable-session-engine.md)。
-- 当前断点：Task 1、2 已取得真实 RED、GREEN 和独立审查 PASS，实施验收进度 **2/9**。Task 3 正在编写统一引擎的生命周期及交错请求失败测试。
-- 下一动作：提交 Task 3 测试并取得 macOS RED，再实现单一 actor 会话引擎；按已复核的同步所有权/冻结终态方案实施。
+- 当前断点：Task 1、2 已取得真实 RED、GREEN 和独立审查 PASS，实施验收进度 **2/9**。Task 3 首批九个测试已取得缺少生产 actor 的真实 RED，正补录音启动清理和最终文本冻结两个回归用例。
+- 下一动作：补充用例取得新的 macOS RED 后，实现单一 actor 会话引擎；按已复核的同步所有权、冻结终态和最终文本方案实施。Task 3 尚未验收。
 
 ## 源码与工作区身份
 
@@ -65,6 +65,8 @@
 - [Task 2 RED #152](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/33954833600)，源码 `815350d88535987ec924d72fd88a089a16ad127c`：环境准备成功后，08:18:39Z 测试编译因缺少 `DictationSpeechSession` 按预期失败。
 - [Task 2 GREEN #153](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/33955132256) **SUCCESS**（13m08s），源码 `c6ed78713fb0d271a659544496c5c6276814903d`：同步屏障 2/2（0.066s）、全单元 102/102、4 个独立 UI、unsigned Release/Archive 通过；实际日志没有点名三个 Task 2 文件的 warning/error。独立 reviewer_sol 源码与证据收口 PASS；真实麦克风/PiP 不在此结论内。
 - Task 3 实施前架构复核纠正了计划竞态：同步保留旧会话结束信息并释放旧资源后才接受新会话，异步保存仅操作冻结流；授权恢复后再次核对 token/generation/phase。加入三个请求交错、授权发布挂起和资源关闭顺序测试，不将已知不安全的中间实现留给后续任务修复。Task 4 的 partial timer 按固定窗口合并，不按每次 partial 重置为 debounce。
+- [Task 3 初始 RED #154](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/33956489168)，源码 `b25dd977a6165aafc99ba1ea5c4a24b70dd2f70b`：09-05 08:54:33Z 实际日志报告测试辅助代码缺少 `DictationSessionEngine`，环境准备正常。后补启动失败资源清理与最终文本冻结用例尚待新的 RED；没有以缺少 Windows 工具代替此证据。
+- Task 3 补充约束：`capture.start()` 抛错仍必须停止已创建的 capture；首次接受 final 文本后忽略该会话迟到的识别回调，但保留取消和音频中断控制。Task 4 的停止后、final 前部分识别仍可用于超时兜底。该方案经独立并发风险复核通过，尚不等于实现通过。
 - 真机语音/跨 App/权限/PiP：**EXTERNAL / NOT_RUN（本轮）**。历史用户测试曾暴露缺陷，不抹去历史结果。
 
 ## 发布基线

@@ -327,6 +327,7 @@ final class ManualAudioCaptureFactory: @unchecked Sendable, DictationAudioCaptur
     private let lock = NSLock()
     private let journal: TestOperationJournal
     private var sessions: [RecordingAudioCaptureSession] = []
+    private var nextStartError: Error?
 
     init(journal: TestOperationJournal) {
         self.journal = journal
@@ -344,6 +345,12 @@ final class ManualAudioCaptureFactory: @unchecked Sendable, DictationAudioCaptur
         return sessions[index]
     }
 
+    func setNextStartError(_ error: Error?) {
+        lock.lock()
+        nextStartError = error
+        lock.unlock()
+    }
+
     func makeSession(
         bufferHandler: @escaping @Sendable (AVAudioPCMBuffer) -> Void
     ) throws -> any DictationAudioCaptureSession {
@@ -351,8 +358,10 @@ final class ManualAudioCaptureFactory: @unchecked Sendable, DictationAudioCaptur
             let session = RecordingAudioCaptureSession(
                 index: sessions.count,
                 journal: journal,
+                startError: nextStartError,
                 bufferHandler: bufferHandler
             )
+            nextStartError = nil
             sessions.append(session)
             return session
         }
@@ -371,6 +380,7 @@ final class RecordingAudioCaptureSession: @unchecked Sendable, DictationAudioCap
     let index: Int
     private let lock = NSLock()
     private let journal: TestOperationJournal
+    private let startError: Error?
     private let bufferHandler: @Sendable (AVAudioPCMBuffer) -> Void
     private var storedStartCount = 0
     private var storedStopCount = 0
@@ -378,10 +388,12 @@ final class RecordingAudioCaptureSession: @unchecked Sendable, DictationAudioCap
     init(
         index: Int,
         journal: TestOperationJournal,
+        startError: Error?,
         bufferHandler: @escaping @Sendable (AVAudioPCMBuffer) -> Void
     ) {
         self.index = index
         self.journal = journal
+        self.startError = startError
         self.bufferHandler = bufferHandler
     }
 
@@ -391,6 +403,7 @@ final class RecordingAudioCaptureSession: @unchecked Sendable, DictationAudioCap
     func start() throws {
         locked { storedStartCount += 1 }
         journal.record("capture.\(index).start")
+        if let startError { throw startError }
     }
 
     func stop() {

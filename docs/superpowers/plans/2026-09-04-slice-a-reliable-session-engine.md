@@ -1344,6 +1344,8 @@ Before RED, extend the same test-only harness with explicitly gated output calls
 1. `testThreeStartsKeepLatestOwnerWhileOlderCommitsAreSuspended`: admit A, B, then C while A/B terminal commits are gated; release the older commits in reverse order. C alone may complete as current; A/B each finish with one cancelled terminal; each token reaches output commit at most once.
 2. `testSupersessionDuringAuthorizingPublicationSkipsOldPermissionWork`: gate A's authorizing publication, admit B, then release A. A must not start a permission request or create Speech/audio resources after resumption. B stays current and A's stream closes once.
 3. `testSupersessionClosesOldResourcesBeforeNewCaptureStarts`: make A listening, admit B, and assert the operation journal closes A's capture/gate/Speech/audio session before B starts capture, with A's Speech `cancelCount == 1`; deliver A's late callbacks and assert no B stream/output/state change. Task 4 adds deadline callbacks to the same guarantee.
+4. `testCaptureStartFailureStopsCreatedCaptureAndClosesSpeechOnce`: create a capture session whose `start()` throws. Assert that created capture is stopped once, Speech is cancelled once behind the gate, audio is deactivated, and the stream/output contain exactly one `.failed(.audioCapture)`. Then a fresh token must start and complete normally. A successfully created capture must remain reachable for cleanup even when it never reached listening.
+5. `testFinalRecognitionCannotBeOverwrittenWhileProcessingPublicationIsSuspended`: gate the processing publication after accepting final text, await the real recognition callback handler with a late partial, then release publication. The processor must receive the accepted final text exactly once. Later recognizer success/failure callbacks cannot replace that final result; explicit cancel and audio-system interruption remain effective.
 
 All readiness waits and stream collection must have explicit finite deadlines and cleanup; an incorrect actor must fail the test rather than hang the CI job. Do not assume a spawned `Task` has started, or use a fixed number of `Task.yield` calls as synchronization. Keep gated-output controls in test doubles only. These tests enforce the existing single-owner/exactly-one-terminal specification; they do not change the public runner interface.
 
@@ -1378,6 +1380,7 @@ actor DictationSessionEngine: DictationSessionRunning {
         var phase: Phase
         var nextSequence: UInt64
         var transcript: String
+        var hasAcceptedFinalRecognition: Bool
         var pendingPartial: String?
         var continuation: AsyncStream<DictationSessionEventEnvelope>.Continuation
         var speech: (any DictationSpeechSession)?
@@ -1450,6 +1453,7 @@ func start(
         phase: .authorizing,
         nextSequence: 1,
         transcript: "",
+        hasAcceptedFinalRecognition: false,
         pendingPartial: nil,
         continuation: continuation,
         speech: nil,
@@ -1546,8 +1550,16 @@ private func authorizationResolved(
     let capture: any DictationAudioCaptureSession
     do {
         capture = try audioFactory.makeSession { buffer in gate.append(buffer) }
+    } catch {
+        gate.close(mode: .cancel)
+        await finish(.failed(.audioCapture), token: token, generation: generation)
+        return
+    }
+
+    do {
         try capture.start()
     } catch {
+        capture.stop()
         gate.close(mode: .cancel)
         await finish(.failed(.audioCapture), token: token, generation: generation)
         return
@@ -1568,18 +1580,20 @@ private func authorizationResolved(
     await emit(.listening(partial: ""), token: token, generation: generation)
 }
 
-private func recognitionUpdated(
+func recognitionUpdated(
     _ result: Result<DictationRecognitionUpdate, DictationFailure>,
     token: SessionToken,
     generation: UInt64
 ) async {
     guard var current = matching(token: token, generation: generation),
-          current.phase == .listening || current.phase == .processing else { return }
+          current.phase == .listening || current.phase == .processing,
+          !current.hasAcceptedFinalRecognition else { return }
     switch result {
     case .failure(let failure):
         await finish(.failed(failure), token: token, generation: generation)
     case .success(let update):
         current.transcript = update.transcript
+        current.hasAcceptedFinalRecognition = update.isFinal
         active = current
         if update.isFinal {
             if current.phase == .listening {
@@ -1592,6 +1606,8 @@ private func recognitionUpdated(
     }
 }
 ```
+
+Freeze the first accepted final transcript before any suspension. Keep this real callback handler module-internal so `@testable` tests can await callback admission directly; do not add a drain method, test-state getter, or public runner API. Before a final is accepted, a processing-phase partial (after user stop) still updates the transcript used by the final-recognition deadline, without emitting listening feedback or scheduling a silence timer. Task 4 must preserve this path when adding coalescing. Actor tasks are not FIFO, so correctness must not depend on callback Task scheduling order ([Swift actor proposal](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0306-actors.md)).
 
 Implement command dispatch with this exact phase switch:
 
@@ -1902,6 +1918,8 @@ func testPartialBurstPublishesOnlyLatestValuePerWindow() async throws {
 
 - [ ] **Step 2: Add failing stale-generation and concurrent-terminal tests**
 
+Also add `testFinalRecognitionDeadlineUsesPartialReceivedAfterStop`: await listening, stop, directly await `recognitionUpdated` with a newer non-final transcript, then fire the final-recognition deadline. Assert that the processor receives that newer transcript once, without a new listening publication or silence deadline. Use Task 3's actual bounded harness APIs and awaited callback admission instead of the illustrative unbounded `Task.value` or scheduling assumptions above.
+
 Add these cases:
 
 ```swift
@@ -2027,8 +2045,13 @@ private func receivePartial(
     generation: UInt64
 ) {
     guard var current = matching(token: token, generation: generation),
-          current.phase == .listening else { return }
+          current.phase == .listening || current.phase == .processing,
+          !current.hasAcceptedFinalRecognition else { return }
     current.transcript = transcript
+    guard current.phase == .listening else {
+        active = current
+        return
+    }
     current.pendingPartial = transcript
     current.silenceDeadline?.cancel()
     current.silenceDeadline = schedule(
