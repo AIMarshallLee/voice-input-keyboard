@@ -8,8 +8,8 @@
 - 职责机制：[窗口 Agent 规划书](../docs/superpowers/specs/2026-09-05-votype-continuous-delivery-agent-charter.md)，用户已回复“同意”。
 - 规格：[商用 V1](../docs/superpowers/specs/2026-09-04-voice-first-commercial-v1-design.md)。
 - 实施计划：[Slice A 九任务](../docs/superpowers/plans/2026-09-04-slice-a-reliable-session-engine.md)。
-- 当前断点：Task 1 测试先行阶段；基线 CI 已通过，尚无新增生产实现。实施验收进度 **0/9**。
-- 下一动作：基线完成后推送 Task 1 模型/兼容/typed IPC 失败测试，观察真实缺失契约失败，再实现最小模型和 IPC 兼容变更。
+- 当前断点：Task 1 已取得真实 RED，契约/IPC 最小实现已就绪。正在准备 macOS GREEN，实施验收进度仍为 **0/9**。
+- 下一动作：推送 Task 1 实现到同一 PR 运行 macOS 回归，并进行独立任务审查。
 
 ## 源码与工作区身份
 
@@ -20,7 +20,7 @@
 - 原有规格、实施计划、职责稿与台账已在授权后提交为 `a5045f2`；没有丢弃原差异。
 - 草稿 [PR #13](https://github.com/AIMarshallLee/voice-input-keyboard/pull/13) 已创建，未合并。
 - `project.yml` 是生成工程的唯一来源；现有测试 target 包含整个 `VoTypeTests` 目录。
-- 只读 Task 1 预检确认 SessionToken/EditPlan/typed commit 尚无实现；新测试须在 `xcodegen generate` 后编入。已纠正实施计划 Step 2 的文字计数：实际为五个测试，不是四个；未改接口或验收标准。
+- 实施前 Task 1 预检确认 SessionToken/EditPlan/typed commit 缺失；现已添加最小实现，等待测试与审查。新测试通过 `xcodegen generate` 编入。
 
 ## 授权状态
 
@@ -39,7 +39,7 @@
 
 | 任务 | 交付内容 | 实施/验收状态 |
 |---|---|---|
-| 1 | Canonical Session 与向后兼容 IPC | 进行中：基线通过，准备推送 RED 测试 |
+| 1 | Canonical Session 与向后兼容 IPC | 进行中：RED 已确认，实施待 GREEN/审查 |
 | 2 | 依赖端口与同步音频屏障 | 待做，依赖 Task 1 |
 | 3 | 引擎主路径与命令语义 | 待做 |
 | 4 | 截止时间、迟到回调、竞态与重用 | 待做 |
@@ -57,14 +57,15 @@
 - `Get-Command xcodebuild` / `Get-Command swift`：两者当前均不可用。环境缺失不算测试 RED，也不能算测试通过。
 - `.github/workflows/build.yml`：现有测试运行在 `macos-26`；执行 XcodeGen、VoTypeTests 和 VoTypeUITests。
 - 该流水线由 PR、main push 或手动 dispatch 触发；普通开发分支 push 本身不会触发。优先使用 PR 路径，它跳过 `Check Development Signing Secrets`；不能将 `publish=false` 手动运行描述为必定不接触现有开发签名配置。
-- [基线 CI #149](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/33952292055) **SUCCESS**，源码 `a5045f2`；Unit/UI、unsigned Release/Archive/打包通过，Apple 签名和分发步骤跳过。新 Task 1 XCTest 尚未推送；其 RED/GREEN：**NOT_RUN**。工作流报告 Node20 action 迁移提示，未借此升级无关依赖。
+- [基线 CI #149](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/33952292055) **SUCCESS**，源码 `a5045f2`；88 单元、4 个独立 UI 测试、unsigned Release/Archive/打包通过，Apple 签名和分发步骤跳过。工作流报告 Node20 action 迁移提示，未借此升级无关依赖。
+- [Task 1 RED #150](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/33952943674)，源码 `b15505687c3054b7a008c264e3a0534fbc2af0bf`：Unit/UI 编译按预期失败，缺少 SessionToken/EditPlan/commit/peek/cancel notification/fingerprint。测试已先于生产实现提交；新实现 GREEN 尚未运行。
 - 真机语音/跨 App/权限/PiP：**EXTERNAL / NOT_RUN（本轮）**。历史用户测试曾暴露缺陷，不抹去历史结果。
 
 ## 发布基线
 
 - 历史分发：1.0 (146)，源提交 `01b3db482fb25821e8f4281ee66a3a8991e9051e`；processing/Internal Testers 证据见 [版本报告](releases/1.0-build-146-testflight.md)。不是 Slice A 新产物或完整真机通过证据。
 - 实施前最新已核对成功普通构建为 [Build IPA #148](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/33803082411)，源码 `ba3ca0e`，不是新 TestFlight 上传。新基线检查见上文。
-- 本轮没有新的构建号、IPA、Archive、签名、processing 或分发结果。
+- 本轮 PR #149 已生成自动化构建及无签名归档；尚无新签名、TestFlight processing 或分发结果，不将 PR 产物称为已发布版本。
 
 ## 阻塞与恢复
 

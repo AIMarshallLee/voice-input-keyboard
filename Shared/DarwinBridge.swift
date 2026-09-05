@@ -6,6 +6,7 @@ enum DarwinNotificationName {
     static let dictationStarted = "com.daseanle.votype.dictationStarted"
     static let dictationStopped = "com.daseanle.votype.dictationStopped"
     static let requestStopDictation = "com.daseanle.votype.requestStopDictation"
+    static let requestCancelDictation = "com.daseanle.votype.requestCancelDictation"
     static let transcriptionReady = "com.daseanle.votype.transcriptionReady"
     static let transcriptionError = "com.daseanle.votype.transcriptionError"
     static let dictationFailed = "com.daseanle.votype.dictationFailed"
@@ -141,6 +142,7 @@ struct DictationSettings: Codable, Equatable {
     let selectedText: String?
     let keyboardType: Int
     let session: String
+    let expectedContextFingerprint: String?
     let timestamp: TimeInterval
 
     init(
@@ -151,6 +153,7 @@ struct DictationSettings: Codable, Equatable {
         selectedText: String?,
         keyboardType: Int,
         session: String,
+        expectedContextFingerprint: String? = nil,
         timestamp: TimeInterval = Date().timeIntervalSince1970
     ) {
         self.language = language
@@ -160,6 +163,7 @@ struct DictationSettings: Codable, Equatable {
         self.selectedText = selectedText
         self.keyboardType = keyboardType
         self.session = session
+        self.expectedContextFingerprint = expectedContextFingerprint
         self.timestamp = timestamp
     }
 }
@@ -173,11 +177,75 @@ struct DictationIPCResult: Codable, Equatable {
     let status: Status
     let text: String
     let session: String
-    let deleteSelected: Bool
+    let editPlan: EditPlan?
     let timestamp: TimeInterval
 
     var transcription: String? { status == .completed ? text : nil }
     var error: String? { status == .error ? text : nil }
+    var deleteSelected: Bool {
+        editPlan?.operation == .replaceSelection
+            || editPlan?.operation == .deleteSelection
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case status, text, session, editPlan, deleteSelected, timestamp
+    }
+
+    init(
+        status: Status,
+        text: String,
+        token: SessionToken,
+        editPlan: EditPlan?,
+        timestamp: TimeInterval
+    ) {
+        self.status = status
+        self.text = text
+        self.session = token.rawValue
+        self.editPlan = editPlan
+        self.timestamp = timestamp
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        status = try container.decode(Status.self, forKey: .status)
+        text = try container.decode(String.self, forKey: .text)
+        session = try container.decode(String.self, forKey: .session)
+        guard SessionToken(rawValue: session) != nil else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .session,
+                in: container,
+                debugDescription: "Result session must contain a UUID"
+            )
+        }
+        timestamp = try container.decode(TimeInterval.self, forKey: .timestamp)
+
+        if let plan = try container.decodeIfPresent(EditPlan.self, forKey: .editPlan) {
+            editPlan = plan
+        } else if status == .completed {
+            let destructive = try container.decodeIfPresent(
+                Bool.self,
+                forKey: .deleteSelected
+            ) ?? false
+            editPlan = EditPlan(
+                intent: destructive ? .rewrite : .dictate,
+                operation: destructive ? .previewOnly : .insertAtCursor,
+                text: text,
+                expectedContextFingerprint: nil,
+                requiresConfirmation: destructive
+            )
+        } else {
+            editPlan = nil
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(status, forKey: .status)
+        try container.encode(text, forKey: .text)
+        try container.encode(session, forKey: .session)
+        try container.encodeIfPresent(editPlan, forKey: .editPlan)
+        try container.encode(timestamp, forKey: .timestamp)
+    }
 }
 
 /// 主 App 在一个听写会话内持续发布的轻量快照。业务文字只存在 App Group
@@ -432,6 +500,7 @@ struct DarwinBridge {
 
     // MARK: 结果（主 App -> 键盘）
 
+    @available(*, deprecated, message: "Use commit(_:token:timestamp:) instead")
     @discardableResult
     static func writeTranscription(
         _ text: String,
@@ -439,11 +508,18 @@ struct DarwinBridge {
         deleteSelected: Bool = false,
         timestamp: TimeInterval = Date().timeIntervalSince1970
     ) -> Bool {
+        guard let token = SessionToken(rawValue: session) else { return false }
         let payload = DictationIPCResult(
             status: .completed,
             text: text,
-            session: session,
-            deleteSelected: deleteSelected,
+            token: token,
+            editPlan: EditPlan(
+                intent: deleteSelected ? .rewrite : .dictate,
+                operation: deleteSelected ? .replaceSelection : .insertAtCursor,
+                text: text,
+                expectedContextFingerprint: nil,
+                requiresConfirmation: false
+            ),
             timestamp: timestamp
         )
         let outcome = writeTerminalResult(payload)
@@ -452,23 +528,64 @@ struct DarwinBridge {
         return true
     }
 
+    @available(*, deprecated, message: "Use commit(_:token:timestamp:) instead")
     @discardableResult
     static func writeError(
         _ message: String,
         session: String,
         timestamp: TimeInterval = Date().timeIntervalSince1970
     ) -> Bool {
+        guard let token = SessionToken(rawValue: session) else { return false }
         let payload = DictationIPCResult(
             status: .error,
             text: message,
-            session: session,
-            deleteSelected: false,
+            token: token,
+            editPlan: nil,
             timestamp: timestamp
         )
         let outcome = writeTerminalResult(payload)
         guard outcome == .written else { return false }
         DarwinNotificationObserver.post(DarwinNotificationName.transcriptionError)
         return true
+    }
+
+    static func commit(
+        _ terminal: DictationTerminal,
+        token: SessionToken,
+        timestamp: TimeInterval = Date().timeIntervalSince1970
+    ) -> DictationOutputCommitStatus {
+        switch terminal {
+        case .completed(let plan):
+            let outcome = writeTerminalResult(
+                DictationIPCResult(
+                    status: .completed,
+                    text: plan.text,
+                    token: token,
+                    editPlan: plan,
+                    timestamp: timestamp
+                )
+            )
+            if outcome == .written {
+                DarwinNotificationObserver.post(DarwinNotificationName.transcriptionReady)
+            }
+            return outcome
+        case .failed(let failure):
+            let outcome = writeTerminalResult(
+                DictationIPCResult(
+                    status: .error,
+                    text: failure.userMessage,
+                    token: token,
+                    editPlan: nil,
+                    timestamp: timestamp
+                )
+            )
+            if outcome == .written {
+                DarwinNotificationObserver.post(DarwinNotificationName.transcriptionError)
+            }
+            return outcome
+        case .cancelled:
+            return cancelSession(token.rawValue, timestamp: timestamp) ? .cancelled : .ioFailure
+        }
     }
 
     /// 只查看结果。扩展重启后用它提示用户，不得直接自动插入。
@@ -787,6 +904,27 @@ struct DarwinBridge {
                 return settings
             }
             .max(by: { $0.timestamp < $1.timestamp })
+    }
+
+    static func peekDictationSettings(
+        expectedSession: String,
+        now: TimeInterval = Date().timeIntervalSince1970,
+        maxAge: TimeInterval = settingsMaxAge
+    ) -> DictationSettings? {
+        guard let fileName = settingsFileName(for: expectedSession) else { return nil }
+        return withSessionLock(session: expectedSession, defaultValue: nil) { directory in
+            let url = directory.appendingPathComponent(fileName)
+            if isCancelledUncoordinated(session: expectedSession, in: directory, now: now) {
+                removeUncoordinated(url)
+                return nil
+            }
+            guard let settings: DictationSettings = readUncoordinated(
+                from: url,
+                now: now,
+                maxAge: maxAge
+            ), settings.session == expectedSession else { return nil }
+            return settings
+        }
     }
 
     static func readAndConsumeDictationSettings(
@@ -1112,18 +1250,11 @@ struct DarwinBridge {
     }
 
     private static func sessionToken(_ session: String) -> String? {
-        let bytes = Data(session.utf8)
-        guard !bytes.isEmpty, bytes.count <= 512 else { return nil }
+        guard let token = SessionToken(rawValue: session) else { return nil }
+        let bytes = Data(token.rawValue.utf8)
         return SHA256.hash(data: bytes)
             .map { String(format: "%02x", $0) }
             .joined()
-    }
-
-    private enum TerminalWriteOutcome: Equatable {
-        case written
-        case alreadyTerminal
-        case cancelled
-        case ioFailure
     }
 
     /// 所有会改变同一 session 的设置、实时状态、终态或取消状态的操作，
@@ -1161,7 +1292,7 @@ struct DarwinBridge {
 
     private static func writeTerminalResult(
         _ result: DictationIPCResult
-    ) -> TerminalWriteOutcome {
+    ) -> DictationOutputCommitStatus {
         guard let resultName = resultFileName(for: result.session),
               let liveName = liveStateFileName(for: result.session),
               let receiptName = terminalReceiptFileName(for: result.session) else {

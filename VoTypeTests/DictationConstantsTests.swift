@@ -87,8 +87,8 @@ final class DictationConstantsTests: XCTestCase {
     }
 
     func testDarwinBridgeSessionMismatch() {
-        let session1 = "session-aaa"
-        let session2 = "session-bbb"
+        let session1 = UUID().uuidString
+        let session2 = UUID().uuidString
 
         // 写入 session1 的结果
         DarwinBridge.writeTranscription("结果1", session: session1)
@@ -182,10 +182,11 @@ final class DictationConstantsTests: XCTestCase {
 
     func testExpiredResultIsRemoved() {
         let now = Date().timeIntervalSince1970
-        DarwinBridge.writeTranscription("过期", session: "old", timestamp: now - 301)
+        let session = UUID().uuidString
+        DarwinBridge.writeTranscription("过期", session: session, timestamp: now - 301)
 
         XCTAssertNil(DarwinBridge.peekResult(now: now, maxAge: 300))
-        XCTAssertNil(DarwinBridge.readAndConsumeResult(expectedSession: "old", now: now))
+        XCTAssertNil(DarwinBridge.readAndConsumeResult(expectedSession: session, now: now))
     }
 
     // MARK: - 实时原地反馈
@@ -567,6 +568,7 @@ final class DictationConstantsTests: XCTestCase {
     }
 
     func testDarwinBridgeDictationSettings() {
+        let session = UUID().uuidString
         let settings = DictationSettings(
             language: "zh-CN",
             whisper: true,
@@ -574,16 +576,16 @@ final class DictationConstantsTests: XCTestCase {
             translateTarget: "en",
             selectedText: "选中文本",
             keyboardType: 1,
-            session: "test-settings-session"
+            session: session
         )
 
         DarwinBridge.writeDictationSettings(settings)
 
         let pending = DarwinBridge.peekPendingDictationSettings()
-        XCTAssertEqual(pending?.session, "test-settings-session")
+        XCTAssertEqual(pending?.session, session)
 
         let read = DarwinBridge.readAndConsumeDictationSettings(
-            expectedSession: "test-settings-session"
+            expectedSession: session
         )
         XCTAssertNotNil(read)
         XCTAssertEqual(read?.language, "zh-CN")
@@ -592,7 +594,7 @@ final class DictationConstantsTests: XCTestCase {
         XCTAssertEqual(read?.translateTarget, "en")
         XCTAssertEqual(read?.selectedText, "选中文本")
         XCTAssertEqual(read?.keyboardType, 1)
-        XCTAssertEqual(read?.session, "test-settings-session")
+        XCTAssertEqual(read?.session, session)
         XCTAssertNil(DarwinBridge.peekPendingDictationSettings())
     }
 
@@ -646,6 +648,7 @@ final class DictationConstantsTests: XCTestCase {
 
     func testExpiredSettingsAreRemoved() {
         let now = Date().timeIntervalSince1970
+        let session = UUID().uuidString
         let settings = DictationSettings(
             language: "zh-CN",
             whisper: false,
@@ -653,7 +656,7 @@ final class DictationConstantsTests: XCTestCase {
             translateTarget: "en-US",
             selectedText: nil,
             keyboardType: 0,
-            session: "expired-settings",
+            session: session,
             timestamp: now - 61
         )
         DarwinBridge.writeDictationSettings(settings)
@@ -661,7 +664,7 @@ final class DictationConstantsTests: XCTestCase {
         XCTAssertNil(DarwinBridge.peekPendingDictationSettings(now: now, maxAge: 60))
         XCTAssertNil(
             DarwinBridge.readAndConsumeDictationSettings(
-                expectedSession: "expired-settings",
+                expectedSession: session,
                 now: now
             )
         )
@@ -789,6 +792,29 @@ final class DictationConstantsTests: XCTestCase {
         XCTAssertNil(DarwinBridge.readAndConsumeDictationSettings(expectedSession: invalid))
         XCTAssertNil(DarwinBridge.readAndConsumeResult(expectedSession: invalid))
         XCTAssertFalse(DarwinBridge.cancelSession(invalid))
+    }
+
+    func testPeekDictationSettingsReturnsExactSessionWithoutConsumingIt() {
+        let session = UUID().uuidString
+        let settings = DictationSettings(
+            language: "zh-CN",
+            whisper: false,
+            translateEnabled: false,
+            translateTarget: "en-US",
+            selectedText: "选区",
+            keyboardType: 0,
+            session: session
+        )
+        XCTAssertTrue(DarwinBridge.writeDictationSettings(settings))
+
+        XCTAssertEqual(
+            DarwinBridge.peekDictationSettings(expectedSession: session),
+            settings
+        )
+        XCTAssertEqual(
+            DarwinBridge.readAndConsumeDictationSettings(expectedSession: session),
+            settings
+        )
     }
 
     func testCancelNotificationNameRequiresValidSessionToken() {

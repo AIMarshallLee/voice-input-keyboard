@@ -2641,7 +2641,7 @@ func testHotRequestUsesReadOnlyPolicyAndMirrorsEngineEvents() async throws {
 }
 
 @MainActor
-func testPermissionRequiredRequeuesAndDisablesReadiness() async throws {
+func testPermissionRequiredTerminatesWithoutRequeueAndDisablesReadiness() async throws {
     let runner = RecordingSessionRunner(events: [
         .failed(.permissionRequiresForeground(.microphone))
     ])
@@ -2651,7 +2651,8 @@ func testPermissionRequiredRequeuesAndDisablesReadiness() async throws {
 
     await manager.handlePendingRequest()
 
-    XCTAssertEqual(DarwinBridge.peekPendingDictationSettings()?.session, settings.session)
+    XCTAssertNil(DarwinBridge.peekDictationSettings(expectedSession: settings.session))
+    XCTAssertNil(DarwinBridge.peekPendingDictationSettings())
     XCTAssertEqual(pip.stopStandbyCount, 1)
 }
 
@@ -2797,7 +2798,7 @@ Refactor `BackgroundDictationManager` to retain only:
 - the injected `any PiPStandbyPresenting`;
 - Darwin observers;
 - current token and one event-consumer task;
-- mapping engine events to visible PiP state and requeue/manual recovery.
+- mapping engine events to visible PiP state and explicit retry/manual recovery.
 
 Make internal `handlePendingRequest`, `handleStopNotification(session:)`, and `handleCancelNotification(session:)` async so tests can await command delivery. Register separate session-scoped observers: `requestStopDictation` always calls `engine.stop(token:)`; `requestCancelDictation` always calls `engine.cancel(token:)`, including while processing. Neither handler infers one command from the other or branches on phase. Darwin observer closures start one `Task { @MainActor in ... }` for each control notification.
 
@@ -2831,7 +2832,9 @@ let request = DictationSessionRequest(
 )
 ```
 
-At `.preparing`, post the existing session-scoped `dictationStarted` acknowledgement so the keyboard receives it within its 1.2-second hot deadline. At permission-required, recognition-unavailable-before-listening, or start-timeout failures, requeue the exact same settings, stop PiP standby to invalidate readiness, and post `dictationFailed`. After listening has begun, all engine failures are terminal and are not silently restarted.
+At `.preparing`, post the existing session-scoped `dictationStarted` acknowledgement so the keyboard receives it within its 1.2-second hot deadline. At permission-required, recognition-unavailable-before-listening, or start-timeout failures, stop PiP standby to invalidate readiness and expose the session-scoped failure with explicit Retry guidance. Never requeue the same settings after an engine terminal: the terminal receipt must continue to reject that UUID. All engine failures are terminal and are not silently restarted. The subsequent explicit keyboard Retry creates a fresh UUID through the ordinary launch path, which is manual-only after readiness is cleared. Do not apply the nonterminal hot-timeout handoff to an already-terminal source.
+
+Add an integration regression using the real engine and Darwin output with injected permission/audio dependencies: a pre-listening permission failure consumes the original pending request, leaves no pending file for its terminal UUID, and its terminal receipt rejects later commits. Keep the manager unit test above separate from that persistence test; a fake runner must not be treated as evidence that production terminal persistence occurred. Task 8 adds the fresh explicit Retry and held/manual disposition assertions.
 
 Delete every `AVAudioEngine`, `SFSpeechRecognizer`, recognition request/task, generation, silence timer, permission, audio-interruption, and terminal-write member from this manager. After the edit, `rg -n "AVAudioEngine|SFSpeech|installTap|writeTranscription|writeError" VoiceInputApp/BackgroundDictationManager.swift` must return no matches.
 
@@ -4045,7 +4048,9 @@ private func handoffTimedOutHotRequest(_ oldToken: SessionToken) {
 
 The `.moved` outcome is the only branch that shows “请从主屏幕打开 VoType，返回后继续”. It first guarantees a fresh pending request and tombstones the old token, then sends the dedicated cancel command so the old App-side engine terminates even if already processing. Never reuse `requestStopDictation` for this handoff because stop during processing is intentionally a no-op. A late `dictationStarted` for the old UUID fails the existing `currentSessionId` guard and `hotAckCoordinator.acknowledge`, so it cannot restore hot mode or automatic insertion. `.failed` keeps a visible retry path and never claims that manual recovery is ready.
 
-`onDictationStarted` must parse the notification session as `SessionToken` and call `hotAckCoordinator.acknowledge(token:)` before changing UI state. `onDictationFailed`, cancellation, result completion, reset, and controller teardown call `hotAckCoordinator.cancel()`. A failure marks the recovery snapshot `.manualOpen`, clears `currentExtensionSessionToken`, and shows “请从主屏幕打开 VoType，返回后继续”; it never schedules a launch retry. For cold state, show that same message immediately and do not arm a timer.
+`onDictationStarted` must parse the notification session as `SessionToken` and call `hotAckCoordinator.acknowledge(token:)` before changing UI state. `onDictationFailed`, cancellation, result completion, reset, and controller teardown call `hotAckCoordinator.cancel()`. A terminal failure clears `currentExtensionSessionToken` and shows the failure with explicit “点麦克风重试” guidance; it never claims that a pending manual request exists or schedules an automatic retry. Explicit Retry snapshots the current field into a new UUID, binds observers/current session to it, and uses the ordinary launch policy; after PiP readiness was disabled this is `.manualOpen` and its result is held. Consume/discard only the old error payload, retaining its receipt. For a cold request that was actually saved, show “请从主屏幕打开 VoType，返回后继续” immediately and do not arm a timer.
+
+Add a retry regression proving the new UUID differs, the old error cannot reappear in the new session, late old commits remain blocked, and the replacement is bound as a held manual result. This is distinct from the existing nonterminal 1.2-second hot handoff regression.
 
 Add `private var currentExtensionSessionToken: SessionToken?` and `private var currentDictationSettings: DictationSettings?`. Assign both only when this live controller creates the request; retain the immutable settings until terminal cleanup so a consumed hot request can be moved to a new manual UUID. Never set `currentExtensionSessionToken` from `restoreSession`; clear it after insert, copy, discard, cancel, or timeout. Pass the saved `contextFingerprint` into `DictationSettings.expectedContextFingerprint`:
 
@@ -4075,7 +4080,7 @@ let settings = DictationSettings(
 currentDictationSettings = settings
 ```
 
-Delete `requestContainingAppOpen`, `openURLThroughResponderChain`, `darwinFallbackTimer`, every `extensionContext.open`, every `UIApplication` host-open call, every `NSSelectorFromString("openURL:")`, and every delayed responder retry from `KeyboardExtension`. `onDictationFailed` must mark manual mode and show recovery; it must not attempt another launch.
+Delete `requestContainingAppOpen`, `openURLThroughResponderChain`, `darwinFallbackTimer`, every `extensionContext.open`, every `UIApplication` host-open call, every `NSSelectorFromString("openURL:")`, and every delayed responder retry from `KeyboardExtension`. `onDictationFailed` must expose explicit retry without attempting another launch or promising that a terminal UUID can be resumed.
 
 Update readiness copy from “VoType 将短暂打开” to “请手动打开 VoType 后继续”. Do not remove `VoiceInputApp.onOpenURL`; it remains a safe legacy/user-deep-link receiver, not a keyboard launch path.
 
