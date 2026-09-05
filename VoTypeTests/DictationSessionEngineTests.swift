@@ -574,7 +574,7 @@ final class DictationSessionEngineTests: XCTestCase {
             generation: 1
         )
         await harness.engine.stop(token: request.token)
-        try await harness.waitUntil("final-recognition deadline") {
+        try await waitUntil("final-recognition deadline") {
             harness.scheduler.pending.contains {
                 $0.interval == harness.deadlines.finalRecognition && !$0.task.isCancelled
             }
@@ -702,6 +702,85 @@ final class DictationSessionEngineTests: XCTestCase {
         let transcripts = await harness.processor.calls.map(\.0)
         XCTAssertEqual(transcripts, ["停止后的最新部分"])
         XCTAssertEqual(events.events.last?.event, .completed(harness.completedPlan))
+    }
+
+    func testStopClosesAudioAndOrdersEventsBeforePendingPublicationCompletes() async throws {
+        let harness = EngineHarness()
+        defer { harness.releaseAllTestWaiters() }
+        let request = harness.makeRequest()
+        let events = try await harness.start(request)
+        defer { events.cancel() }
+        try await harness.waitForEvent(.listening(partial: ""), in: events)
+
+        try await runBoundedOperation("pending partial recognition") {
+            await harness.engine.recognitionUpdated(
+                .success(.init(transcript: "待发布文本", isFinal: false)),
+                token: request.token,
+                generation: 1
+            )
+        }
+        try await waitUntil("pending partial publication deadline") {
+            harness.scheduler.pending.contains {
+                $0.interval == harness.deadlines.partialPublish && !$0.task.isCancelled
+            }
+        }
+        XCTAssertFalse(events.events.contains { $0.event == .listening(partial: "待发布文本") })
+
+        harness.outputGates.enable(.publishLive, token: request.token)
+        let stopCompleted = LockedTestBox(false)
+        let stopTask = Task {
+            await harness.engine.stop(token: request.token)
+            stopCompleted.set(true)
+        }
+        defer {
+            harness.outputGates.release(.publishLive, token: request.token)
+            stopTask.cancel()
+        }
+
+        try await waitUntil("pending partial reaches gated live output") {
+            let liveEvents = await harness.output.liveEvents
+            return liveEvents.contains {
+                $0.token == request.token && $0.event == .listening(partial: "待发布文本")
+            }
+        }
+        XCTAssertEqual(harness.audio.session(at: 0).stopCount, 1)
+        XCTAssertEqual(harness.speech.session(at: 0).endAudioCount, 1)
+        try await harness.waitForEvent(.processing, in: events)
+        let partialIndex = try XCTUnwrap(
+            events.events.firstIndex { $0.event == .listening(partial: "待发布文本") }
+        )
+        let processingIndex = try XCTUnwrap(
+            events.events.firstIndex { $0.event == .processing }
+        )
+        XCTAssertLessThan(partialIndex, processingIndex)
+
+        try await runBoundedOperation("final recognition during gated publication") {
+            await harness.engine.recognitionUpdated(
+                .success(.init(transcript: "待发布文本", isFinal: true)),
+                token: request.token,
+                generation: 1
+            )
+        }
+        try await waitUntil("text processor completion") {
+            await harness.processor.calls.count == 1
+        }
+        try await harness.waitForFinished(events)
+        let terminalCount = await harness.output.commitCount(for: request.token)
+        let terminalIndex = try XCTUnwrap(
+            events.events.firstIndex { $0.event == .completed(harness.completedPlan) }
+        )
+        XCTAssertEqual(terminalCount, 1)
+        XCTAssertLessThan(processingIndex, terminalIndex)
+
+        let eventCountBeforeRelease = events.events.count
+        harness.outputGates.release(.publishLive, token: request.token)
+        try await waitUntil("stop completion") { stopCompleted.value }
+        try await requireStableCondition("no late processing publication or stream event") {
+            let liveEvents = await harness.output.liveEvents
+            return !liveEvents.contains { $0.event == .processing }
+                && events.events.count == eventCountBeforeRelease
+                && events.events.last?.event == .completed(harness.completedPlan)
+        }
     }
 
     func testReplacedSilenceDeadlineCannotStopNewerPartial() async throws {

@@ -1922,6 +1922,8 @@ Also add `testFinalRecognitionDeadlineUsesPartialReceivedAfterStop`: await liste
 
 Add `testReplacedSilenceDeadlineCannotStopNewerPartial`: receive partial A, then B in the same generation; assert A's timer is cancelled and B has its own timer. Directly await the real module-internal `silenceExpired` handler with A's attempt and verify capture remains listening; then fire B's timer and require exactly one processing transition. An already-enqueued timer can survive cancellation, so token/generation alone is insufficient. The direct handler call gives deterministic stale-callback acknowledgement; keep the real scheduler-fire tests for closure wiring rather than using fixed yields as proof.
 
+Add `testStopClosesAudioAndOrdersEventsBeforePendingPublicationCompletes`: create a pending partial without firing its publish window, gate live output, start a bounded stop operation, and wait for that partial to reach output. Before releasing output, require capture stopped once, Speech endAudio once, and the stream already containing partial followed by processing. Deliver final recognition while output remains gated; require one processor call and one terminal after processing. Release the gate and await stop completion; no later live processing write or post-terminal stream event may appear. Cleanup must release the gate synchronously. This tests the stop barrier and event order together, not only final-state counts.
+
 Add these cases:
 
 ```swift
@@ -2122,7 +2124,9 @@ private func processingExpired(token: SessionToken, generation: UInt64) async {
 }
 ```
 
-Schedule `startDeadline` immediately after installing the active record; cancel it only after capture reaches listening. In `beginProcessing`, call `publishPendingPartial` before changing phase, then re-fetch and recheck token/generation/listening phase before scheduling `finalDeadline`; never restore a pre-await record. In `startTextProcessing`, cancel `finalDeadline` and schedule `processingDeadline`. `processingFinished` cancels `processingDeadline` before calling `finish`. Every assignment is written back to `active` before an awaited call, and ownership is revalidated after every suspension. The partial publication timer is one pending window, not a debounce timer reset by every partial.
+Schedule `startDeadline` immediately after installing the active record; cancel it only after capture reaches listening. `beginProcessing` must preserve Task3's synchronous stop barrier: before any await, freeze/clear the pending partial, cancel/clear partial and silence deadlines, set processing, stop capture, close the gate with endAudio, clear the resource references, deactivate audio, and register the final deadline. Reserve consecutive envelopes for the frozen partial (if any) followed by processing, update `nextSequence`/`active`, and yield both to the captured continuation synchronously. Only then publish those captured envelopes in order, checking current token/generation/processing ownership before each call and after each suspension; if a final/cancel won, skip remaining live writes. Do not call the listening-phase-gated `publishPendingPartial` after transitioning or await it before stopping capture. Reserving both stream events allows a final to complete during suspended persistence without overtaking processing; do not add a new deferred-final flag or test-only production hook.
+
+In `startTextProcessing`, cancel `finalDeadline` and schedule `processingDeadline`. `processingFinished` cancels `processingDeadline` before calling `finish`. Every assignment is written back to `active` before an awaited call, and ownership is revalidated after every suspension. The partial publication timer is one pending window, not a debounce timer reset by every partial.
 
 - [ ] **Step 5: Make terminal arbitration re-entrancy safe**
 
