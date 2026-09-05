@@ -731,4 +731,117 @@ final class DictationConstantsTests: XCTestCase {
         )
         XCTAssertNil(DarwinBridge.peekPendingDictationSettings(now: now + 1))
     }
+
+    func testTypedCompletedCommitIsFirstWriterWins() throws {
+        let token = SessionToken()
+        let plan = EditPlan(
+            intent: .dictate,
+            operation: .insertAtCursor,
+            text: "第一次",
+            expectedContextFingerprint: nil,
+            requiresConfirmation: false
+        )
+        XCTAssertEqual(DarwinBridge.commit(.completed(plan), token: token), .written)
+        XCTAssertEqual(DarwinBridge.commit(.failed(.recognition), token: token), .alreadyTerminal)
+        XCTAssertEqual(
+            DarwinBridge.peekResult(expectedSession: token.rawValue)?.editPlan,
+            plan
+        )
+    }
+
+    func testTypedCancelledCommitCreatesNoResult() {
+        let token = SessionToken()
+        XCTAssertEqual(DarwinBridge.commit(.cancelled, token: token), .cancelled)
+        XCTAssertNil(DarwinBridge.peekResult(expectedSession: token.rawValue))
+        XCTAssertEqual(
+            DarwinBridge.commit(
+                .completed(
+                    EditPlan(
+                        intent: .dictate,
+                        operation: .insertAtCursor,
+                        text: "迟到",
+                        expectedContextFingerprint: nil,
+                        requiresConfirmation: false
+                    )
+                ),
+                token: token
+            ),
+            .cancelled
+        )
+    }
+
+    func testInvalidSessionCannotCreateOrConsumeIPC() {
+        let invalid = "not-a-uuid"
+        XCTAssertFalse(
+            DarwinBridge.writeDictationSettings(
+                DictationSettings(
+                    language: "zh-CN",
+                    whisper: false,
+                    translateEnabled: false,
+                    translateTarget: "en-US",
+                    selectedText: nil,
+                    keyboardType: 0,
+                    session: invalid
+                )
+            )
+        )
+        XCTAssertNil(DarwinBridge.peekDictationSettings(expectedSession: invalid))
+        XCTAssertNil(DarwinBridge.readAndConsumeDictationSettings(expectedSession: invalid))
+        XCTAssertNil(DarwinBridge.readAndConsumeResult(expectedSession: invalid))
+        XCTAssertFalse(DarwinBridge.cancelSession(invalid))
+    }
+
+    func testCancelNotificationNameRequiresValidSessionToken() {
+        let token = SessionToken()
+        XCTAssertNotNil(
+            DarwinBridge.sessionNotificationName(
+                base: DarwinNotificationName.requestCancelDictation,
+                session: token.rawValue
+            )
+        )
+        XCTAssertNil(
+            DarwinBridge.sessionNotificationName(
+                base: DarwinNotificationName.requestCancelDictation,
+                session: "not-a-uuid"
+            )
+        )
+    }
+
+    func testDictationSettingsRoundTripsExpectedContextFingerprint() throws {
+        let settings = DictationSettings(
+            language: "zh-CN",
+            whisper: false,
+            translateEnabled: false,
+            translateTarget: "en-US",
+            selectedText: nil,
+            keyboardType: 0,
+            session: UUID().uuidString,
+            expectedContextFingerprint: "context-digest"
+        )
+
+        let data = try JSONEncoder().encode(settings)
+        let decoded = try JSONDecoder().decode(DictationSettings.self, from: data)
+        XCTAssertEqual(decoded, settings)
+        XCTAssertEqual(decoded.expectedContextFingerprint, "context-digest")
+    }
+
+    func testLegacyDictationSettingsDecodeWithoutContextFingerprint() throws {
+        let session = UUID().uuidString
+        let json = """
+        {"language":"zh-CN","whisper":true,"translateEnabled":false,"translateTarget":"en-US","selectedText":"旧选区","keyboardType":3,"session":"\(session)","timestamp":100}
+        """
+
+        let decoded = try JSONDecoder().decode(
+            DictationSettings.self,
+            from: Data(json.utf8)
+        )
+        XCTAssertEqual(decoded.session, session)
+        XCTAssertEqual(decoded.language, "zh-CN")
+        XCTAssertTrue(decoded.whisper)
+        XCTAssertFalse(decoded.translateEnabled)
+        XCTAssertEqual(decoded.translateTarget, "en-US")
+        XCTAssertEqual(decoded.selectedText, "旧选区")
+        XCTAssertEqual(decoded.keyboardType, 3)
+        XCTAssertEqual(decoded.expectedContextFingerprint, nil)
+    }
 }
