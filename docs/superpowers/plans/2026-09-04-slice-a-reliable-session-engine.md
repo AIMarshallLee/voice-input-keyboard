@@ -1920,6 +1920,8 @@ func testPartialBurstPublishesOnlyLatestValuePerWindow() async throws {
 
 Also add `testFinalRecognitionDeadlineUsesPartialReceivedAfterStop`: await listening, stop, directly await `recognitionUpdated` with a newer non-final transcript, then fire the final-recognition deadline. Assert that the processor receives that newer transcript once, without a new listening publication or silence deadline. Use Task 3's actual bounded harness APIs and awaited callback admission instead of the illustrative unbounded `Task.value` or scheduling assumptions above.
 
+Add `testReplacedSilenceDeadlineCannotStopNewerPartial`: receive partial A, then B in the same generation; assert A's timer is cancelled and B has its own timer. Directly await the real module-internal `silenceExpired` handler with A's attempt and verify capture remains listening; then fire B's timer and require exactly one processing transition. An already-enqueued timer can survive cancellation, so token/generation alone is insufficient. The direct handler call gives deterministic stale-callback acknowledgement; keep the real scheduler-fire tests for closure wiring rather than using fixed yields as proof.
+
 Add these cases:
 
 ```swift
@@ -2038,6 +2040,8 @@ Use the exact failure rules:
 
 Cancel and replace the silence deadline on each newer partial. Replace the Task 3 non-final branch with these helpers so only `pendingPartial` is retained and one latest value is emitted per publish window:
 
+Add process-local `silenceDeadlineAttempt: UInt64` to `ActiveSession`, initialized to zero. Increment and capture it only when replacing a silence timer; this identity never crosses IPC. Other timers are not repeatedly replaced within one active generation and retain their existing phase guards.
+
 ```swift
 private func receivePartial(
     _ transcript: String,
@@ -2054,12 +2058,14 @@ private func receivePartial(
     }
     current.pendingPartial = transcript
     current.silenceDeadline?.cancel()
+    current.silenceDeadlineAttempt &+= 1
+    let silenceAttempt = current.silenceDeadlineAttempt
     current.silenceDeadline = schedule(
         deadlines.silence,
         token: token,
         generation: generation
     ) { engine in
-        await engine.silenceExpired(token: token, generation: generation)
+        await engine.silenceExpired(token: token, generation: generation, attempt: silenceAttempt)
     }
     if current.partialDeadline == nil {
         current.partialDeadline = schedule(
@@ -2089,9 +2095,10 @@ private func startExpired(token: SessionToken, generation: UInt64) async {
     await finish(.failed(.startTimeout), token: token, generation: generation)
 }
 
-private func silenceExpired(token: SessionToken, generation: UInt64) async {
+func silenceExpired(token: SessionToken, generation: UInt64, attempt: UInt64) async {
     guard let current = matching(token: token, generation: generation),
           current.phase == .listening,
+          current.silenceDeadlineAttempt == attempt,
           !current.transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
     await beginProcessing(token: token, generation: generation)
 }
