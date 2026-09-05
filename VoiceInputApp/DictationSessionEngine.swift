@@ -16,6 +16,7 @@ actor DictationSessionEngine: DictationSessionRunning {
         var transcript: String
         var hasAcceptedFinalRecognition: Bool
         var pendingPartial: String?
+        var silenceDeadlineAttempt: UInt64
         var continuation: AsyncStream<DictationSessionEventEnvelope>.Continuation
         var speech: (any DictationSpeechSession)?
         var audioCapture: (any DictationAudioCaptureSession)?
@@ -34,6 +35,11 @@ actor DictationSessionEngine: DictationSessionRunning {
         let terminal: DictationTerminal
         let sequence: UInt64
         let continuation: AsyncStream<DictationSessionEventEnvelope>.Continuation
+    }
+
+    private struct LivePublication {
+        let envelope: DictationSessionEventEnvelope
+        let request: DictationSessionRequest
     }
 
     private let permissions: any DictationPermissionResolving
@@ -91,6 +97,7 @@ actor DictationSessionEngine: DictationSessionRunning {
             transcript: "",
             hasAcceptedFinalRecognition: false,
             pendingPartial: nil,
+            silenceDeadlineAttempt: 0,
             continuation: continuation,
             speech: nil,
             audioCapture: nil,
@@ -103,6 +110,16 @@ actor DictationSessionEngine: DictationSessionRunning {
             hasStartedTextProcessing: false,
             finishStarted: false
         )
+        if var authorizing = matching(token: request.token, generation: generation) {
+            authorizing.startDeadline = schedule(
+                deadlines.start,
+                token: request.token,
+                generation: generation
+            ) { engine in
+                await engine.startExpired(token: request.token, generation: generation)
+            }
+            active = authorizing
+        }
         await emit(.authorizing, token: request.token, generation: generation)
 
         Task { [permissions] in
@@ -166,20 +183,16 @@ actor DictationSessionEngine: DictationSessionRunning {
         case .failure(let failure):
             await finish(.failed(failure), token: token, generation: generation)
         case .success(let update):
-            current.transcript = update.transcript
-            current.hasAcceptedFinalRecognition = update.isFinal
-            active = current
             if update.isFinal {
+                current.transcript = update.transcript
+                current.hasAcceptedFinalRecognition = true
+                active = current
                 if current.phase == .listening {
                     await beginProcessing(token: token, generation: generation)
                 }
                 await startTextProcessing(token: token, generation: generation)
-            } else if current.phase == .listening {
-                await emit(
-                    .listening(partial: update.transcript),
-                    token: token,
-                    generation: generation
-                )
+            } else {
+                receivePartial(update.transcript, token: token, generation: generation)
             }
         }
     }
@@ -264,6 +277,8 @@ actor DictationSessionEngine: DictationSessionRunning {
         listening.audioCapture = capture
         listening.bufferGate = gate
         listening.phase = .listening
+        listening.startDeadline?.cancel()
+        listening.startDeadline = nil
         active = listening
         await emit(.listening(partial: ""), token: token, generation: generation)
     }
@@ -271,14 +286,33 @@ actor DictationSessionEngine: DictationSessionRunning {
     private func beginProcessing(token: SessionToken, generation: UInt64) async {
         guard var current = matching(token: token, generation: generation),
               current.phase == .listening else { return }
+        let pendingPartial = current.pendingPartial
+        current.pendingPartial = nil
+        current.partialDeadline?.cancel()
+        current.partialDeadline = nil
+        current.silenceDeadline?.cancel()
+        current.silenceDeadline = nil
         current.phase = .processing
         current.audioCapture?.stop()
         current.bufferGate?.close(mode: .endAudio)
         current.audioCapture = nil
         current.bufferGate = nil
-        active = current
         audioSession.deactivate()
-        await emit(.processing, token: token, generation: generation)
+        current.finalDeadline = schedule(
+            deadlines.finalRecognition,
+            token: token,
+            generation: generation
+        ) { engine in
+            await engine.finalRecognitionExpired(token: token, generation: generation)
+        }
+
+        var publications: [LivePublication] = []
+        if let pendingPartial {
+            publications.append(reserveLivePublication(.listening(partial: pendingPartial), in: &current))
+        }
+        publications.append(reserveLivePublication(.processing, in: &current))
+        active = current
+        await publishCaptured(publications, token: token, generation: generation)
     }
 
     private func startTextProcessing(token: SessionToken, generation: UInt64) async {
@@ -291,6 +325,15 @@ actor DictationSessionEngine: DictationSessionRunning {
             return
         }
         current.hasStartedTextProcessing = true
+        current.finalDeadline?.cancel()
+        current.finalDeadline = nil
+        current.processingDeadline = schedule(
+            deadlines.processing,
+            token: token,
+            generation: generation
+        ) { engine in
+            await engine.processingExpired(token: token, generation: generation)
+        }
         let snapshot = current.request.processing
         active = current
         Task { [processor] in
@@ -304,7 +347,10 @@ actor DictationSessionEngine: DictationSessionRunning {
         token: SessionToken,
         generation: UInt64
     ) async {
-        guard matching(token: token, generation: generation) != nil else { return }
+        guard var current = matching(token: token, generation: generation) else { return }
+        current.processingDeadline?.cancel()
+        current.processingDeadline = nil
+        active = current
         switch result {
         case .success(let plan):
             await finish(.completed(plan), token: token, generation: generation)
@@ -409,6 +455,126 @@ actor DictationSessionEngine: DictationSessionRunning {
             guard matching(token: token, generation: generation) != nil else { return }
         case .completed, .failed, .cancelled:
             return
+        }
+    }
+
+    private func receivePartial(
+        _ transcript: String,
+        token: SessionToken,
+        generation: UInt64
+    ) {
+        guard var current = matching(token: token, generation: generation),
+              current.phase == .listening || current.phase == .processing,
+              !current.hasAcceptedFinalRecognition else { return }
+        current.transcript = transcript
+        guard current.phase == .listening else {
+            active = current
+            return
+        }
+        current.pendingPartial = transcript
+        current.silenceDeadline?.cancel()
+        current.silenceDeadlineAttempt &+= 1
+        let attempt = current.silenceDeadlineAttempt
+        current.silenceDeadline = schedule(
+            deadlines.silence,
+            token: token,
+            generation: generation
+        ) { engine in
+            await engine.silenceExpired(token: token, generation: generation, attempt: attempt)
+        }
+        if current.partialDeadline == nil {
+            current.partialDeadline = schedule(
+                deadlines.partialPublish,
+                token: token,
+                generation: generation
+            ) { engine in
+                await engine.publishPendingPartial(token: token, generation: generation)
+            }
+        }
+        active = current
+    }
+
+    private func publishPendingPartial(token: SessionToken, generation: UInt64) async {
+        guard var current = matching(token: token, generation: generation),
+              current.phase == .listening,
+              let partial = current.pendingPartial else { return }
+        current.pendingPartial = nil
+        current.partialDeadline = nil
+        active = current
+        await emit(.listening(partial: partial), token: token, generation: generation)
+    }
+
+    private func startExpired(token: SessionToken, generation: UInt64) async {
+        guard let current = matching(token: token, generation: generation),
+              current.phase == .authorizing || current.phase == .preparing else { return }
+        await finish(.failed(.startTimeout), token: token, generation: generation)
+    }
+
+    func silenceExpired(token: SessionToken, generation: UInt64, attempt: UInt64) async {
+        guard let current = matching(token: token, generation: generation),
+              current.phase == .listening,
+              current.silenceDeadlineAttempt == attempt,
+              !current.transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        await beginProcessing(token: token, generation: generation)
+    }
+
+    private func finalRecognitionExpired(token: SessionToken, generation: UInt64) async {
+        guard let current = matching(token: token, generation: generation),
+              current.phase == .processing,
+              !current.hasStartedTextProcessing else { return }
+        if current.transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            await finish(.failed(.noSpeech), token: token, generation: generation)
+        } else {
+            await startTextProcessing(token: token, generation: generation)
+        }
+    }
+
+    private func processingExpired(token: SessionToken, generation: UInt64) async {
+        guard let current = matching(token: token, generation: generation),
+              current.phase == .processing,
+              current.hasStartedTextProcessing else { return }
+        await finish(.failed(.processingTimeout), token: token, generation: generation)
+    }
+
+    private func schedule(
+        _ interval: TimeInterval,
+        token: SessionToken,
+        generation: UInt64,
+        action: @escaping @Sendable (DictationSessionEngine) async -> Void
+    ) -> any DictationScheduledTask {
+        scheduler.schedule(after: interval) { [weak self] in
+            guard let self else { return }
+            Task { await action(self) }
+        }
+    }
+
+    private func reserveLivePublication(
+        _ event: DictationSessionEvent,
+        in session: inout ActiveSession
+    ) -> LivePublication {
+        let envelope = DictationSessionEventEnvelope(
+            token: session.request.token,
+            sequence: session.nextSequence,
+            event: event
+        )
+        session.nextSequence &+= 1
+        session.continuation.yield(envelope)
+        return LivePublication(envelope: envelope, request: session.request)
+    }
+
+    private func publishCaptured(
+        _ publications: [LivePublication],
+        token: SessionToken,
+        generation: UInt64
+    ) async {
+        for publication in publications {
+            guard let current = matching(token: token, generation: generation),
+                  current.phase == .processing,
+                  !current.finishStarted else { return }
+            await output.publishLive(publication.envelope, request: publication.request)
+            guard let current = matching(token: token, generation: generation),
+                  current.phase == .processing,
+                  !current.finishStarted else { return }
         }
     }
 
