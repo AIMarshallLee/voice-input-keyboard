@@ -11,7 +11,7 @@ enum DictationConstants {
     static let paramSession = "session"
 
     static func isValidSession(_ session: String) -> Bool {
-        UUID(uuidString: session) != nil
+        SessionToken(rawValue: session) != nil
     }
 
     static func buildDictationURL(session: String) -> URL? {

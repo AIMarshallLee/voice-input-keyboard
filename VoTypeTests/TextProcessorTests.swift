@@ -64,7 +64,8 @@ final class TextProcessorTests: XCTestCase {
             selectedText: "需要删除的文字",
             language: "zh-CN",
             translateEnabled: false,
-            translateTarget: "en-US"
+            translateTarget: "en-US",
+            voiceEditEnabled: true
         )
 
         XCTAssertEqual(result, .deleteSelection)
@@ -78,7 +79,8 @@ final class TextProcessorTests: XCTestCase {
             selectedText: "不能误删",
             language: "zh-CN",
             translateEnabled: false,
-            translateTarget: "en-US"
+            translateTarget: "en-US",
+            voiceEditEnabled: true
         )
 
         XCTAssertEqual(result, .failure(.emptyInput))
@@ -92,7 +94,8 @@ final class TextProcessorTests: XCTestCase {
             "嗯",
             language: "zh-CN",
             translateEnabled: false,
-            translateTarget: "en-US"
+            translateTarget: "en-US",
+            voiceEditEnabled: false
         )
 
         XCTAssertEqual(result, .failure(.emptyOutput))
@@ -129,7 +132,8 @@ final class TextProcessorTests: XCTestCase {
             "first apples second oranges",
             language: "en-US",
             translateEnabled: false,
-            translateTarget: "zh-CN"
+            translateTarget: "zh-CN",
+            voiceEditEnabled: false
         )
 
         XCTAssertEqual(result, .insert("1. apples\n2. oranges"))
@@ -145,7 +149,8 @@ final class TextProcessorTests: XCTestCase {
             "translated",
             language: "en-US",
             translateEnabled: true,
-            translateTarget: "ja-JP"
+            translateTarget: "ja-JP",
+            voiceEditEnabled: false
         )
 
         XCTAssertEqual(result, .insert("翻訳済み。"))
@@ -163,11 +168,36 @@ final class TextProcessorTests: XCTestCase {
             "hello",
             language: "en-US",
             translateEnabled: false,
-            translateTarget: "zh-CN"
+            translateTarget: "zh-CN",
+            voiceEditEnabled: false
         )
 
         XCTAssertEqual(result, .insert("hello."))
         XCTAssertTrue(translator.calls.isEmpty)
+    }
+
+    func testVoiceEditUsesExplicitSessionSnapshotInsteadOfLiveDefaults() async {
+        defaults.set(true, forKey: "voiceEdit")
+        let disabledForSession = await processor.process(
+            "删除",
+            selectedText: "必须保留",
+            language: "zh-CN",
+            translateEnabled: false,
+            translateTarget: "en-US",
+            voiceEditEnabled: false
+        )
+        XCTAssertEqual(disabledForSession, .insert("删除。"))
+
+        defaults.set(false, forKey: "voiceEdit")
+        let enabledForSession = await processor.process(
+            "删除",
+            selectedText: "需要删除",
+            language: "zh-CN",
+            translateEnabled: false,
+            translateTarget: "en-US",
+            voiceEditEnabled: true
+        )
+        XCTAssertEqual(enabledForSession, .deleteSelection)
     }
 
     func testManagersShareInjectedDefaultsSuite() {
