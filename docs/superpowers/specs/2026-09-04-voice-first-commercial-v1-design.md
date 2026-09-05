@@ -1,6 +1,6 @@
 # VoType Voice-First Commercial V1 Design
 
-**Status:** Proposed and approved in chat; pending written-spec review
+**Status:** Approved for Slice A implementation planning
 
 **Date:** 2026-09-04
 
