@@ -2275,7 +2275,7 @@ git commit -m "test: harden dictation lifecycle races"
 - Create: `VoiceInputApp/AppleDictationAdapters.swift`
 - Create: `VoiceInputApp/DictationSessionEnvironment.swift`
 - Create: `VoTypeTests/AppleDictationAdaptersTests.swift`
-- Modify: `Shared/DarwinBridge.swift:225-297, 433-666`
+- Consume unchanged: `Shared/DarwinBridge.swift` (existing typed IPC and immediate publisher APIs)
 - Modify: `Shared/TextProcessor.swift:175-227, 292-310`
 - Modify: `VoTypeTests/TextProcessorTests.swift:57-177`
 
@@ -2462,6 +2462,8 @@ func testVoiceEditUsesExplicitSessionSnapshotInsteadOfLiveDefaults() async {
 
 Add the required `voiceEditEnabled:` argument to every existing nondeprecated `process` call in `TextProcessorTests`: use `true` for the existing voice-edit cases and `false` for ordinary dictation/translation cases. Do not change any processing algorithm; this task only removes the live-default read from the per-session path.
 
+Add Darwin output regressions using the existing temporary-container fixture (`DarwinBridge.setContainerDirectoryForTesting`) and real persisted live-state reads: publish same-token sequence 2 with a newer partial, then sequence 1 and duplicate sequence 2 with older text; the newer text must remain. A subsequent higher sequence must be persisted immediately without a second throttle. Also reject mismatched envelope/request tokens and live writes after commit starts. Use a fresh output adapter per test and clean up only its test container; no actual microphone, permission prompt or system notification assumptions.
+
 - [ ] **Step 3: Run adapter tests and observe missing production types**
 
 Run:
@@ -2543,6 +2545,8 @@ inputNode.installTap(
 
 Add `voiceEditEnabled: Bool` as a required final argument of the typed `TextProcessor.process` method and replace its `if voiceEditEnabled` property read with that argument. In the deprecated string-returning overload, capture the live setting once and pass it explicitly so only legacy callers retain legacy behavior. `TextProcessorDictationAdapter.process` must pass every field from its immutable `TextProcessingSnapshot`, including `snapshot.voiceEditEnabled`; it must not reread `TextProcessor.shared` or `UserDefaults` while processing. Selected replacement/deletion always requires confirmation. `livePreviewEnabled` controls only whether `DarwinDictationSessionOutput` persists a nonempty partial; Speech partials remain enabled internally.
 
+For this intermediate task, retain a narrowly deprecated typed overload with the prior signature (without `voiceEditEnabled:`) for the existing foreground/background callers. It captures the live voice-edit setting once and delegates to the new explicit-snapshot overload; Tasks 6/7 migrate those callers. Do not prematurely edit either UI/manager or reintroduce an optional/defaulted snapshot argument into the new path. This compatibility bridge preserves compilability without changing the old callers' behavior.
+
 The adapter call is exactly:
 
 ```swift
@@ -2607,6 +2611,10 @@ static func plan(
 ```
 
 It reuses one `DictationLiveStatePublisher` per token and never creates a second throttler. `commit` calls `DarwinBridge.commit`, clears the matching publisher, and posts the existing session-scoped started/failed/stopped notifications only for their truthful state transitions.
+
+Use `publishImmediately` for all accepted engine live envelopes, including nonempty partials; do not call `publishPartial`, because the engine already coalesces and the existing publisher clamps even a zero interval to at least 0.15 seconds. Preserve the existing publisher for older callers rather than changing its throttle behavior.
+
+The output adapter must validate envelope/request token equality, maintain the highest admitted sequence per token, reject older/equal sequences, and close admission when commit begins. Admission and the synchronous publisher write must occur in the same MainActor isolation turn, with no await between the sequence guard/update and write. Keep this state and publishers in the same MainActor-isolated adapter or internal sink; do not guard in one actor and then await a different actor for persistence. Preserve the environment's synchronous construction with a safe empty nonisolated initializer or lazy internal sink rather than introducing a new public protocol. No sequence metadata or architecture change to IPC is required; the guard is process-local. Existing bridge terminal/tombstone guards remain the durable backstop.
 
 - [ ] **Step 7: Compose exactly one production engine**
 

@@ -8,8 +8,8 @@
 - 职责机制：[窗口 Agent 规划书](../docs/superpowers/specs/2026-09-05-votype-continuous-delivery-agent-charter.md)，用户已回复“同意”。
 - 规格：[商用 V1](../docs/superpowers/specs/2026-09-04-voice-first-commercial-v1-design.md)。
 - 实施计划：[Slice A 九任务](../docs/superpowers/plans/2026-09-04-slice-a-reliable-session-engine.md)。
-- 当前断点：Task 1–3 已取得真实 RED、GREEN 和独立审查 PASS，实施验收进度 **3/9**。统一引擎主路径已实现但尚未接入现有前台/PiP，不能据此认定 App 真机可用。
-- 下一动作：Task 4 已进入测试先行阶段，覆盖截止时间、部分识别合并、竞态和 50 次会话重用；先取得 macOS RED 再实现。
+- 当前断点：Task 1–4 已取得真实 RED、GREEN 和独立审查 PASS，实施验收进度 **4/9**。统一引擎、超时/竞态/重用门禁已通过，但尚未接入现有前台/PiP，不能据此认定 App 真机可用。
+- 下一动作：Task 5 已进入测试先行阶段，接入 Apple、文本处理与 Darwin 输出适配；先取得 macOS RED 再实现。
 
 ## 源码与工作区身份
 
@@ -20,7 +20,7 @@
 - 原有规格、实施计划、职责稿与台账已在授权后提交为 `a5045f2`；没有丢弃原差异。
 - 草稿 [PR #13](https://github.com/AIMarshallLee/voice-input-keyboard/pull/13) 已创建，未合并。
 - `project.yml` 是生成工程的唯一来源；现有测试 target 包含整个 `VoTypeTests` 目录。
-- Task 1 模型/IPC、Task 2 依赖端口/同步音频屏障及 Task 3 引擎主路径已验收；新测试通过 `xcodegen generate` 编入。Task 4 基线为 `f0a591a`。
+- Task 1–4 已验收；新测试通过 `xcodegen generate` 编入。Task 5 基线为 `5247153`。
 
 ## 授权状态
 
@@ -42,8 +42,8 @@
 | 1 | Canonical Session 与向后兼容 IPC | 完成：`f5a1fb7`，#151 GREEN，独立审查 PASS |
 | 2 | 依赖端口与同步音频屏障 | 完成：`c6ed787`，#153 GREEN，独立审查 PASS |
 | 3 | 引擎主路径与命令语义 | 完成：`f0a591a`，#156 GREEN，独立审查 PASS |
-| 4 | 截止时间、迟到回调、竞态与重用 | 进行中：编写失败测试，尚未修改生产逻辑 |
-| 5 | Apple、文本、Darwin 生产适配 | 待做 |
+| 4 | 截止时间、迟到回调、竞态与重用 | 完成：`5247153`，#159 GREEN，独立审查 PASS |
+| 5 | Apple、文本、Darwin 生产适配 | 进行中：准备失败测试，生产适配尚未实现 |
 | 6 | PiP/原地输入迁移 | 待做 |
 | 7 | 前台呈现迁移 | 待做 |
 | 8 | 移除不支持的拉起与手动结果保留 | 待做 |
@@ -66,10 +66,13 @@
 - [Task 2 GREEN #153](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/33955132256) **SUCCESS**（13m08s），源码 `c6ed78713fb0d271a659544496c5c6276814903d`：同步屏障 2/2（0.066s）、全单元 102/102、4 个独立 UI、unsigned Release/Archive 通过；实际日志没有点名三个 Task 2 文件的 warning/error。独立 reviewer_sol 源码与证据收口 PASS；真实麦克风/PiP 不在此结论内。
 - Task 3 实施前架构复核纠正了计划竞态：同步保留旧会话结束信息并释放旧资源后才接受新会话，异步保存仅操作冻结流；授权恢复后再次核对 token/generation/phase。加入三个请求交错、授权发布挂起和资源关闭顺序测试，不将已知不安全的中间实现留给后续任务修复。Task 4 的 partial timer 按固定窗口合并，不按每次 partial 重置为 debounce。
 - [Task 3 初始 RED #154](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/33956489168)，源码 `b25dd977a6165aafc99ba1ea5c4a24b70dd2f70b`：2026-09-05 08:54:33Z 实际日志报告测试辅助代码缺少 `DictationSessionEngine`，环境准备正常。后补用例的新 RED 与实现 GREEN 见下；没有以缺少 Windows 工具代替此证据。
-- Task 3 已验证约束：`capture.start()` 抛错仍停止已创建的 capture；首次接受 final 文本后忽略该会话迟到的识别回调，但保留取消和音频中断控制。Task 4 将把停止后、final 前部分识别接入超时兜底；该定时器行为尚未实施。
+- Task 3 已验证约束：`capture.start()` 抛错仍停止已创建的 capture；首次接受 final 文本后忽略该会话迟到的识别回调，但保留取消和音频中断控制。Task 4 已把停止后、final 前部分识别接入超时兜底，见 #159 证据。
 - [Task 3 补充 RED #155](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/33957946763)，源码 `724a9e69479939c40a91b3bb9449f3e31c7f8c94`：包含 11 个用例，09:26:57Z 实际编译因缺少生产引擎按预期失败。
 - [Task 3 GREEN #156](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/33958290409) **SUCCESS**（11m53s），源码 `f0a591aaa54f524678d61f3b93196028c9d113fd`：引擎 11/11、全单元 113/113、4 个独立 UI、unsigned Release/Archive 通过。无诊断点名三个 Task 3 文件；已知旧路径/工具警告仍记录。独立审查源码及证据收口 PASS，Task 3 验收完成。artifact `9967245824` 为无签名 CI 产物，4,825,011 bytes，不是真机安装或分发证据。
-- Task 4 新增静音计时器代次：取消不能撤回已进入执行队列的旧计时器；用会话内 attempt 拒绝已被新语音替代的静音回调，避免过早停止。独立风险复核确认，纳入本项测试后实现，不修改公开协议或 IPC。
+- Task 4 已新增静音计时器代次：取消不能撤回已进入执行队列的旧计时器；用会话内 attempt 拒绝已被新语音替代的静音回调，避免过早停止。已通过本项测试与独立审查，不修改公开协议或 IPC。
+- Task 4 测试初稿 [#157](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/33959352823) 含误写的 `harness.waitUntil`，未计为有效 RED；修正并加入停止屏障回归后，[RED #158](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/33959857447) 在 `16ce98f` 上只因缺少待实现的 `silenceExpired` 按预期失败。
+- [Task 4 GREEN #159](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/33960319624) **SUCCESS**（11m14s），源码 `52471536daf5a67e924e7371d8f902ecd1fb836e`：引擎 25/25、全单元 127/127、4 个独立 UI、unsigned Release/Archive 通过；实际日志确认 100 轮终态竞争、50 次连续复用、旧静音回调拒绝及停止录音屏障用例通过。独立审查与证据收口 PASS；没有点名 Task 4 文件的诊断，已有警告仍记录。artifact `9967870025` 为无签名 CI 产物，4,828,983 bytes。
+- Task 5 预检约束：现有实时发布器再次节流会拖慢引擎已合并的反馈，因此适配层使用立即发布；同一 MainActor 操作内检查 token 与递增 sequence 并落盘，拒绝迟到/重复/终态后回调。旧前台/后台调用以窄兼容重载保留到 Task 6/7 迁移；这些适配仍待实现。
 - 真机语音/跨 App/权限/PiP：**EXTERNAL / NOT_RUN（本轮）**。历史用户测试曾暴露缺陷，不抹去历史结果。
 
 ## 发布基线
