@@ -2726,8 +2726,8 @@ func testHotRequestUsesReadOnlyPolicyAndMirrorsEngineEvents() async throws {
     XCTAssertEqual(request.token.rawValue, settings.session)
     XCTAssertEqual(request.entryPoint, .inPlace)
     XCTAssertEqual(request.authorizationPolicy, .readOnly)
+    try await waitUntil("PiP terminal presentation") { pip.states.last == .standby }
     XCTAssertEqual(pip.states, [
-        .recording(""),
         .recording("你好"),
         .processing("你好") ,
         .standby
@@ -2747,6 +2747,7 @@ func testPermissionRequiredTerminatesWithoutRequeueAndDisablesReadiness() async 
 
     XCTAssertNil(DarwinBridge.peekDictationSettings(expectedSession: settings.session))
     XCTAssertNil(DarwinBridge.peekPendingDictationSettings())
+    try await waitUntil("PiP readiness disabled") { pip.stopStandbyCount == 1 }
     XCTAssertEqual(pip.stopStandbyCount, 1)
 }
 
@@ -2763,7 +2764,10 @@ func testInactivePiPIgnoresPendingRequest() async throws {
 
 @MainActor
 func testStopAndCancelForwardOnlyCurrentToken() async throws {
-    let runner = RecordingSessionRunner(events: [.listening(partial: "")])
+    let runner = RecordingSessionRunner(
+        events: [.listening(partial: "")],
+        finishesStream: false
+    )
     let pip = RecordingPiPStandbyPresenter(isActive: true)
     let manager = BackgroundDictationManager(engine: runner, pip: pip)
     let settings = makeStoredSettings(session: UUID().uuidString)
@@ -2777,6 +2781,7 @@ func testStopAndCancelForwardOnlyCurrentToken() async throws {
     let cancelledTokens = await runner.cancelledTokens
     XCTAssertEqual(stoppedTokens, [token])
     XCTAssertEqual(cancelledTokens, [token])
+    await runner.finishAllStreams()
 }
 ```
 
@@ -2785,18 +2790,24 @@ Add these reusable fakes to `VoTypeTests/DictationSessionTestDoubles.swift`:
 ```swift
 actor RecordingSessionRunner: DictationSessionRunning {
     let events: [DictationSessionEvent]
+    let finishesStream: Bool
+    private var continuations: [AsyncStream<DictationSessionEventEnvelope>.Continuation] = []
     private(set) var requests: [DictationSessionRequest] = []
     private(set) var stoppedTokens: [SessionToken] = []
     private(set) var cancelledTokens: [SessionToken] = []
     private(set) var audioEvents: [DictationAudioSystemEvent] = []
 
-    init(events: [DictationSessionEvent]) { self.events = events }
+    init(events: [DictationSessionEvent], finishesStream: Bool = true) {
+        self.events = events
+        self.finishesStream = finishesStream
+    }
 
     func start(
         _ request: DictationSessionRequest
     ) async -> AsyncStream<DictationSessionEventEnvelope> {
         requests.append(request)
         return AsyncStream { continuation in
+            continuations.append(continuation)
             for (offset, event) in events.enumerated() {
                 continuation.yield(
                     DictationSessionEventEnvelope(
@@ -2806,8 +2817,13 @@ actor RecordingSessionRunner: DictationSessionRunning {
                     )
                 )
             }
-            continuation.finish()
+            if finishesStream { continuation.finish() }
         }
+    }
+
+    func finishAllStreams() {
+        continuations.forEach { $0.finish() }
+        continuations.removeAll()
     }
 
     func stop(token: SessionToken) async { stoppedTokens.append(token) }
@@ -2824,7 +2840,8 @@ final class RecordingPiPStandbyPresenter: PiPStandbyPresenting {
         case processing(String)
         case standby
     }
-    let isActive: Bool
+    var isActive: Bool
+    var onStandbyStopped: (() -> Void)?
     private(set) var states: [RecordedState] = []
     private(set) var stopStandbyCount = 0
 
@@ -2832,9 +2849,15 @@ final class RecordingPiPStandbyPresenter: PiPStandbyPresenting {
     func setRecording(text: String) { states.append(.recording(text)) }
     func setProcessing(text: String) { states.append(.processing(text)) }
     func returnToStandby() { states.append(.standby) }
-    func stopStandby() { stopStandbyCount += 1 }
+    func stopStandby() {
+        stopStandbyCount += 1
+        isActive = false
+        onStandbyStopped?()
+    }
 }
 ```
+
+Use held-open streams for nonterminal command tests; never retain a dead token merely to make a finished fake pass. Await finite request/event/PiP readiness barriers before assertions and release all fake streams/gates even when a test fails. `handlePendingRequest()` returns after installing the consumer, not after a production stream terminates. Extend the fake with a gated start and explicit event delivery for an A-then-B admission regression: B arrives while A's start is suspended, then B must remain the manager and runner owner and late A events must not change PiP. Add unexpected nonterminal EOF, preparing-without-recording, PiP loss while listening and processing, and saved-old-stop-callback rejection regressions. Add PiP presenter tests for exactly-once manual/system loss callbacks, an already-inactive manual stop, and delayed old delegates while a newer PiP is starting or active. These tests belong before the Task 6 RED run.
 
 In `BackgroundDictationManagerTests.setUp`, create a unique temporary directory and call `DarwinBridge.setContainerDirectoryForTesting(directory)`; in `tearDown`, call `DarwinBridge.resetContainerDirectoryAfterTesting()` and remove that exact directory. Define the helper used above as:
 
@@ -2873,6 +2896,7 @@ Define next to `PiPStandbyManager`:
 @MainActor
 protocol PiPStandbyPresenting: AnyObject {
     var isActive: Bool { get }
+    var onStandbyStopped: (() -> Void)? { get set }
     func setRecording(text: String)
     func setProcessing(text: String)
     func returnToStandby()
@@ -2882,7 +2906,7 @@ protocol PiPStandbyPresenting: AnyObject {
 extension PiPStandbyManager: PiPStandbyPresenting {}
 ```
 
-Do not change PiP rendering, startup watchdog, or background-mode configuration in this task.
+Keep PiP rendering, startup watchdog timing/policy, and background-mode configuration unchanged. Add only the internal stop callback and its exactly-once presentation transition guard. Manual `stopStandby` snapshots whether state is `.standby`, `.recording`, or `.processing` (even if the controller is already inactive), transitions to ready/unavailable and clears readiness, then notifies once. `handleDidStop` notifies only if the controller is inactive AND the current state is one of those presented states; ignore `.starting`, `.ready`, `.failed`, `.unavailable`, and an already-active newer PiP. Startup failure/timeout from `.starting` clears readiness without reporting loss of an active session. This rejects delayed old delegates without adding a generation counter or redesigning PiP.
 
 - [ ] **Step 4: Replace duplicate recording with engine adaptation**
 
@@ -2893,6 +2917,10 @@ Refactor `BackgroundDictationManager` to retain only:
 - Darwin observers;
 - current token and one event-consumer task;
 - mapping engine events to visible PiP state and explicit retry/manual recovery.
+
+Serialize pending starts with one MainActor drain/in-flight flag: a notification arriving during `await engine.start` marks another drain pass instead of starting a competing admission. Cancel the old consumer and set the new current token before the await. After it returns, require the same current token and active PiP before installing the consumer; otherwise cancel the returned token. Every envelope, terminal, and EOF cleanup must match current ownership. For an unexpected matching nonterminal EOF, synchronously detach token/consumer, stop PiP to disable readiness, and send one cancel for the captured token; never leave stranded ownership or silently resume.
+
+Install `onStandbyStopped` with the current request token captured. On a matching callback, detach local ownership synchronously before asynchronously forwarding exactly one `engine.cancel(token:)`, including while processing. Ignore saved callbacks from older tokens. Detach ownership before calling `pip.stopStandby` on a terminal failure so the callback cannot issue a second cancel.
 
 Make internal `handlePendingRequest`, `handleStopNotification(session:)`, and `handleCancelNotification(session:)` async so tests can await command delivery. Register separate session-scoped observers: `requestStopDictation` always calls `engine.stop(token:)`; `requestCancelDictation` always calls `engine.cancel(token:)`, including while processing. Neither handler infers one command from the other or branches on phase. Darwin observer closures start one `Task { @MainActor in ... }` for each control notification.
 
@@ -2926,7 +2954,7 @@ let request = DictationSessionRequest(
 )
 ```
 
-At `.preparing`, post the existing session-scoped `dictationStarted` acknowledgement so the keyboard receives it within its 1.2-second hot deadline. At permission-required, recognition-unavailable-before-listening, or start-timeout failures, stop PiP standby to invalidate readiness and expose the session-scoped failure with explicit Retry guidance. Never requeue the same settings after an engine terminal: the terminal receipt must continue to reject that UUID. All engine failures are terminal and are not silently restarted. The subsequent explicit keyboard Retry creates a fresh UUID through the ordinary launch path, which is manual-only after readiness is cleared. Do not apply the nonterminal hot-timeout handoff to an already-terminal source.
+At `.preparing`, post only the existing session-scoped `dictationStarted` hot acknowledgement so the keyboard receives it within its 1.2-second deadline; do not call `setRecording` or claim microphone use before `.listening`. At permission-required, recognition-unavailable-before-listening, or start-timeout failures, stop PiP standby to invalidate readiness and expose the session-scoped failure with explicit Retry guidance. Never requeue the same settings after an engine terminal: the terminal receipt must continue to reject that UUID. All engine failures are terminal and are not silently restarted. The subsequent explicit keyboard Retry creates a fresh UUID through the ordinary launch path, which is manual-only after readiness is cleared. Do not apply the nonterminal hot-timeout handoff to an already-terminal source.
 
 Add an integration regression using the real engine and Darwin output with injected permission/audio dependencies: a pre-listening permission failure consumes the original pending request, leaves no pending file for its terminal UUID, and its terminal receipt rejects later commits. Keep the manager unit test above separate from that persistence test; a fake runner must not be treated as evidence that production terminal persistence occurred. Task 8 adds the fresh explicit Retry and held/manual disposition assertions.
 

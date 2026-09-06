@@ -181,13 +181,15 @@ class TextProcessor {
     ///   - language: 本次识别使用的源语言 ID
     ///   - translateEnabled: 本次会话是否翻译
     ///   - translateTarget: 本次会话的目标语言 ID
+    ///   - voiceEditEnabled: 本次会话是否启用语音编辑
     func process(
         _ rawText: String,
         selectedText: String? = nil,
         keyboardType: Int = 0,
         language: String,
         translateEnabled: Bool,
-        translateTarget: String
+        translateTarget: String,
+        voiceEditEnabled: Bool
     ) async -> TextProcessingResult {
         guard !rawText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return .failure(.emptyInput)
@@ -287,6 +289,27 @@ class TextProcessor {
         return .insert(result)
     }
 
+    /// 过渡兼容入口。调用时捕获一次当前设置；新会话必须传入显式快照。
+    @available(*, deprecated, message: "Pass an explicit per-session voiceEditEnabled snapshot")
+    func process(
+        _ rawText: String,
+        selectedText: String? = nil,
+        keyboardType: Int = 0,
+        language: String,
+        translateEnabled: Bool,
+        translateTarget: String
+    ) async -> TextProcessingResult {
+        await process(
+            rawText,
+            selectedText: selectedText,
+            keyboardType: keyboardType,
+            language: language,
+            translateEnabled: translateEnabled,
+            translateTarget: translateTarget,
+            voiceEditEnabled: voiceEditEnabled
+        )
+    }
+
     /// 旧调用端兼容入口。新代码应传入会话快照并处理 `TextProcessingResult`。
     @available(*, deprecated, message: "Pass per-session language and translation settings and handle TextProcessingResult")
     func process(_ rawText: String, selectedText: String? = nil, keyboardType: Int = 0) async -> String {
@@ -298,7 +321,8 @@ class TextProcessor {
             keyboardType: keyboardType,
             language: languageManager.currentLanguageID,
             translateEnabled: translationManager.translationEnabled,
-            translateTarget: translationManager.targetLanguageID
+            translateTarget: translationManager.targetLanguageID,
+            voiceEditEnabled: voiceEditEnabled
         )
 
         switch processed {

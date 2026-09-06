@@ -1,6 +1,6 @@
 # VoType 持续交付台账
 
-更新：2026-09-05。仅记录经过核对的事实；未提交工作不计入已合并实现。
+更新：2026-09-06。仅记录经过核对的事实；未提交工作不计入已合并实现。
 
 ## 当前目标与断点
 
@@ -9,7 +9,7 @@
 - 规格：[商用 V1](../docs/superpowers/specs/2026-09-04-voice-first-commercial-v1-design.md)。
 - 实施计划：[Slice A 九任务](../docs/superpowers/plans/2026-09-04-slice-a-reliable-session-engine.md)。
 - 当前断点：Task 1–4 已取得真实 RED、GREEN 和独立审查 PASS，实施验收进度 **4/9**。统一引擎、超时/竞态/重用门禁已通过，但尚未接入现有前台/PiP，不能据此认定 App 真机可用。
-- 下一动作：Task 5 已进入测试先行阶段，接入 Apple、文本处理与 Darwin 输出适配；先取得 macOS RED 再实现。
+- 下一动作：Task 5 已取得 macOS RED，正在实现 Apple、文本处理与 Darwin 输出适配；完成后跑准确提交的 GREEN 与独立审查。
 
 ## 源码与工作区身份
 
@@ -43,7 +43,7 @@
 | 2 | 依赖端口与同步音频屏障 | 完成：`c6ed787`，#153 GREEN，独立审查 PASS |
 | 3 | 引擎主路径与命令语义 | 完成：`f0a591a`，#156 GREEN，独立审查 PASS |
 | 4 | 截止时间、迟到回调、竞态与重用 | 完成：`5247153`，#159 GREEN，独立审查 PASS |
-| 5 | Apple、文本、Darwin 生产适配 | 进行中：准备失败测试，生产适配尚未实现 |
+| 5 | Apple、文本、Darwin 生产适配 | 进行中：`186f429` / #160 RED 已验证，正在实现 |
 | 6 | PiP/原地输入迁移 | 待做 |
 | 7 | 前台呈现迁移 | 待做 |
 | 8 | 移除不支持的拉起与手动结果保留 | 待做 |
@@ -73,6 +73,7 @@
 - Task 4 测试初稿 [#157](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/33959352823) 含误写的 `harness.waitUntil`，未计为有效 RED；修正并加入停止屏障回归后，[RED #158](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/33959857447) 在 `16ce98f` 上只因缺少待实现的 `silenceExpired` 按预期失败。
 - [Task 4 GREEN #159](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/33960319624) **SUCCESS**（11m14s），源码 `52471536daf5a67e924e7371d8f902ecd1fb836e`：引擎 25/25、全单元 127/127、4 个独立 UI、unsigned Release/Archive 通过；实际日志确认 100 轮终态竞争、50 次连续复用、旧静音回调拒绝及停止录音屏障用例通过。独立审查与证据收口 PASS；没有点名 Task 4 文件的诊断，已有警告仍记录。artifact `9967870025` 为无签名 CI 产物，4,828,983 bytes。
 - Task 5 预检约束：现有实时发布器再次节流会拖慢引擎已合并的反馈，因此适配层使用立即发布；同一 MainActor 操作内检查 token 与递增 sequence 并落盘，拒绝迟到/重复/终态后回调。旧前台/后台调用以窄兼容重载保留到 Task 6/7 迁移；这些适配仍待实现。
+- [Task 5 RED #160](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/33962792398)，源码 `186f429f1cea795f484fc0a694440a7e1ffe489d`：11:15:37Z 实际编译因 typed processor 尚无必填 `voiceEditEnabled:` 参数按预期失败，相关类型推导错误由缺失签名引起；环境准备成功。已进入生产实现，尚无本项 GREEN 或验收结论。
 - 真机语音/跨 App/权限/PiP：**EXTERNAL / NOT_RUN（本轮）**。历史用户测试曾暴露缺陷，不抹去历史结果。
 
 ## 发布基线
