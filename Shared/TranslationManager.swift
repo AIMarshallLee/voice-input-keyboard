@@ -12,6 +12,7 @@ import FoundationModels
 /// - iOS 26+ 使用设备端 LLM 做高质量翻译
 /// - 低版本回退到简单词典替换(仅中英互译)
 protocol TranslationProviding {
+    @MainActor
     func translate(_ text: String, from sourceLang: String, to targetLang: String) async -> String?
 }
 
@@ -56,6 +57,7 @@ class TranslationManager: TranslationProviding {
     }
 
     /// 使用调用方本次会话指定的目标语言翻译，避免异步处理期间读取到已变化的全局设置。
+    @MainActor
     func translate(_ text: String, from sourceLang: String, to targetLang: String) async -> String? {
         guard !text.isEmpty else { return nil }
 
@@ -80,6 +82,7 @@ class TranslationManager: TranslationProviding {
 
     #if canImport(FoundationModels)
     @available(iOS 26, *)
+    @MainActor
     private func llmTranslate(_ text: String, from sourceName: String, to targetName: String) async -> String? {
         guard SystemLanguageModel.default.isAvailable else { return nil }
 
