@@ -2920,7 +2920,7 @@ Refactor `BackgroundDictationManager` to retain only:
 
 Serialize pending starts with one MainActor drain/in-flight flag: a notification arriving during `await engine.start` marks another drain pass instead of starting a competing admission. Cancel the old consumer and set the new current token before the await. After it returns, require the same current token and active PiP before installing the consumer; otherwise cancel the returned token. Every envelope, terminal, and EOF cleanup must match current ownership. For an unexpected matching nonterminal EOF, synchronously detach token/consumer, stop PiP to disable readiness, and send one cancel for the captured token; never leave stranded ownership or silently resume.
 
-Install `onStandbyStopped` with the current request token captured. On a matching callback, detach local ownership synchronously before asynchronously forwarding exactly one `engine.cancel(token:)`, including while processing. Ignore saved callbacks from older tokens. Detach ownership before calling `pip.stopStandby` on a terminal failure so the callback cannot issue a second cancel.
+Install `onStandbyStopped` with the current request token captured. On a matching callback, detach local ownership synchronously before forwarding exactly one `engine.cancel(token:)`, including while processing. If `engine.start` has not returned, defer that cancellation until the start coroutine returns and rejects the detached token; a cancel admitted before start could otherwise be a no-op. If the consumer is already installed, send it immediately. Add a gated-start PiP-loss regression. Ignore saved callbacks from older tokens. Detach ownership before calling `pip.stopStandby` on a terminal failure so the callback cannot issue a second cancel.
 
 Make internal `handlePendingRequest`, `handleStopNotification(session:)`, and `handleCancelNotification(session:)` async so tests can await command delivery. Register separate session-scoped observers: `requestStopDictation` always calls `engine.stop(token:)`; `requestCancelDictation` always calls `engine.cancel(token:)`, including while processing. Neither handler infers one command from the other or branches on phase. Darwin observer closures start one `Task { @MainActor in ... }` for each control notification.
 
@@ -2932,6 +2932,8 @@ static let shared = BackgroundDictationManager(
     pip: PiPStandbyManager.shared
 )
 ```
+
+Expose only an internal `engineIdentity: ObjectIdentifier` for Task 7's shared-engine identity assertion, never mutable engine state.
 
 Build a request only after consuming a valid UUID-scoped `DictationSettings`:
 
@@ -3000,11 +3002,11 @@ git commit -m "refactor: route pip dictation through engine"
 
 **Interfaces:**
 - Consumes: the shared engine environment, Task 1's non-consuming exact settings lookup, Task 2's injectable deadline scheduler, and existing pending-request discovery.
-- Produces: a `@MainActor` `DictationViewModel` that presents ordinary no-deep-link requests, claims the exact request at the first `.authorizing` acknowledgement within 3 seconds, requests permission only in foreground, mirrors ordered engine events, and owns no Apple recording/recognition resource.
+- Produces: a `@MainActor` `DictationViewModel` that presents ordinary no-deep-link requests, atomically claims the exact request within 3 seconds before issuing `engine.start`, validates the first matching `.authorizing` as the engine handshake, requests permission only in foreground, mirrors ordered engine events, and owns no Apple recording/recognition resource.
 
 - [ ] **Step 1: Replace recorder-centric tests with claim, timeout, and adapter contract tests**
 
-Keep the current URL/session validation coverage, but change its consumption assertion: `loadSettings` may only peek the exact request; the first matching `.authorizing` event claims it. Add an injected runner and these behaviors:
+Keep the current URL/session validation coverage, but change its consumption assertion: `loadSettings` may only peek the exact request; `startRecording` claims it synchronously before calling the engine. The engine can begin permission/capture work before its event stream reaches the UI, so event-time claiming is not a safe ownership boundary with the existing API. Add an injected runner and these behaviors:
 
 ```swift
 @MainActor
@@ -3052,21 +3054,27 @@ func testStopAndCancelForwardOnlyTheLoadedToken() async throws {
     let runner = RecordingSessionRunner(events: [
         .authorizing,
         .listening(partial: "")
-    ])
+    ], finishesStream: false)
     let model = DictationViewModel(engine: runner)
     XCTAssertTrue(DarwinBridge.writeDictationSettings(makeSettings(token: token)))
     model.loadSettings(from: nil, expectedSession: token.rawValue)
-    await model.startRecording()
+    let starting = Task { await model.startRecording() }
+    defer { starting.cancel() }
+    try await waitUntil("foreground listening") { model.isRecording }
     await model.stopRecording()
     await model.cancelRecording()
     let stoppedTokens = await runner.stoppedTokens
     let cancelledTokens = await runner.cancelledTokens
     XCTAssertEqual(stoppedTokens, [token])
     XCTAssertEqual(cancelledTokens, [token])
+    await runner.finishAllStreams()
+    try await runBoundedOperation("foreground consumer completion") {
+        await starting.value
+    }
 }
 
 @MainActor
-func testRepeatedStartWhileStreamIsActiveIssuesOnlyOneEngineStart() async {
+func testRepeatedStartWhileStreamIsActiveIssuesOnlyOneEngineStart() async throws {
     let token = SessionToken()
     let runner = RecordingSessionRunner(
         events: [.authorizing, .listening(partial: "")],
@@ -3077,13 +3085,16 @@ func testRepeatedStartWhileStreamIsActiveIssuesOnlyOneEngineStart() async {
     model.loadSettings(from: nil, expectedSession: token.rawValue)
 
     let firstStart = Task { await model.startRecording() }
-    await runner.waitForRequestCount(1)
+    defer { firstStart.cancel() }
+    try await waitUntil("one foreground start") { await runner.requests.count == 1 }
     await model.startRecording()
 
     let requests = await runner.requests
     XCTAssertEqual(requests.count, 1)
-    await runner.finishOpenStreams()
-    await firstStart.value
+    await runner.finishAllStreams()
+    try await runBoundedOperation("foreground consumer completion") {
+        await firstStart.value
+    }
 }
 
 private func makeSettings(token: SessionToken) -> DictationSettings {
@@ -3099,13 +3110,13 @@ private func makeSettings(token: SessionToken) -> DictationSettings {
 }
 ```
 
-Extend `RecordingSessionRunner` with `finishesStream: Bool = true`, retained continuations when false, `waitForRequestCount(_:)`, and `finishOpenStreams()`. Protect all of that state inside the actor; the default keeps every Task 6 test unchanged.
+Reuse Task 6's held-open runner, finite readiness waits, gates and cleanup rather than adding a second fake or relying on a fixed number of `Task.yield` calls. Test cleanup releases every gate/stream even after an assertion or wait failure. Add a gated-start cleanup regression: cleanup detaches presentation immediately, then exactly one effective cancel occurs after the delayed start returns and no stale event is applied. Add repeated `loadSettings`/appearance while active so loading the same request cannot reset `engineStartIssued` and start it again.
 
 Add the controlled 3-second boundary and competing-consumer cases to the same file:
 
 ```swift
 @MainActor
-func testForegroundClaimTimeoutLeavesSettingsPendingAndNeverStartsEngine() async {
+func testForegroundClaimTimeoutLeavesSettingsPendingAndNeverStartsEngine() async throws {
     let token = SessionToken()
     let runner = RecordingSessionRunner(events: [.authorizing])
     let scheduler = ManualDeadlineScheduler()
@@ -3119,7 +3130,7 @@ func testForegroundClaimTimeoutLeavesSettingsPendingAndNeverStartsEngine() async
 
     model.loadSettings(from: nil, expectedSession: token.rawValue)
     scheduler.fire(interval: DictationSessionDeadlines.production.foregroundClaim)
-    await Task.yield()
+    try await waitUntil("foreground claim timeout handled") { model.permissionError != nil }
     await model.startRecording()
 
     let requests = await runner.requests
@@ -3133,7 +3144,7 @@ func testForegroundClaimTimeoutLeavesSettingsPendingAndNeverStartsEngine() async
 }
 
 @MainActor
-func testAuthorizingFailsClosedWhenAnotherConsumerWonTheClaim() async {
+func testStartFailsClosedWhenAnotherConsumerWonTheClaim() async {
     let token = SessionToken()
     let runner = RecordingSessionRunner(events: [.authorizing, .preparing])
     let model = DictationViewModel(engine: runner)
@@ -3147,8 +3158,10 @@ func testAuthorizingFailsClosedWhenAnotherConsumerWonTheClaim() async {
 
     await model.startRecording()
 
+    let requests = await runner.requests
     let cancelledTokens = await runner.cancelledTokens
-    XCTAssertEqual(cancelledTokens, [token])
+    XCTAssertTrue(requests.isEmpty)
+    XCTAssertTrue(cancelledTokens.isEmpty)
     XCTAssertEqual(model.permissionError, "该语音请求已由另一入口处理，请返回键盘重试")
     XCTAssertFalse(model.hasResult)
 }
@@ -3242,7 +3255,7 @@ private func expireForegroundClaim(for token: SessionToken) {
 }
 ```
 
-Make `startRecording()` async. Refuse to call the engine if the claim already expired. Start the stored immutable request and consume the stream directly on the main actor. The first event must be the matching `.authorizing`; at that event atomically claim the exact file and cancel the 3-second deadline:
+Make `startRecording()` async. Refuse to call the engine if the claim already expired. Atomically claim and compare the exact settings synchronously, before starting the stored immutable request; claim loss issues zero engine starts and zero cancels. This is a correction to the earlier event-time claim plan, not a new engine handshake API. The first matching stream event remains `.authorizing`, but validates the handshake rather than acquiring file ownership:
 
 ```swift
 guard hasValidSettings,
@@ -3250,42 +3263,36 @@ guard hasValidSettings,
       !engineStartIssued,
       let request,
       let expected = loadedSettings else { return }
+guard let claimed = DarwinBridge.readAndConsumeDictationSettings(
+    expectedSession: request.token.rawValue
+), claimed == expected else {
+    foregroundClaimTask?.cancel()
+    hasValidSettings = false
+    permissionError = "该语音请求已由另一入口处理，请返回键盘重试"
+    statusMessage = permissionError ?? ""
+    canExit = true
+    return
+}
+settingsClaimed = true
 engineStartIssued = true
+foregroundClaimTask?.cancel()
+foregroundClaimTask = nil
 
 let stream = await engine.start(request)
-for await envelope in stream {
-    guard envelope.token == sessionToken else { continue }
-    if envelope.event == .authorizing, !settingsClaimed {
-        guard let claimed = DarwinBridge.readAndConsumeDictationSettings(
-            expectedSession: request.token.rawValue
-        ), claimed == expected else {
-            foregroundClaimTask?.cancel()
-            permissionError = "该语音请求已由另一入口处理，请返回键盘重试"
-            statusMessage = permissionError ?? ""
-            canExit = true
-            await engine.cancel(token: request.token)
-            return
-        }
-        settingsClaimed = true
-        foregroundClaimTask?.cancel()
-        foregroundClaimTask = nil
-    } else if !settingsClaimed {
-        permissionError = "语音会话握手失败，请返回键盘重试"
-        statusMessage = permissionError ?? ""
-        canExit = true
-        await engine.cancel(token: request.token)
-        return
-    }
-    apply(envelope.event)
-}
+// Revalidate the stored attempt before consuming anything. If cleanup detached
+// this start while suspended, cancel this returned token once and return.
+// Otherwise require the first matching event to be authorizing, then apply only
+// ordered matching events. Recheck ownership after each stream suspension.
 ```
 
-This is the foreground-host acknowledgement boundary: before it, the request is recoverable and unconsumed; after it, exactly one engine owns it. Set `engineStartIssued` synchronously before the first `await`; a repeated `.onAppear` or button callback therefore cannot create another engine generation or stream consumer. Map authorizing/preparing to existing connecting copy, listening to the current recording visuals/partial, processing to current processing visuals, completed to done/dismiss behavior, failed to the existing specific user message, and cancelled to dismissal without a fabricated error result. On a terminal event, clear the stored request before clearing `engineStartIssued`, so an appearance after completion cannot restart it. Claim failure, claim timeout, an unexpectedly closed nonterminal stream, and `cleanup()` may clear the flag only after cancelling/ending the matching attempt. Make `stopRecording()` and `cancelRecording()` async and have each await exactly one matching engine command; button closures invoke them in one `Task`. `cleanup()` cancels the claim task and cancels the engine only when this model successfully claimed the request.
+The synchronous exact claim is the foreground-host ownership acknowledgement: before it, settings remain recoverable and unconsumed; after it, only this matching request may be submitted to the engine. Set `engineStartIssued` before the first await, and do not let a repeated load/appearance reset an active attempt. Map authorizing/preparing to existing connecting copy, listening to recording visuals/partial, processing to processing visuals, completed to done/dismiss behavior, failed to the existing specific user message, and cancelled to dismissal without a fabricated error result. On a matching terminal, clear the stored request before clearing `engineStartIssued`, so appearance after completion cannot restart it. A wrong first event or unexpected nonterminal EOF fails closed and ends only the matching attempt.
 
-Delete every `AVAudioEngine`, `SFSpeechRecognizer`, request/task, local generation, silence/finalization timer, permission request, audio notification observer, cleanup, and direct `DarwinBridge.writeTranscription/writeError` call from this file. After the edit:
+`cleanup()` cancels the claim task and synchronously detaches request/UI ownership. Track whether start has returned: if not, defer the one engine cancellation to the returning start coroutine (an earlier cancellation might be admitted before start and do nothing); if the stream is installed, cancel the captured token immediately. Post-start stale guards must cancel the returned token, not merely hide its events. Do not cancel an unclaimed request or a newer attempt. Make `stopRecording()` and `cancelRecording()` async and forward the matching command once; button closures launch one Task. No timer, delayed callback or stream may restore detached presentation state.
+
+Delete every `AVAudioEngine`, `AVAudioSession`, `SFSpeechRecognizer`, recognition request/task, local recording generation, silence/finalization timer, permission request, audio notification observer, recorder/audio cleanup, and direct `DarwinBridge.writeTranscription/writeError` call from this file. Retain the presentation/claim/engine `cleanup()` described above. After the edit:
 
 ```bash
-rg -n "AVAudioEngine|SFSpeech|installTap|writeTranscription|writeError" VoiceInputApp/DictationView.swift
+rg -n "AVAudioEngine|AVAudioSession|SFSpeech|installTap|requestRecordPermission|audioInterruptionObserver|mediaServicesResetObserver|audioRouteObserver|writeTranscription|writeError" VoiceInputApp/DictationView.swift
 ```
 
 Expected: no matches.
@@ -4489,7 +4496,7 @@ Document these exact delivered facts:
 - one actor owns permission/audio/Speech/deadline/terminal state;
 - one synchronous buffer gate is the only PCM append path;
 - foreground and PiP are adapters over the same engine;
-- foreground request discovery works without a deep link, peeks before ownership, and claims at `.authorizing` within 3 seconds;
+- foreground request discovery works without a deep link, peeks before ownership, and atomically claims within 3 seconds before starting the engine; `.authorizing` validates the stream handshake;
 - manual recovery replaces unsupported keyboard-side launching;
 - the 1.2-second hot acknowledgement is injected, cancellable, and unit-tested;
 - a timed-out consumed hot request moves to a fresh pending manual UUID while the old UUID is tombstoned and stopped;
@@ -4547,7 +4554,7 @@ Expected: a clean worktree on the Slice A branch. Record the exact commit SHA an
 - [ ] Audio append is synchronous and barrier-protected; buffer callbacks create no task.
 - [ ] Old token/generation callbacks, deadlines, and Apple events cannot mutate a new session.
 - [ ] Foreground may request permissions; in-place mode never does.
-- [ ] Ordinary app activation presents an exact pending request without a deep link; settings remain unconsumed until matching `.authorizing`, and a 3-second miss leaves them recoverable with visible failure.
+- [ ] Ordinary app activation presents an exact pending request without a deep link; settings remain unconsumed until the synchronous exact claim before `engine.start`, and a 3-second claim miss leaves them recoverable with visible failure. The first engine event must be matching `.authorizing`.
 - [ ] Cold and timed-out hot routes instruct manual open within the required bound and never call unsupported launch APIs.
 - [ ] The 1.2-second hot acknowledgement timer is tested through its injected scheduler and cancels on only the matching acknowledgement.
 - [ ] A hot timeout cannot strand consumed settings: a fresh manual token is pending before the old token is stopped, and late old acknowledgements/results are ignored or rejected.
