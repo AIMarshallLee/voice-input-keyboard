@@ -8,8 +8,8 @@
 - 职责机制：[窗口 Agent 规划书](../docs/superpowers/specs/2026-09-05-votype-continuous-delivery-agent-charter.md)，用户已回复“同意”。
 - 规格：[商用 V1](../docs/superpowers/specs/2026-09-04-voice-first-commercial-v1-design.md)。
 - 实施计划：[Slice A 九任务](../docs/superpowers/plans/2026-09-04-slice-a-reliable-session-engine.md)。
-- 当前断点：Task 1–5 已取得真实 RED、GREEN 和独立审查 PASS，实施验收进度 **5/9**。统一引擎、超时/竞态/重用和生产适配门禁已通过，但尚未接入现有前台/PiP，不能据此认定 App 真机可用。
-- 下一动作：Task 6 画中画/原地输入迁移已取得真实 macOS RED；现在替换重复录音器，保留 PiP 渲染与启动 watchdog，随后取得准确提交 GREEN 和独立审查。
+- 当前断点：Task 1–6 已取得真实 RED、GREEN 和独立审查 PASS，实施验收进度 **6/9**。统一引擎和画中画/原地入口已接通，前台入口仍待迁移，不能据此认定 App 真机可用。
+- 下一动作：Task 7 前台呈现迁移，先验证请求领取、3 秒领取期限、挂起启动时退出、重复出现和迟到事件的回归测试，再接入同一引擎；保留安全的手动打开路径。
 
 ## 自主执行约定（2026-09-20 生效）
 
@@ -29,7 +29,7 @@
 - 原有规格、实施计划、职责稿与台账已在授权后提交为 `a5045f2`；没有丢弃原差异。
 - 草稿 [PR #13](https://github.com/AIMarshallLee/voice-input-keyboard/pull/13) 已创建，未合并。
 - `project.yml` 是生成工程的唯一来源；现有测试 target 包含整个 `VoTypeTests` 目录。
-- Task 1–5 已验收；新测试通过 `xcodegen generate` 编入。Task 6 基线为 `d58ed40`，Task 5 全范围基线为 `5247153`。
+- Task 1–6 已验收；新测试通过 `xcodegen generate` 编入。Task 7 基线为 `829e3b8`，Task 6 全范围基线为 `d58ed40`。
 
 ## 授权状态
 
@@ -53,8 +53,8 @@
 | 3 | 引擎主路径与命令语义 | 完成：`f0a591a`，#156 GREEN，独立审查 PASS |
 | 4 | 截止时间、迟到回调、竞态与重用 | 完成：`5247153`，#159 GREEN，独立审查 PASS |
 | 5 | Apple、文本、Darwin 生产适配 | 完成：`d58ed40` / #164 GREEN，两项审查问题修正，独立复审 PASS |
-| 6 | PiP/原地输入迁移 | 进行中：`e36cd26` / #165 有效 missing-seam RED，生产改造中，尚未验收 |
-| 7 | 前台呈现迁移 | 待做 |
+| 6 | PiP/原地输入迁移 | 完成：`829e3b8` / #166 GREEN，独立规格、代码与证据审查 PASS |
+| 7 | 前台呈现迁移 | 进行中：单一实施者准备测试，生产改造等待本项 macOS RED |
 | 8 | 移除不支持的拉起与手动结果保留 | 待做 |
 | 9 | 全量回归、Release/Archive 与文档 | 待做 |
 
@@ -92,6 +92,8 @@
 - [Task 5 GREEN #164](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/35521959880) **SUCCESS**，准确源码 `d58ed40fe4ef94715360057b56ea22b698709b53`（UTC 2026-09-20 16:12:16–16:22:55，10m39s）。实际日志：136 单元零失败；取消通知矩阵 0.784s、重叠处理/主线程写入 0.035s 通过；4 个独立 UI 在两个 scheme 下均零失败；unsigned Release BUILD 与 ARCHIVE 成功。artifact `10608841457`（VoType-IPA，4,862,142 bytes）是无签名 CI 产物，不是 TestFlight。签名、App Store Connect 与元数据步骤全部跳过。本地 plist 2/2 通过；没有点名本次变更源文件的 warning/error，已有旧路径/工具提示仍保留。
 - Task 5 独立修复复审 **PASS**：实际提交结果决定通知，文本/翻译方法级 MainActor 覆盖两处共享统计写入且保留等待期间的可重入性，未修改算法或添加整段串行队列。非阻断测试清理观察留待最终全分支复核：超时路径取消/释放 detached 任务，但不 join 后再删除独立 defaults 测试域，不影响本轮产品路径验收。Task 6 已交付单一实施者进行测试准备，未在 Task 5 未验收时替换生产入口。
 - [Task 6 RED #165](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/35523095204) **FAILURE**，准确源码 `e36cd2639428e9cbb9f4982a1e8e7218c435dd7e`（UTC 2026-09-20 16:33:42–16:34:31）。新增 13 个后台适配与 4 个 PiP 生命周期回归；环境、XcodeGen 与 plist 校验成功后，16:34:27Z 在 `DictationSessionTestDoubles.swift:765` 准确报缺少 `PiPStandbyPresenting`，随后 TEST FAILED。只有这处预期 missing-seam error，无 Windows/Xcode 缺失冒充 RED。生产适配 GO 已交给同一实施者，尚无本项 GREEN、合并或新分发。
+- [Task 6 GREEN #166](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/35523520321) **SUCCESS**，准确源码 `829e3b83814cd8cbbf0ce0a63cbd144c27c4c44d`（UTC 2026-09-20 16:41:55–16:50:03，8m8s）。153 单元零失败（14.549s / 26.716s wall），含后台适配 13/13、PiP 9/9、引擎 25/25；4 个独立 UI 在两个 scheme 均通过（54.838s / 41.645s）。挂起 A→B 准入 0.458s、启动中关闭 PiP 延迟取消 0.427s、真实引擎/Darwin 终态回执 0.045s、意外 EOF 0.223s 均通过。无签名 BUILD 16:49:27Z、ARCHIVE 16:49:57Z 成功；artifact `10609083953`（VoType-IPA，4,989,830 bytes）不是 TestFlight。签名、App Store Connect 和元数据步骤跳过。
+- Task 6 独立规格/代码/证据审查 **PASS**，无本项待修问题；本地 plist 2/2、源码所有权门禁和 diff 校验通过。本次源文件没有命名 warning/error，既有工具提示仍保留。画中画适配器为 197 行，不再持有重复录音、权限、Speech、心跳或终态写入；保留 PiP 渲染/watchdog。用户可见的新 UUID Retry 交互明确属于 Task 8，未用无消费者变量冒充完成。此验收不放行整个 Slice A、真机或分发。
 - 真机语音/跨 App/权限/PiP：**EXTERNAL / NOT_RUN（本轮）**。历史用户测试曾暴露缺陷，不抹去历史结果。
 
 ## 发布基线

@@ -3118,6 +3118,8 @@ private func makeSettings(token: SessionToken) -> DictationSettings {
 
 Reuse Task 6's held-open runner, finite readiness waits, gates and cleanup rather than adding a second fake or relying on a fixed number of `Task.yield` calls. Test cleanup releases every gate/stream even after an assertion or wait failure. Add a gated-start cleanup regression: cleanup detaches presentation immediately, then exactly one effective cancel occurs after the delayed start returns and no stale event is applied. Add repeated `loadSettings`/appearance while active so loading the same request cannot reset `engineStartIssued` and start it again.
 
+Also test pre-claim cleanup followed by reloading the same still-pending UUID: a saved callback from the cancelled claim deadline must not expire the new claim, while its new deadline still works. Bind that timer to a UI-only claim-attempt identity in addition to the session token; token equality alone cannot distinguish this case. This is not another audio/recognition generation owner.
+
 Add the controlled 3-second boundary and competing-consumer cases to the same file:
 
 ```swift
@@ -3226,6 +3228,7 @@ private var sessionToken: SessionToken?
 private var loadedSettings: DictationSettings?
 private var request: DictationSessionRequest?
 private var foregroundClaimTask: (any DictationScheduledTask)?
+private var foregroundClaimAttempt: UUID?
 private var settingsClaimed = false
 private var foregroundClaimExpired = false
 private var engineStartIssued = false
@@ -3244,14 +3247,18 @@ init(
 `loadSettings` must use `DarwinBridge.peekDictationSettings(expectedSession:)` for an explicit/deep-link session, or `peekPendingDictationSettings()` only when both URL and explicit session are absent. It must never consume. Reject invalid/cancelled settings, otherwise build and store the complete `DictationSessionRequest` immediately, capturing `voiceEditEnabled` and `livePreviewEnabled` once. Arm the claim deadline at that point:
 
 ```swift
+let claimAttempt = UUID()
+foregroundClaimAttempt = claimAttempt
 foregroundClaimTask = scheduler.schedule(after: deadlines.foregroundClaim) {
     Task { @MainActor [weak self] in
-        self?.expireForegroundClaim(for: token)
+        self?.expireForegroundClaim(for: token, attempt: claimAttempt)
     }
 }
 
-private func expireForegroundClaim(for token: SessionToken) {
-    guard sessionToken == token, !settingsClaimed else { return }
+private func expireForegroundClaim(for token: SessionToken, attempt: UUID) {
+    guard sessionToken == token,
+          foregroundClaimAttempt == attempt,
+          !settingsClaimed else { return }
     foregroundClaimExpired = true
     hasValidSettings = false
     permissionError = "未能启动该语音请求，请返回键盘重试"
@@ -3293,7 +3300,7 @@ let stream = await engine.start(request)
 
 The synchronous exact claim is the foreground-host ownership acknowledgement: before it, settings remain recoverable and unconsumed; after it, only this matching request may be submitted to the engine. Set `engineStartIssued` before the first await, and do not let a repeated load/appearance reset an active attempt. Map authorizing/preparing to existing connecting copy, listening to recording visuals/partial, processing to processing visuals, completed to done/dismiss behavior, failed to the existing specific user message, and cancelled to dismissal without a fabricated error result. On a matching terminal, clear the stored request before clearing `engineStartIssued`, so appearance after completion cannot restart it. A wrong first event or unexpected nonterminal EOF fails closed and ends only the matching attempt.
 
-`cleanup()` cancels the claim task and synchronously detaches request/UI ownership. Track whether start has returned: if not, defer the one engine cancellation to the returning start coroutine (an earlier cancellation might be admitted before start and do nothing); if the stream is installed, cancel the captured token immediately. Post-start stale guards must cancel the returned token, not merely hide its events. Do not cancel an unclaimed request or a newer attempt. Make `stopRecording()` and `cancelRecording()` async and forward the matching command once; button closures launch one Task. No timer, delayed callback or stream may restore detached presentation state.
+`cleanup()` cancels the claim task, clears its claim-attempt identity and synchronously detaches request/UI ownership. Clear that identity on successful claim too. Track whether start has returned: if not, defer the one engine cancellation to the returning start coroutine (an earlier cancellation might be admitted before start and do nothing); if the stream is installed, cancel the captured token immediately. Post-start stale guards must cancel the returned token, not merely hide its events. Do not cancel an unclaimed request or a newer attempt. Make `stopRecording()` and `cancelRecording()` async and forward the matching command once; button closures launch one Task. No timer, delayed callback or stream may restore detached presentation state.
 
 Delete every `AVAudioEngine`, `AVAudioSession`, `SFSpeechRecognizer`, recognition request/task, local recording generation, silence/finalization timer, permission request, audio notification observer, recorder/audio cleanup, and direct `DarwinBridge.writeTranscription/writeError` call from this file. Retain the presentation/claim/engine `cleanup()` described above. After the edit:
 
@@ -3317,6 +3324,8 @@ func enqueuePendingIfAvailable() {
 Call `coordinator.enqueuePendingIfAvailable()` on app appearance and whenever `scenePhase` becomes active. This is the normal manual-open route and must not depend on `onOpenURL`; retain `onOpenURL` only for genuine user/system deep links.
 
 Give `DictationView` an initializer that constructs its `StateObject` with the supplied engine, scheduler, and deadlines, defaulting to the shared engine and production timing. In `VoiceInputApp`, pass `DictationSessionEnvironment.shared.engine` to every full-screen dictation presentation. In `.onAppear`, call `loadSettings` and immediately launch `Task { await viewModel.startRecording() }`; remove the untracked 0.3-second `DispatchQueue.asyncAfter`. Add a test-visible identity assertion that `BackgroundDictationManager.shared.engineIdentity` and the foreground default both point to this same actor; the identity accessor may expose only `ObjectIdentifier`, never the engine's mutable state.
+
+Preserve the existing 2.5-second completion dismissal delay, but bind its task to the view/result identity and honor cancellation before dismissing. The current untracked `DispatchQueue.asyncAfter` must not dismiss a newer presentation after the old view disappeared. Use the existing SwiftUI task lifecycle; do not introduce a general scheduling framework for this callback.
 
 - [ ] **Step 5: Run both adapter contracts and enforce one Apple implementation**
 
