@@ -85,6 +85,8 @@
 - [Task 5 RED #160](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/33962792398)，源码 `186f429f1cea795f484fc0a694440a7e1ffe489d`：11:15:37Z 实际编译因 typed processor 尚无必填 `voiceEditEnabled:` 参数按预期失败，相关类型推导错误由缺失签名引起；环境准备成功。已进入生产实现，尚无本项 GREEN 或验收结论。
 - [Task 5 初版 CI #161](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/34011080880) **SUCCESS**（2026-09-06 04:16:27–04:27:41Z，11m14s），源码 `36f9ed8e8b70d23d5c88ac5bf127fcf60de7732b`：适配 6/6、文本处理 10/10、引擎 25/25、全单元 134/134、4 个独立 UI、unsigned Release/Archive 通过；artifact `9982608443` 为无签名产物，4,861,003 bytes。本地 plist 2/2 通过。
 - Task 5 尚未验收：独立审查发现取消已获胜时仍可能发失败通知，以及异步文本处理中的共享统计复合写入缺少隔离。正在补充行为回归；修复保持 MainActor 在异步等待期间可重入，不让挂起的旧处理阻塞新会话。初版 CI 绿色不能覆盖这些审查发现。
+- 2026-09-20 恢复执行：职责/计划校正提交 `fc38f13`，EXTRA RED 测试提交 `2ff8025ff7a77df60666312a0e75d679e177b78f` 已非强制推送；[CI #162](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/35520386307) 已触发，初次核对为 queued。新增取消通知矩阵和带有限等待/清理的重叠文本处理回归；生产通知提取保持旧行为，隔离修复尚未应用。下一动作先核对本次真实行为失败，再最小修复，不能把排队当 RED/PASS。本地 plist 2/2 与 diff 检查通过。
+- CI #162 已结束 FAILURE（6m12s）：136 个单元测试中的通知矩阵在 15:46:08Z 准确复现取消后多发 failed，计为 R21 有效 RED；重叠文本测试没有进入受控翻译，出现三次有限等待超时、结果 nil/统计 0，不能计为 R22 有效 RED。该独立 defaults suite 漏关默认启用的 LLM 润色；先关闭测试外部模型依赖，同时只修复已证实的 R21，再取得 R22 的准确行为失败。四个独立 UI 测试通过，后续构建/分发跳过；未伪称所有红色来自目标缺陷。
 - 真机语音/跨 App/权限/PiP：**EXTERNAL / NOT_RUN（本轮）**。历史用户测试曾暴露缺陷，不抹去历史结果。
 
 ## 发布基线

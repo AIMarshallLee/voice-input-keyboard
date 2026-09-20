@@ -2283,6 +2283,10 @@ git commit -m "test: harden dictation lifecycle races"
 - Consumes: Task 2 ports, `TextProcessor.process`, `DictationLiveStatePublisher`, AVFoundation, Speech, and NotificationCenter.
 - Produces: production dependency implementations and `DictationSessionEnvironment.shared.engine`, the only engine used by Tasks 6 and 7.
 
+**Accepted review corrections (R21/R22):** Terminal notifications must reflect the committed outcome: a written failure emits failed then stopped, a cancellation-winning commit emits only stopped, and already-terminal/I/O-failure emits neither. A pure internal decision helper is exercised by the real output adapter and regression tests. Keep the existing bridge commit semantics unchanged.
+
+Text processing must isolate compound usage-statistics mutations while allowing another session to finish during a suspended old translation/model operation. Apply method-level `@MainActor` to the three `TextProcessor.process` overloads and relevant asynchronous processing helpers, and to the explicit-target `TranslationProviding` requirement/`TranslationManager` implementation and test witnesses. This narrowly adds `Shared/TranslationManager.swift` to the modified file scope. Do not add whole-call serialization, change processing algorithms, or isolate the entire class. The detached adapter regression uses real usage writes, a controlled translation suspension, bounded waits/cleanup, and `llmPolish = false`; verify second-call completion before releasing the first, exact results/counts, and main-thread usage writes. Observe both regressions failing for these behaviors on macOS before applying the production fixes.
+
 - [ ] **Step 1: Write failing permission-policy tests**
 
 In `VoTypeTests/AppleDictationAdaptersTests.swift`, test a pure decision reducer before touching system APIs:

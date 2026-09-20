@@ -285,6 +285,7 @@ final class TextProcessorTests: XCTestCase {
         overlapDefaults.removePersistentDomain(forName: overlapSuiteName)
         overlapDefaults.set(false, forKey: "autoPunctuation")
         overlapDefaults.set(false, forKey: "autoFormat")
+        overlapDefaults.set(false, forKey: "llmPolish")
         let overlapUsageTracker = ThreadRecordingUsageTracker(defaults: overlapDefaults)
         let overlapProcessor = TextProcessor(
             defaults: overlapDefaults,

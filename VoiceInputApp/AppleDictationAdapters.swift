@@ -432,7 +432,7 @@ final class DarwinDictationSessionOutput: @unchecked Sendable, DictationSessionO
         status: DictationOutputCommitStatus
     ) -> [String] {
         guard status == .written || status == .cancelled else { return [] }
-        if case .failed = terminal {
+        if case .failed = terminal, status == .written {
             return [
                 DarwinNotificationName.dictationFailed,
                 DarwinNotificationName.dictationStopped
