@@ -19,6 +19,9 @@ final class BackgroundDictationManager: ObservableObject {
     private var isDraining = false
     private var needsDrain = false
     private var startingToken: SessionToken?
+    private var pendingCancellationToken: SessionToken?
+    private var cancellationForwardedToken: SessionToken?
+    private var cancellationReconciliation: Task<Void, Never>?
 
     var engineIdentity: ObjectIdentifier { ObjectIdentifier(engine as AnyObject) }
 
@@ -34,6 +37,7 @@ final class BackgroundDictationManager: ObservableObject {
 
     deinit {
         eventConsumer?.cancel()
+        cancellationReconciliation?.cancel()
     }
 
     /// 保留宿主启动入口，但不创建心跳、音频或另一份会话生命周期。
@@ -80,6 +84,7 @@ final class BackgroundDictationManager: ObservableObject {
             // 旧事件或 EOF 清除新请求；整个 drain 不允许第二个 start 并发进入。
             detachCurrentSession()
             currentToken = token
+            cancellationForwardedToken = nil
             startingToken = token
             observeCommands(for: token)
             pip.onStandbyStopped = { [weak self] in
@@ -93,6 +98,9 @@ final class BackgroundDictationManager: ObservableObject {
                 await engine.cancel(token: token)
                 continue
             }
+            await reconcileCancellation(for: token)
+            guard currentToken == token else { continue }
+            startCancellationReconciliation(for: token)
             consume(stream, request: request)
         }
     }
@@ -104,7 +112,39 @@ final class BackgroundDictationManager: ObservableObject {
 
     func handleCancelNotification(session: String) async {
         guard let token = currentToken, token.rawValue == session else { return }
+        pendingCancellationToken = token
+        guard startingToken != token else { return }
+        await forwardCancellation(for: token)
+    }
+
+    private func reconcileCancellation(for token: SessionToken) async {
+        guard currentToken == token, startingToken != token else { return }
+        guard pendingCancellationToken == token || DarwinBridge.cancellationEvidence(for: token) != .absent
+        else { return }
+        await forwardCancellation(for: token)
+    }
+
+    private func forwardCancellation(for token: SessionToken) async {
+        guard currentToken == token, cancellationForwardedToken != token else { return }
+        cancellationForwardedToken = token
+        let wasPresenting = eventConsumer != nil
+        // Detach before awaiting so neither a duplicate command nor buffered events can
+        // paint a cancelled session; no UI mutation after the await can touch a successor.
+        detachCurrentSession()
+        if wasPresenting { pip.returnToStandby() }
         await engine.cancel(token: token)
+    }
+
+    private func startCancellationReconciliation(for token: SessionToken) {
+        cancellationReconciliation?.cancel()
+        cancellationReconciliation = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                do { try await Task.sleep(nanoseconds: 500_000_000) }
+                catch { return }
+                guard !Task.isCancelled, self?.currentToken == token else { return }
+                await self?.reconcileCancellation(for: token)
+            }
+        }
     }
 
     private func observeCommands(for token: SessionToken) {
@@ -188,6 +228,9 @@ final class BackgroundDictationManager: ObservableObject {
 
     private func detachCurrentSession() {
         currentToken = nil
+        pendingCancellationToken = nil
+        cancellationReconciliation?.cancel()
+        cancellationReconciliation = nil
         eventConsumer?.cancel()
         eventConsumer = nil
         stopObserver = nil

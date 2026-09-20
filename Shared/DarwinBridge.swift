@@ -597,11 +597,13 @@ struct DarwinBridge {
     /// 只查看结果。扩展重启后用它提示用户，不得直接自动插入。
     static func peekResult(
         now: TimeInterval = Date().timeIntervalSince1970,
-        maxAge: TimeInterval = resultMaxAge
+        maxAge: TimeInterval = resultMaxAge,
+        excludingSession: String? = nil
     ) -> DictationIPCResult? {
         guard let directory = containerDirectory() else { return nil }
         return resultFileURLs(in: directory)
             .compactMap { url in
+                if let excludingSession, url.lastPathComponent == resultFileName(for: excludingSession) { return nil }
                 guard let result = read(
                     fileName: url.lastPathComponent,
                     as: DictationIPCResult.self,
@@ -816,13 +818,56 @@ struct DarwinBridge {
         return didWrite
     }
 
+    enum CancellationEvidence: Equatable {
+        case absent, present, unavailable
+    }
+
+    /// This safety read never removes evidence, including malformed or expired markers.
+    static func cancellationEvidence(for token: SessionToken) -> CancellationEvidence {
+        withSessionLock(session: token.rawValue, defaultValue: .unavailable) { directory in
+            guard let name = cancellationFileName(for: token.rawValue) else { return .unavailable }
+            return fileEvidenceUncoordinated(directory.appendingPathComponent(name))
+        }
+    }
+
+    /// Recovery must not clean a barrier merely to decide which session to show.
+    static func recoverySessionEvidence(for token: SessionToken)
+        -> (hasResult: Bool, hasActiveRequest: Bool, isBlocked: Bool) {
+        withSessionLock(session: token.rawValue, defaultValue: (false, false, true)) { directory in
+            let session = token.rawValue
+            guard let cancel = cancellationFileName(for: session),
+                  let result = resultFileName(for: session),
+                  let receipt = terminalReceiptFileName(for: session),
+                  let live = liveStateFileName(for: session),
+                  let settings = settingsFileName(for: session) else { return (false, false, true) }
+            guard fileEvidenceUncoordinated(directory.appendingPathComponent(cancel)) == .absent
+            else { return (false, false, true) }
+            let now = Date().timeIntervalSince1970
+            func value<Value: Decodable & TimestampedIPCValue>(_ name: String, _ type: Value.Type,
+                                                               maxAge: TimeInterval) -> Value? {
+                guard let data = try? Data(contentsOf: directory.appendingPathComponent(name)),
+                      let decoded = try? JSONDecoder().decode(type, from: data),
+                      isFresh(decoded.timestamp, now: now, maxAge: maxAge) else { return nil }
+                return decoded
+            }
+            if let payload = value(result, DictationIPCResult.self, maxAge: resultMaxAge),
+               payload.session == session { return (true, false, false) }
+            if [result, receipt].contains(where: {
+                fileEvidenceUncoordinated(directory.appendingPathComponent($0)) != .absent
+            }) { return (false, false, true) }
+            let active = value(live, DictationLiveState.self, maxAge: liveStateMaxAge)?.session == session
+                || value(settings, DictationSettings.self, maxAge: settingsMaxAge)?.session == session
+            return (false, active, false)
+        }
+    }
+
     static func isSessionCancelled(
         session: String,
         now: TimeInterval = Date().timeIntervalSince1970,
         maxAge: TimeInterval = cancellationMaxAge
     ) -> Bool {
         guard DictationConstants.isValidSession(session) else { return false }
-        return withSessionLock(session: session, defaultValue: false) { directory in
+        return withSessionLock(session: session, defaultValue: true) { directory in
             isCancelledUncoordinated(
                 session: session,
                 in: directory,
@@ -852,13 +897,14 @@ struct DarwinBridge {
               let replacementReceipt = terminalReceiptFileName(for: replacement.rawValue),
               let replacementCancellation = cancellationFileName(for: replacement.rawValue) else { return .failed }
 
+        var sourceWasCancelled = false
         let outcome: DictationManualHandoffOutcome = withTwoSessionLocks(
             source: source, replacement: replacement, defaultValue: .failed
         ) { directory in
             // Existence is deliberately conservative: never clean malformed/expired
             // evidence while deciding whether a UUID can be handed off or reused.
             func exists(_ name: String) -> Bool {
-                FileManager.default.fileExists(atPath: directory.appendingPathComponent(name).path)
+                fileEvidenceUncoordinated(directory.appendingPathComponent(name)) != .absent
             }
             if exists(sourceReceipt) || exists(sourceResult) { return .alreadyTerminal }
             guard !exists(sourceCancellation),
@@ -871,18 +917,34 @@ struct DarwinBridge {
                 session: replacement.rawValue, expectedContextFingerprint: original.expectedContextFingerprint,
                 timestamp: max(timestamp, original.timestamp.nextUp))
             let replacementURL = directory.appendingPathComponent(replacementSettings)
-            guard writeUncoordinated(settings, to: replacementURL) else { return .failed }
+            guard let hash = sessionToken(replacement.rawValue) else { return .failed }
+            let stageURL = directory.appendingPathComponent("dictation-handoff-stage-\(hash).json")
+            guard writeUncoordinated(settings, to: stageURL) else { return .failed }
             guard writeUncoordinated(DictationCancellation(session: source.rawValue, timestamp: timestamp),
                                      to: directory.appendingPathComponent(sourceCancellation)) else {
-                removeUncoordinated(replacementURL)
+                // Even failed cleanup leaves only non-discoverable work.
+                removeUncoordinated(stageURL)
                 return .failed
             }
+            sourceWasCancelled = true
             for name in [sourceSettings, sourceLive, sourceResult] {
                 removeUncoordinated(directory.appendingPathComponent(name))
             }
+            do {
+                // Same-directory move publishes the protected atomic stage, never a partial payload.
+                try FileManager.default.moveItem(at: stageURL, to: replacementURL)
+            } catch {
+                // A reported failure is not proof that the destination was not published.
+                print("[DarwinBridge] Manual handoff promotion failed: \(error.localizedDescription)")
+            }
+            let data = try? Data(contentsOf: replacementURL)
+            let published = data.flatMap { try? JSONDecoder().decode(DictationSettings.self, from: $0) }
+            removeUncoordinated(stageURL)
+            guard published == settings else { return .failed }
             return .moved(settings)
         }
-        if case .moved = outcome {
+        if sourceWasCancelled {
+            postSessionNotification(base: DarwinNotificationName.requestCancelDictation, session: source.rawValue)
             postSessionNotification(base: DarwinNotificationName.liveStateChanged, session: source.rawValue)
         }
         return outcome
@@ -946,11 +1008,14 @@ struct DarwinBridge {
     /// 查看尚未处理的听写请求。主 App 被用户手动打开时可据此进入 DictationView。
     static func peekPendingDictationSettings(
         now: TimeInterval = Date().timeIntervalSince1970,
-        maxAge: TimeInterval = settingsMaxAge
+        maxAge: TimeInterval = settingsMaxAge,
+        excludingSession: String? = nil
     ) -> DictationSettings? {
         guard let directory = containerDirectory() else { return nil }
+        garbageCollectExpiredHandoffStages(in: directory, now: now)
         return settingsFileURLs(in: directory)
             .compactMap { url in
+                if let excludingSession, url.lastPathComponent == settingsFileName(for: excludingSession) { return nil }
                 guard let settings = read(
                     fileName: url.lastPathComponent,
                     as: DictationSettings.self,
@@ -1269,12 +1334,32 @@ struct DarwinBridge {
     ) {
         guard let directory = containerDirectory() else { return }
         for url in cancellationFileURLs(in: directory) {
-            _ = read(
-                fileName: url.lastPathComponent,
-                as: DictationCancellation.self,
-                now: now,
-                maxAge: cancellationMaxAge
-            )
+            guard let data = try? Data(contentsOf: url),
+                  let marker = try? JSONDecoder().decode(DictationCancellation.self, from: data),
+                  cancellationFileName(for: marker.session) == url.lastPathComponent else { continue }
+            _ = withSessionLock(session: marker.session, defaultValue: true) { directory in
+                isCancelledUncoordinated(session: marker.session, in: directory, now: now)
+            }
+        }
+    }
+
+    private static func garbageCollectExpiredHandoffStages(in directory: URL, now: TimeInterval) {
+        let prefix = "dictation-handoff-stage-"
+        for url in matchingFileURLs(in: directory, prefix: prefix, suffix: ".json") {
+            let hash = String(url.lastPathComponent.dropFirst(prefix.count).dropLast(5))
+            guard hash.count == 64, hash.allSatisfy({ "0123456789abcdef".contains($0) }) else { continue }
+            // Use the replacement's lock even when its staged JSON is corrupt.
+            let lockURL = directory.appendingPathComponent("\(sessionLockFilePrefix)\(hash)\(sessionLockFileSuffix)")
+            ioLock.lock()
+            let coordinator = NSFileCoordinator(filePresenter: nil)
+            var error: NSError?
+            coordinator.coordinate(writingItemAt: lockURL, options: .forMerging, error: &error) { _ in
+                guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+                      let modified = attributes[.modificationDate] as? Date,
+                      now - modified.timeIntervalSince1970 > settingsMaxAge else { return }
+                removeUncoordinated(url)
+            }
+            ioLock.unlock()
         }
     }
 
@@ -1464,13 +1549,37 @@ struct DarwinBridge {
         now: TimeInterval = Date().timeIntervalSince1970,
         maxAge: TimeInterval = cancellationMaxAge
     ) -> Bool {
-        guard let fileName = cancellationFileName(for: session),
-              let marker: DictationCancellation = readUncoordinated(
-                from: directory.appendingPathComponent(fileName),
-                now: now,
-                maxAge: maxAge
-              ) else { return false }
-        return marker.session == session
+        guard let fileName = cancellationFileName(for: session) else { return true }
+        let url = directory.appendingPathComponent(fileName)
+        switch fileEvidenceUncoordinated(url) {
+        case .absent: return false
+        case .unavailable: return true
+        case .present:
+            // Only a valid, identity-matched, positively dated expired marker is garbage.
+            guard let data = try? Data(contentsOf: url),
+                  let marker = try? JSONDecoder().decode(DictationCancellation.self, from: data),
+                  marker.session == session, marker.timestamp.isFinite, marker.timestamp > 0,
+                  now - marker.timestamp > maxAge else { return true }
+            return !removeUncoordinated(url)
+        }
+    }
+
+    private static func fileEvidenceUncoordinated(_ url: URL) -> CancellationEvidence {
+        do {
+            let parent = try FileManager.default.attributesOfItem(atPath: url.deletingLastPathComponent().path)
+            guard parent[.type] as? FileAttributeType == .typeDirectory else { return .unavailable }
+        } catch { return .unavailable }
+        do {
+            _ = try FileManager.default.attributesOfItem(atPath: url.path)
+            return .present
+        } catch {
+            let failure = error as NSError
+            if failure.domain == NSCocoaErrorDomain,
+               failure.code == NSFileNoSuchFileError || failure.code == NSFileReadNoSuchFileError {
+                return .absent
+            }
+            return .unavailable
+        }
     }
 
     private static func hasFreshTerminalUncoordinated(

@@ -50,12 +50,40 @@ struct KeyboardSessionRecoverySnapshot: Codable, Equatable {
     }
 }
 
+enum KeyboardSessionRecoveryDecision: Equatable {
+    case restore(SessionToken)
+    case retry(SessionToken)
+    case none
+}
+
 enum KeyboardSessionRecoveryStore {
     static let maxAge: TimeInterval = 10 * 60
 
     private static let storageKey = "keyboardSessionRecovery.v1"
     private static let missingValueMarker = "<nil>"
     private static let contextCharacterLimit = 96
+
+    static func recoveryDecision(snapshot: KeyboardSessionRecoverySnapshot?,
+                                 contextMatches: Bool) -> KeyboardSessionRecoveryDecision {
+        let token = snapshot.flatMap { SessionToken(rawValue: $0.session) }
+        let evidence = token.map { DarwinBridge.recoverySessionEvidence(for: $0) }
+        if let token, let evidence, evidence.hasResult || evidence.hasActiveRequest {
+            return .restore(token)
+        }
+        // Actual work wins over a different window's context-only saved snapshot.
+        if let result = DarwinBridge.peekResult(excludingSession: token?.rawValue),
+           let discovered = SessionToken(rawValue: result.session) {
+            return .restore(discovered)
+        }
+        if let pending = DarwinBridge.peekPendingDictationSettings(excludingSession: token?.rawValue),
+           let discovered = SessionToken(rawValue: pending.session),
+           !DarwinBridge.recoverySessionEvidence(for: discovered).isBlocked {
+            return .restore(discovered)
+        }
+        if let token, evidence?.isBlocked == true { return .retry(token) }
+        if let token, snapshot?.hasContextEvidence == true, contextMatches { return .restore(token) }
+        return .none
+    }
 
     @discardableResult
     static func save(

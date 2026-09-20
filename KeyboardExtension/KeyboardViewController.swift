@@ -50,6 +50,7 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
     private var currentDictationSettings: DictationSettings?
     private var failedHandoffRetryToken: SessionToken?
     private var resultTimeoutTimer: Timer?
+    private var resultTimeoutGeneration = UUID()
     private var liveStatePollTimer: Timer?
     private var readinessPollTimer: Timer?
     private var currentHeldSession: String?
@@ -1330,7 +1331,6 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
         switch DarwinBridge.handoffDictationSettingsToManual(from: oldToken, to: manualToken, original: original) {
         case .moved(let replacement):
             _ = KeyboardSessionRecoveryStore.rebindForManualHandoff(from: oldToken, to: manualToken)
-            DarwinBridge.postSessionNotification(base: DarwinNotificationName.requestCancelDictation, session: oldToken.rawValue)
             finishWaitingState()
             currentSessionId = manualToken.rawValue
             currentDictationSettings = replacement
@@ -1350,7 +1350,13 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
                 $0.session == oldToken.rawValue ? $0 : nil
             }
             currentExtensionSessionToken = nil
-            processPendingResult()
+            if DarwinBridge.recoverySessionEvidence(for: oldToken).hasResult {
+                processPendingResult()
+            } else {
+                // Receipt-only (including no surviving snapshot) is terminal, not an
+                // ongoing request. Keep its IPC barrier and enable an explicit fresh retry.
+                finishSession(session: oldToken.rawValue, message: "旧会话已结束，结果不可用，请点麦克风重试")
+            }
         case .failed:
             currentExtensionSessionToken = nil
             failedHandoffRetryToken = oldToken
@@ -1551,32 +1557,25 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
             refreshLiveState(for: session)
             return
         }
-        if let snapshot = KeyboardSessionRecoveryStore.load() {
-            recoveredSnapshot = snapshot
-            let before = textDocumentProxy.documentContextBeforeInput
-            let after = textDocumentProxy.documentContextAfterInput
-            let selection = textDocumentProxy.selectedText
-            let matches = KeyboardSessionRecoveryStore.matches(
-                snapshot, contextBefore: before, contextAfter: after, selectedText: selection
-            )
-            if DarwinBridge.peekResult(expectedSession: snapshot.session) != nil
-                || DarwinBridge.readLiveState(expectedSession: snapshot.session) != nil
-                || DarwinBridge.peekDictationSettings(expectedSession: snapshot.session) != nil
-                || (snapshot.hasContextEvidence && matches) {
-                restoreSession(snapshot, contextMatches: matches)
-                processPendingResult()
-                refreshLiveState(for: snapshot.session)
-                return
-            }
+        let snapshot = KeyboardSessionRecoveryStore.load()
+        let before = textDocumentProxy.documentContextBeforeInput
+        let after = textDocumentProxy.documentContextAfterInput
+        let selection = textDocumentProxy.selectedText
+        let matches = snapshot.map {
+            KeyboardSessionRecoveryStore.matches($0, contextBefore: before, contextAfter: after, selectedText: selection)
+        } ?? false
+        switch KeyboardSessionRecoveryStore.recoveryDecision(snapshot: snapshot, contextMatches: matches) {
+        case .restore(let token):
+            recoveredSnapshot = snapshot.flatMap { $0.session == token.rawValue ? $0 : nil }
+            restoreSession(token, snapshot: recoveredSnapshot, contextMatches: matches)
+            processPendingResult()
+            refreshLiveState(for: token.rawValue)
+        case .retry(let token):
+            currentSessionId = token.rawValue
+            finishSession(session: token.rawValue, message: "旧会话无法继续，请点麦克风重试")
+        case .none:
+            recoveredSnapshot = nil
         }
-        guard let pending = DarwinBridge.peekResult(),
-              SessionToken(rawValue: pending.session) != nil else { return }
-        currentSessionId = pending.session
-        currentExtensionSessionToken = nil
-        currentDictationSettings = nil
-        if recoveredSnapshot?.session != pending.session { recoveredSnapshot = nil }
-        isWaitingForResult = true
-        processPendingResult()
     }
 
     private func processPendingResult() {
@@ -1766,27 +1765,32 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
         finishSession(session: token.rawValue, message: pending.text + "，请点麦克风重试")
     }
 
-    private func restoreSession(_ snapshot: KeyboardSessionRecoverySnapshot, contextMatches: Bool) {
-        guard SessionToken(rawValue: snapshot.session) != nil else { return }
+    private func restoreSession(_ token: SessionToken, snapshot: KeyboardSessionRecoverySnapshot?, contextMatches: Bool) {
+        let session = token.rawValue
         hotAckCoordinator.cancel()
-        currentSessionId = snapshot.session
+        failedHandoffRetryToken = nil
+        currentSessionId = session
         currentExtensionSessionToken = nil
         currentDictationSettings = nil
         isWaitingForResult = true
-        requiresContextRevalidation = !(snapshot.hasContextEvidence && contextMatches)
-        _ = configureSessionObservers(for: snapshot.session)
-        startResultTimeout(for: snapshot.session, interval: 65)
-        startLiveStatePolling(for: snapshot.session)
-        if let state = DarwinBridge.readLiveState(expectedSession: snapshot.session) {
+        requiresContextRevalidation = !(snapshot?.hasContextEvidence == true && contextMatches)
+        _ = configureSessionObservers(for: session)
+        startResultTimeout(for: session, interval: 65)
+        startLiveStatePolling(for: session)
+        if let state = DarwinBridge.readLiveState(expectedSession: session) {
             currentLivePhase = state.phase
             switch state.phase {
             case .starting: break
-            case .listening: startResultTimeout(for: snapshot.session, interval: 5 * 60)
-            case .processing: startResultTimeout(for: snapshot.session, interval: 90)
+            case .listening: startResultTimeout(for: session, interval: 5 * 60)
+            case .processing: startResultTimeout(for: session, interval: 90)
             }
         } else {
             currentLivePhase = .starting
-            liveTextLabel.text = "正在等待 VoType..."
+            if DarwinBridge.peekDictationSettings(expectedSession: session) != nil {
+                showManualOpenFallback(sessionId: session)
+            } else {
+                liveTextLabel.text = "正在等待 VoType..."
+            }
         }
     }
 
@@ -1844,23 +1848,28 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
 
     private func startResultTimeout(for session: String, interval: TimeInterval) {
         resultTimeoutTimer?.invalidate()
+        let generation = UUID()
+        resultTimeoutGeneration = generation
         resultTimeoutTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: false) { [weak self] _ in
-            guard let self, self.isWaitingForResult, self.currentSessionId == session else { return }
-            self.processPendingResult()
-            guard self.isWaitingForResult, self.currentSessionId == session else { return }
-            // A hidden keyboard defers presentation, never discards a ready result on timeout.
-            if DarwinBridge.peekResult(expectedSession: session) != nil {
-                self.hotAckCoordinator.cancel()
-                return
+            Task { @MainActor [weak self] in
+                guard let self, self.isWaitingForResult, self.currentSessionId == session,
+                      self.resultTimeoutTimer != nil, self.resultTimeoutGeneration == generation else { return }
+                self.processPendingResult()
+                guard self.isWaitingForResult, self.currentSessionId == session else { return }
+                // A hidden keyboard defers presentation, never discards a ready result on timeout.
+                if DarwinBridge.peekResult(expectedSession: session) != nil {
+                    self.hotAckCoordinator.cancel()
+                    return
+                }
+                guard DarwinBridge.cancelSession(session) else {
+                    self.liveTextLabel.text = "取消确认失败，继续等待结果"
+                    self.updateQuickTypeStatus("取消确认失败，继续等待结果", phase: self.currentLivePhase)
+                    self.startResultTimeout(for: session, interval: 15)
+                    return
+                }
+                DarwinBridge.postSessionNotification(base: DarwinNotificationName.requestCancelDictation, session: session)
+                self.resetWaitingState(message: "语音输入超时，请点麦克风重试", discardPendingSettings: false)
             }
-            guard DarwinBridge.cancelSession(session) else {
-                self.liveTextLabel.text = "取消确认失败，继续等待结果"
-                self.updateQuickTypeStatus("取消确认失败，继续等待结果", phase: self.currentLivePhase)
-                self.startResultTimeout(for: session, interval: 15)
-                return
-            }
-            DarwinBridge.postSessionNotification(base: DarwinNotificationName.requestCancelDictation, session: session)
-            self.resetWaitingState(message: "语音输入超时，请点麦克风重试", discardPendingSettings: false)
         }
     }
 
