@@ -342,6 +342,46 @@ final class DictationConstantsTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: businessURL("terminal", token: token).path))
     }
 
+    func testCancellationEvidenceDistinguishesAbsenceAndPresentMarkerWithoutBusinessWrites() throws {
+        let absent = SessionToken()
+        let existing = SessionToken()
+        XCTAssertTrue(DarwinBridge.cancelSession(existing.rawValue))
+        let before = try businessBytes()
+
+        XCTAssertEqual(DarwinBridge.cancellationEvidence(for: absent), .absent)
+        XCTAssertEqual(DarwinBridge.cancellationEvidence(for: existing), .present)
+
+        XCTAssertEqual(try businessBytes(), before)
+    }
+
+    func testCancellationEvidenceNeverCleansCorruptOrExpiredPhysicalMarker() throws {
+        for corrupt in [false, true] {
+            let token = SessionToken()
+            let bytes = Data((corrupt ? "corrupt-cancellation-marker"
+                : "{\"session\":\"\(token.rawValue)\",\"timestamp\":1}").utf8)
+            try bytes.write(to: businessURL("cancel", token: token))
+            let before = try businessBytes()
+
+            XCTAssertEqual(DarwinBridge.cancellationEvidence(for: token), .present,
+                           "Physical evidence blocks reconciliation even when its contents cannot justify cleanup")
+
+            XCTAssertEqual(try businessBytes(), before)
+        }
+    }
+
+    func testCancellationEvidenceReportsUnavailableContainerInsteadOfAbsence() throws {
+        let token = SessionToken()
+        let blockedContainer = ipcDirectory.appendingPathComponent("not-a-directory")
+        let bytes = Data("unavailable-container-fixture".utf8)
+        try bytes.write(to: blockedContainer)
+        defer { DarwinBridge.setContainerDirectoryForTesting(ipcDirectory) }
+        for unavailable in [nil, blockedContainer] as [URL?] {
+            DarwinBridge.setContainerDirectoryForTesting(unavailable)
+            XCTAssertEqual(DarwinBridge.cancellationEvidence(for: token), .unavailable)
+        }
+        XCTAssertEqual(try Data(contentsOf: blockedContainer), bytes)
+    }
+
     func testExplicitRetryUsesFreshManualUUIDAndCannotReplayOldTerminal() throws {
         let old = SessionToken()
         let retry = SessionToken()

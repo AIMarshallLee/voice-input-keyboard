@@ -4548,7 +4548,9 @@ Document these exact delivered facts:
 - foreground request discovery works without a deep link, peeks before ownership, and atomically claims within 3 seconds before starting the engine; `.authorizing` validates the stream handshake;
 - manual recovery replaces unsupported keyboard-side launching;
 - the 1.2-second hot acknowledgement is injected, cancellable, and unit-tested;
-- a timed-out consumed hot request moves to a fresh pending manual UUID while the old UUID is tombstoned and stopped;
+- a timed-out consumed hot request stages a fresh manual UUID, durably cancels the old UUID, then promotes the replacement; incomplete handoff exposes actual pending work or explicit Retry, never false readiness;
+- the active hot adapter reconciles persisted cancellation as well as notifications, including cancellation during admission; the 0.5-second check is best-effort only while the process runs and is not a guaranteed iOS suspension deadline;
+- cancellation evidence is not erased merely because it is unreadable, and undiscoverable orphan stages are cleaned on ordinary lookup after their retention boundary rather than auto-promoted; do not promise a purge timer while the app is not running;
 - manual results are held for insert/copy/discard;
 - held edits validate token, context, selection, fingerprint, and consumed-payload identity before mutation;
 - legacy destructive payloads fail closed to preview;

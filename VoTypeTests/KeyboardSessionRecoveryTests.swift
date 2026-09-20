@@ -1,22 +1,30 @@
 import XCTest
+import CryptoKit
 @testable import VoiceInputApp
 
 final class KeyboardSessionRecoveryTests: XCTestCase {
     private var defaults: UserDefaults!
     private var suiteName: String!
+    private var ipcDirectory: URL!
 
-    override func setUp() {
-        super.setUp()
+    override func setUpWithError() throws {
+        try super.setUpWithError()
         suiteName = "KeyboardSessionRecoveryTests.\(UUID().uuidString)"
         defaults = UserDefaults(suiteName: suiteName)
         defaults.removePersistentDomain(forName: suiteName)
+        ipcDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("RecoveryIPC-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: ipcDirectory, withIntermediateDirectories: true)
+        DarwinBridge.setContainerDirectoryForTesting(ipcDirectory)
     }
 
-    override func tearDown() {
+    override func tearDownWithError() throws {
         defaults.removePersistentDomain(forName: suiteName)
         defaults = nil
         suiteName = nil
-        super.tearDown()
+        DarwinBridge.clearIPCFilesForTesting()
+        DarwinBridge.resetContainerDirectoryAfterTesting()
+        try FileManager.default.removeItem(at: ipcDirectory)
+        try super.tearDownWithError()
     }
 
     func testRoundTripStoresNoPlainEditorText() throws {
@@ -217,6 +225,166 @@ final class KeyboardSessionRecoveryTests: XCTestCase {
         XCTAssertEqual(rebound.launchMode, .manualOpen)
         XCTAssertEqual(rebound.timestamp, now)
         assertEvidence(rebound, equals: original)
+    }
+
+    func testReceiptOnlyRecoveryChoosesRetryAndPreservesTerminalBarrier() throws {
+        let token = SessionToken()
+        let snapshot = try recoverySnapshot(token)
+        XCTAssertTrue(DarwinBridge.writeDictationSettings(recoverySettings(token)))
+        XCTAssertEqual(DarwinBridge.commit(.completed(recoveryPlan), token: token), .written)
+        XCTAssertNotNil(DarwinBridge.readAndConsumeResult(expectedSession: token.rawValue))
+        let receipt = try Data(contentsOf: recoveryFile("terminal", token: token))
+
+        XCTAssertEqual(KeyboardSessionRecoveryStore.recoveryDecision(snapshot: snapshot, contextMatches: true), .retry(token))
+
+        XCTAssertEqual(try Data(contentsOf: recoveryFile("terminal", token: token)), receipt)
+        XCTAssertNil(DarwinBridge.peekResult(expectedSession: token.rawValue))
+        XCTAssertEqual(DarwinBridge.commit(.completed(recoveryPlan), token: token), .alreadyTerminal)
+    }
+
+    func testFailedRebindMatchingContextCannotHideActualManualRequestOrResult() throws {
+        for completed in [false, true] {
+            let unrelated = SessionToken()
+            let old = SessionToken()
+            let manual = SessionToken()
+            let snapshot = try recoverySnapshot(unrelated)
+            let storedSnapshot = defaults.data(forKey: "keyboardSessionRecovery.v1")
+            let settings = recoverySettings(old)
+            XCTAssertTrue(DarwinBridge.writeDictationSettings(settings))
+            guard case .moved = DarwinBridge.handoffDictationSettingsToManual(from: old, to: manual, original: settings) else {
+                return XCTFail("Fixture must represent a completed handoff")
+            }
+            XCTAssertFalse(KeyboardSessionRecoveryStore.rebindForManualHandoff(from: old, to: manual, defaults: defaults))
+            XCTAssertTrue(KeyboardSessionRecoveryStore.matches(snapshot,
+                contextBefore: "same field", contextAfter: "after", selectedText: nil))
+            if completed {
+                XCTAssertNotNil(DarwinBridge.readAndConsumeDictationSettings(expectedSession: manual.rawValue))
+                XCTAssertEqual(DarwinBridge.commit(.completed(recoveryPlan), token: manual), .written)
+            }
+
+            XCTAssertEqual(KeyboardSessionRecoveryStore.recoveryDecision(snapshot: snapshot, contextMatches: true), .restore(manual))
+
+            XCTAssertEqual(defaults.data(forKey: "keyboardSessionRecovery.v1"), storedSnapshot,
+                           "Discovery must not relabel unrelated editor evidence as the manual session's context")
+            if completed { XCTAssertNotNil(DarwinBridge.peekResult(expectedSession: manual.rawValue)) }
+            else { XCTAssertNotNil(DarwinBridge.peekDictationSettings(expectedSession: manual.rawValue)) }
+            DarwinBridge.clearIPCFilesForTesting()
+        }
+    }
+
+    func testCanceledSourceRecoveryRetriesWithoutPromotionAndDiscoversPromotedWork() throws {
+        let source = SessionToken()
+        let snapshot = try recoverySnapshot(source)
+        XCTAssertTrue(DarwinBridge.writeDictationSettings(recoverySettings(source)))
+        XCTAssertTrue(DarwinBridge.cancelSession(source.rawValue))
+        let cancellation = try Data(contentsOf: recoveryFile("cancel", token: source))
+        XCTAssertEqual(KeyboardSessionRecoveryStore.recoveryDecision(snapshot: snapshot, contextMatches: true), .retry(source))
+
+        let replacement = SessionToken()
+        XCTAssertTrue(DarwinBridge.writeDictationSettings(recoverySettings(replacement)))
+        XCTAssertEqual(KeyboardSessionRecoveryStore.recoveryDecision(snapshot: snapshot, contextMatches: true), .restore(replacement))
+        XCTAssertEqual(try Data(contentsOf: recoveryFile("cancel", token: source)), cancellation)
+        XCTAssertEqual(KeyboardSessionRecoveryStore.load(defaults: defaults)?.session, source.rawValue)
+    }
+
+    func testSnapshotWithItsOwnRealEvidenceOutranksUnrelatedPendingWork() throws {
+        for evidence in ["settings", "live", "result"] {
+            let own = SessionToken()
+            let other = SessionToken()
+            let snapshot = try recoverySnapshot(own)
+            switch evidence {
+            case "settings": XCTAssertTrue(DarwinBridge.writeDictationSettings(recoverySettings(own)))
+            case "live": XCTAssertTrue(DarwinBridge.writeLiveState(phase: .listening, session: own.rawValue))
+            default: XCTAssertEqual(DarwinBridge.commit(.completed(recoveryPlan), token: own), .written)
+            }
+            XCTAssertTrue(DarwinBridge.writeDictationSettings(recoverySettings(other)))
+
+            XCTAssertEqual(KeyboardSessionRecoveryStore.recoveryDecision(snapshot: snapshot, contextMatches: false), .restore(own), evidence)
+
+            XCTAssertNotNil(DarwinBridge.peekDictationSettings(expectedSession: other.rawValue))
+            DarwinBridge.clearIPCFilesForTesting()
+        }
+    }
+
+    func testRecoveryWithoutSnapshotDiscoversWorkWithoutInventingContext() throws {
+        XCTAssertEqual(KeyboardSessionRecoveryStore.recoveryDecision(snapshot: nil, contextMatches: false), .none)
+        let token = SessionToken()
+        XCTAssertTrue(DarwinBridge.writeDictationSettings(recoverySettings(token)))
+        XCTAssertEqual(KeyboardSessionRecoveryStore.recoveryDecision(snapshot: nil, contextMatches: false), .restore(token))
+        XCTAssertNotNil(DarwinBridge.readAndConsumeDictationSettings(expectedSession: token.rawValue))
+        XCTAssertEqual(DarwinBridge.commit(.completed(recoveryPlan), token: token), .written)
+        XCTAssertEqual(KeyboardSessionRecoveryStore.recoveryDecision(snapshot: nil, contextMatches: false), .restore(token))
+        XCTAssertNotNil(DarwinBridge.peekResult(expectedSession: token.rawValue))
+    }
+
+    func testOwnLiveEvidenceIsNotPreemptedByUnrelatedCompletedResult() throws {
+        let own = SessionToken()
+        let other = SessionToken()
+        let snapshot = try recoverySnapshot(own)
+        XCTAssertTrue(DarwinBridge.writeLiveState(phase: .processing, session: own.rawValue))
+        XCTAssertEqual(DarwinBridge.commit(.completed(recoveryPlan), token: other), .written)
+
+        XCTAssertEqual(KeyboardSessionRecoveryStore.recoveryDecision(snapshot: snapshot, contextMatches: true), .restore(own))
+
+        XCTAssertNotNil(DarwinBridge.peekResult(expectedSession: other.rawValue))
+    }
+
+    func testContextOnlyFallbackRequiresMatchingEvidenceAndNoDurableBarrier() throws {
+        for kind in ["terminal", "cancel"] {
+            let token = SessionToken()
+            let snapshot = try recoverySnapshot(token)
+            XCTAssertEqual(KeyboardSessionRecoveryStore.recoveryDecision(snapshot: snapshot, contextMatches: false), .none)
+            XCTAssertEqual(KeyboardSessionRecoveryStore.recoveryDecision(snapshot: snapshot, contextMatches: true), .restore(token))
+            let corruptBarrier = Data("corrupt-recovery-evidence".utf8)
+            try corruptBarrier.write(to: recoveryFile(kind, token: token))
+            XCTAssertEqual(KeyboardSessionRecoveryStore.recoveryDecision(snapshot: snapshot, contextMatches: true), .retry(token))
+            XCTAssertEqual(try Data(contentsOf: recoveryFile(kind, token: token)), corruptBarrier)
+            DarwinBridge.clearIPCFilesForTesting()
+        }
+    }
+
+    func testEmptyContextDoesNotManufactureAnOngoingSession() throws {
+        let snapshot = try XCTUnwrap(KeyboardSessionRecoveryStore.save(session: UUID().uuidString,
+            launchMode: .inPlace, contextBefore: "", contextAfter: "", selectedText: nil, defaults: defaults))
+        XCTAssertFalse(snapshot.hasContextEvidence)
+        XCTAssertEqual(KeyboardSessionRecoveryStore.recoveryDecision(snapshot: snapshot, contextMatches: true), .none)
+    }
+
+    func testUnavailableStorageCannotRestoreContextOnlySnapshotWait() throws {
+        let token = SessionToken()
+        let snapshot = try recoverySnapshot(token)
+        let storedSnapshot = defaults.data(forKey: "keyboardSessionRecovery.v1")
+        let blockedContainer = ipcDirectory.appendingPathComponent("not-a-directory")
+        let bytes = Data("unavailable-recovery-container".utf8)
+        try bytes.write(to: blockedContainer)
+        defer { DarwinBridge.setContainerDirectoryForTesting(ipcDirectory) }
+        for unavailable in [nil, blockedContainer] as [URL?] {
+            DarwinBridge.setContainerDirectoryForTesting(unavailable)
+            XCTAssertEqual(KeyboardSessionRecoveryStore.recoveryDecision(snapshot: snapshot, contextMatches: true), .retry(token),
+                           "Unknown IPC state cannot justify restoring a context-only wait")
+        }
+        XCTAssertEqual(defaults.data(forKey: "keyboardSessionRecovery.v1"), storedSnapshot)
+        XCTAssertEqual(try Data(contentsOf: blockedContainer), bytes)
+    }
+
+    private func recoverySnapshot(_ token: SessionToken) throws -> KeyboardSessionRecoverySnapshot {
+        try XCTUnwrap(KeyboardSessionRecoveryStore.save(session: token.rawValue, launchMode: .inPlace,
+            contextBefore: "same field", contextAfter: "after", selectedText: nil, defaults: defaults))
+    }
+
+    private func recoverySettings(_ token: SessionToken) -> DictationSettings {
+        DictationSettings(language: "zh-CN", whisper: false, translateEnabled: false,
+            translateTarget: "en-US", selectedText: nil, keyboardType: 0, session: token.rawValue)
+    }
+
+    private var recoveryPlan: EditPlan {
+        EditPlan(intent: .dictate, operation: .insertAtCursor, text: "manual result",
+                 expectedContextFingerprint: nil, requiresConfirmation: false)
+    }
+
+    private func recoveryFile(_ kind: String, token: SessionToken) -> URL {
+        let digest = SHA256.hash(data: Data(token.rawValue.utf8)).map { String(format: "%02x", $0) }.joined()
+        return ipcDirectory.appendingPathComponent("dictation-\(kind)-\(digest).json")
     }
 
     private func assertEvidence(_ actual: KeyboardSessionRecoverySnapshot,

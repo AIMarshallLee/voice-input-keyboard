@@ -62,6 +62,10 @@
 
 ## 验证路径与本轮证据
 
+- 首轮修复 Stage 1 已取得真实行为 **RED**：`5279354` / [CI #174](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/35532291436) FAILURE，9m41s。205 单元中新增 8 个用例产生 17 条失败（其中 5 条是预期取消未发生导致的有界等待抛错，不是环境失败）；其他单元无失败、4 个独立 UI 通过。日志逐项确认过早 cancel、无通知未 cancel、存储丢失不停、损坏 marker 被删除后晚写仍获准、GC 删除无效证据、过期 stage 未清理。无编译错误；Release/Archive/分发跳过。循环中的 listening 分支先失败，processing 分支尚未执行，不能把它记为独立已复现。下一步是已准备的 12 项恢复/取消状态接口测试，再观察缺失接口 RED 后改生产。
+
+- Task 8 首轮修复先补 8 项行为回归，提交 `52793542c794f355c3acf685089b31d921af9c85` 已非强制推送，[CI #174](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/35532291436) 已进入队列；测试仅调用既有接口，覆盖无通知取消、准入时序、旧 token、存储失效、取消证据与 stage 清理。尚未观察本轮 RED，不提前改生产。父级完整读差异及 teardown，plist 2/2（0.035s）和 diff/staged 检查通过。
+
 - `372dfec` / [CI #173](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/35531019490) **SUCCESS**，13m45s：实际 197 单元零失败（24.836s，26.327s wall）、4 个独立 UI 零失败（两 scheme 重复运行分别 174.522s / 51.008s，不算 8 个）、source gate、unsigned BUILD（19:15:59Z）和 ARCHIVE（19:16:47Z）通过。artifact `10610939870` / 5,050,883 bytes 是无签名产物，签名/Apple 上传跳过。该结果不覆盖独立审查确认的 receipt-only 禁用重试、迁移回滚双请求、快照遮挡；进一步只读检查确认后台不主动读取取消墓碑，键盘退出丢通知时无可靠停止上界。父级 R30/R31 与后续取消协调修复正在补测试。新 Timer 回调 main-actor 告警（KeyboardViewController:1853）也纳入修复；不宣称零警告或 Task 8 完成。
 
 - Task 8 生产实现 `372dfec1f3fb5a0d57c6a86636780acd1fe9640f` 已提交并非强制推送，[CI #173](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/35531019490) 已确认运行。实现手动恢复、双 UUID 迁移/取消、冻结预览三动作、选区保护及失败重试；source gate 置于测试与 unsigned Release 前。自查修正 responder traversal 正则漏检，并使失败迁移在 processing 时仍可按精确 token 重试。本地 plist 2/2（父级 0.025s）、source gate/语法/staged diff 通过，九类合成禁止调用分别被拒绝；脚本 Git 模式为 100755。独立规格/质量审查已启动；尚无本次 macOS GREEN，不增加已验收任务数，也没有合并或发布。
