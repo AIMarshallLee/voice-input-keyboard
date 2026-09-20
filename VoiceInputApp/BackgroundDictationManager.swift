@@ -22,6 +22,7 @@ final class BackgroundDictationManager: ObservableObject {
     private var pendingCancellationToken: SessionToken?
     private var cancellationForwardedToken: SessionToken?
     private var cancellationReconciliation: Task<Void, Never>?
+    private var presentationAttempt = UUID()
 
     var engineIdentity: ObjectIdentifier { ObjectIdentifier(engine as AnyObject) }
 
@@ -83,6 +84,7 @@ final class BackgroundDictationManager: ObservableObject {
             // start 自身负责引擎内的旧会话终结。先撤销旧 consumer，避免等待时
             // 旧事件或 EOF 清除新请求；整个 drain 不允许第二个 start 并发进入。
             detachCurrentSession()
+            presentationAttempt = UUID()
             currentToken = token
             cancellationForwardedToken = nil
             startingToken = token
@@ -128,11 +130,14 @@ final class BackgroundDictationManager: ObservableObject {
         guard currentToken == token, cancellationForwardedToken != token else { return }
         cancellationForwardedToken = token
         let wasPresenting = eventConsumer != nil
-        // Detach before awaiting so neither a duplicate command nor buffered events can
-        // paint a cancelled session; no UI mutation after the await can touch a successor.
+        let attempt = presentationAttempt
+        // Stop stale events immediately, but do not advertise standby before capture
+        // cancellation completes. A successor invalidates this attempt even if it ends.
         detachCurrentSession()
-        if wasPresenting { pip.returnToStandby() }
         await engine.cancel(token: token)
+        guard wasPresenting, presentationAttempt == attempt,
+              currentToken == nil, pip.isActive else { return }
+        pip.returnToStandby()
     }
 
     private func startCancellationReconciliation(for token: SessionToken) {

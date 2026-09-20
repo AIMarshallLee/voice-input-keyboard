@@ -208,6 +208,113 @@ final class DictationConstantsTests: XCTestCase {
         }
     }
 
+    func testRefreshedSourceKeepsExpiredReplacementProofThroughSettingsGC() throws {
+        for kind in ["cancel", "terminal"] {
+            let now = Date().timeIntervalSince1970
+            let (source, replacement) = try makeReferencedExpiredProof(kind: kind, now: now)
+            let sourceURL = businessURL("cancel", token: source)
+            let proofURL = businessURL(kind, token: replacement)
+            let sourceBytes = try Data(contentsOf: sourceURL)
+            let proofBytes = try Data(contentsOf: proofURL)
+            XCTAssertEqual(DarwinBridge.handoffRecovery(), .none)
+
+            XCTAssertTrue(DarwinBridge.writeDictationSettings(handoffSettings(SessionToken())))
+
+            XCTAssertEqual(try? Data(contentsOf: sourceURL), sourceBytes)
+            XCTAssertEqual(try? Data(contentsOf: proofURL), proofBytes,
+                           "A refreshed source outlives this proof's ordinary TTL but still needs its settlement evidence")
+            XCTAssertEqual(DarwinBridge.handoffRecovery(), .none, "GC must not resurrect an unresolved replacement")
+            DarwinBridge.clearIPCFilesForTesting()
+        }
+    }
+
+    func testReferencedExpiredProofRemainsAuthoritativeForOrdinaryReadsAndLateWrites() throws {
+        for kind in ["cancel", "terminal"] {
+            let now = Date().timeIntervalSince1970
+            let (_, replacement) = try makeReferencedExpiredProof(kind: kind, now: now)
+            let bytes = try businessBytes()
+            if kind == "cancel" {
+                XCTAssertTrue(DarwinBridge.isSessionCancelled(session: replacement.rawValue, now: now))
+            } else {
+                XCTAssertNil(DarwinBridge.readLiveState(expectedSession: replacement.rawValue, now: now))
+            }
+            XCTAssertEqual(try businessBytes(), bytes, "Ordinary readers must not erase referenced proof")
+            XCTAssertFalse(DarwinBridge.writeLiveState(phase: .listening, partialTranscript: "late",
+                                                      session: replacement.rawValue))
+            XCTAssertEqual(DarwinBridge.commit(.completed(heldPlan), token: replacement),
+                           kind == "cancel" ? .cancelled : .alreadyTerminal,
+                           "Retaining proof bytes without honoring the terminal is not sufficient")
+            XCTAssertEqual(try businessBytes(), bytes, "No late payload/live state or replacement receipt may be published")
+            DarwinBridge.clearIPCFilesForTesting()
+        }
+    }
+
+    func testLinkedChainRetainsIntermediateProofUntilReferringSourceCanRetire() throws {
+        let source = SessionToken()
+        let intermediate = SessionToken()
+        let last = SessionToken()
+        let now = Date().timeIntervalSince1970
+        let settings = handoffSettings(source)
+        XCTAssertTrue(DarwinBridge.writeDictationSettings(settings))
+        guard case .moved = DarwinBridge.handoffDictationSettingsToManual(from: source, to: intermediate, original: settings)
+        else { return XCTFail("First handoff must succeed") }
+        let intermediateSettings = try XCTUnwrap(DarwinBridge.readAndConsumeDictationSettings(expectedSession: intermediate.rawValue))
+        guard case .moved = DarwinBridge.handoffDictationSettingsToManual(from: intermediate, to: last, original: intermediateSettings)
+        else { return XCTFail("Second handoff must succeed") }
+        XCTAssertNotNil(DarwinBridge.readAndConsumeDictationSettings(expectedSession: last.rawValue))
+        XCTAssertEqual(DarwinBridge.commit(.completed(heldPlan), token: last), .written)
+        XCTAssertNotNil(DarwinBridge.readAndConsumeResult(expectedSession: last.rawValue))
+        let sourceURL = businessURL("cancel", token: source)
+        let intermediateURL = businessURL("cancel", token: intermediate)
+        let lastURL = businessURL("terminal", token: last)
+        try setBusinessTimestamp(at: intermediateURL, to: now - DarwinBridge.cancellationMaxAge - 20)
+        try setBusinessTimestamp(at: lastURL, to: now - DarwinBridge.terminalReceiptMaxAge - 10)
+        let sourceBytes = try Data(contentsOf: sourceURL)
+        let intermediateBytes = try Data(contentsOf: intermediateURL)
+        let lastBytes = try Data(contentsOf: lastURL)
+        let gcTrigger = SessionToken()
+        XCTAssertTrue(DarwinBridge.writeDictationSettings(handoffSettings(gcTrigger)))
+        XCTAssertEqual(try? Data(contentsOf: sourceURL), sourceBytes)
+        XCTAssertEqual(try? Data(contentsOf: intermediateURL), intermediateBytes,
+                       "A young source still refers to the expired intermediate cancellation")
+        XCTAssertEqual(try? Data(contentsOf: lastURL), lastBytes)
+        XCTAssertEqual(DarwinBridge.handoffRecovery(), .none)
+
+        try setBusinessTimestamp(at: sourceURL, to: now - DarwinBridge.cancellationMaxAge - 30)
+        // At most one dependency layer may retire per pass; this finite chain needs no clock/wait framework.
+        for _ in 0..<3 { XCTAssertTrue(DarwinBridge.writeDictationSettings(handoffSettings(gcTrigger))) }
+        for url in [sourceURL, intermediateURL, lastURL] {
+            XCTAssertFalse(FileManager.default.fileExists(atPath: url.path), "Unreferenced expired proof must eventually be collected")
+        }
+        XCTAssertEqual(DarwinBridge.handoffRecovery(), .none)
+    }
+
+    private func makeReferencedExpiredProof(kind: String, now: TimeInterval) throws -> (SessionToken, SessionToken) {
+        let source = SessionToken()
+        let replacement = SessionToken()
+        let settings = handoffSettings(source)
+        XCTAssertTrue(DarwinBridge.writeDictationSettings(settings))
+        guard case .moved = DarwinBridge.handoffDictationSettingsToManual(from: source, to: replacement, original: settings)
+        else { throw NSError(domain: "HandoffFixture", code: 1) }
+        XCTAssertNotNil(DarwinBridge.readAndConsumeDictationSettings(expectedSession: replacement.rawValue))
+        if kind == "cancel" { XCTAssertTrue(DarwinBridge.cancelSession(replacement.rawValue)) }
+        else {
+            XCTAssertEqual(DarwinBridge.commit(.completed(heldPlan), token: replacement), .written)
+            XCTAssertNotNil(DarwinBridge.readAndConsumeResult(expectedSession: replacement.rawValue))
+        }
+        try setBusinessTimestamp(at: businessURL(kind, token: replacement),
+                                 to: now - max(DarwinBridge.cancellationMaxAge, DarwinBridge.terminalReceiptMaxAge) - 10)
+        try setBusinessTimestamp(at: businessURL("cancel", token: source), to: now - DarwinBridge.cancellationMaxAge - 20)
+        XCTAssertTrue(DarwinBridge.cancelSession(source.rawValue, timestamp: now))
+        return (source, replacement)
+    }
+
+    private func setBusinessTimestamp(at url: URL, to timestamp: TimeInterval) throws {
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        object["timestamp"] = timestamp
+        try JSONSerialization.data(withJSONObject: object).write(to: url, options: [.atomic, .completeFileProtection])
+    }
+
     func testSourceRecancelCannotOverwriteUnreadablePotentialAnchor() throws {
         let source = SessionToken()
         let bytes = Data("unreadable-existing-handoff-anchor".utf8)

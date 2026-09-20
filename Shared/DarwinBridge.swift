@@ -281,6 +281,13 @@ struct DictationReadiness: Codable, Equatable {
 private struct DictationCancellation: Codable {
     let session: String
     let timestamp: TimeInterval
+    let handoffReplacementSession: String?
+
+    init(session: String, timestamp: TimeInterval, handoffReplacementSession: String? = nil) {
+        self.session = session
+        self.timestamp = timestamp
+        self.handoffReplacementSession = handoffReplacementSession
+    }
 }
 
 /// 终态 payload 会被键盘消费并删除；receipt 独立保留，确保同一 session 的
@@ -431,7 +438,14 @@ extension DictationTerminalReceipt: TimestampedIPCValue {}
 enum DictationManualHandoffOutcome: Equatable {
     case moved(DictationSettings)
     case alreadyTerminal
+    case unresolved(SessionToken)
     case failed
+}
+
+enum DictationHandoffRecovery: Equatable {
+    case none
+    case unresolved(SessionToken)
+    case unavailable
 }
 
 /// App Group 原子文件 IPC。Darwin 通知只传信号，文件承载带 session 的数据。
@@ -798,11 +812,21 @@ struct DarwinBridge {
               let resultName = resultFileName(for: session),
               let liveName = liveStateFileName(for: session),
               let settingsName = settingsFileName(for: session) else { return false }
-        let marker = DictationCancellation(session: session, timestamp: timestamp)
         let didWrite = withSessionLock(session: session, defaultValue: false) { directory in
+            let url = directory.appendingPathComponent(cancellationName)
+            var replacement: String?
+            switch fileEvidenceUncoordinated(url) {
+            case .absent: break
+            case .unavailable: return false
+            case .present:
+                guard let existing = cancellationMarkerUncoordinated(at: url) else { return false }
+                replacement = existing.handoffReplacementSession
+            }
+            let marker = DictationCancellation(session: session, timestamp: timestamp,
+                                               handoffReplacementSession: replacement)
             guard writeUncoordinated(
                 marker,
-                to: directory.appendingPathComponent(cancellationName)
+                to: url
             ) else { return false }
             removeUncoordinated(directory.appendingPathComponent(resultName))
             removeUncoordinated(directory.appendingPathComponent(liveName))
@@ -820,6 +844,49 @@ struct DarwinBridge {
 
     enum CancellationEvidence: Equatable {
         case absent, present, unavailable
+    }
+
+    /// Find durable source -> replacement identities independently of editor snapshots.
+    /// This is non-cleaning: unavailable enumeration/decoding/coordination is not absence.
+    static func handoffRecovery() -> DictationHandoffRecovery {
+        guard let directory = containerDirectory(),
+              let urls = try? FileManager.default.contentsOfDirectory(at: directory,
+                  includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) else { return .unavailable }
+        let candidates = urls.filter {
+            $0.lastPathComponent.hasPrefix(cancellationFilePrefix)
+                && $0.lastPathComponent.hasSuffix(cancellationFileSuffix)
+        }.sorted { $0.lastPathComponent < $1.lastPathComponent }
+        var unresolved: SessionToken?
+        for url in candidates {
+            guard let candidate = cancellationMarkerUncoordinated(at: url),
+                  let source = SessionToken(rawValue: candidate.session) else { return .unavailable }
+            let evidence: DictationHandoffRecovery
+            if let rawReplacement = candidate.handoffReplacementSession,
+               let replacement = SessionToken(rawValue: rawReplacement) {
+                evidence = withTwoSessionLocks(source: source, replacement: replacement, defaultValue: .unavailable) { directory in
+                    let currentURL = directory.appendingPathComponent(url.lastPathComponent)
+                    if fileEvidenceUncoordinated(currentURL) == .absent { return .none }
+                    guard let current = cancellationMarkerUncoordinated(at: currentURL),
+                          current.handoffReplacementSession == replacement.rawValue else { return .unavailable }
+                    return replacementIsConfirmedFinishedUncoordinated(replacement, in: directory)
+                        ? .none : .unresolved(replacement)
+                }
+            } else {
+                evidence = withSessionLock(session: source.rawValue, defaultValue: .unavailable) { directory in
+                    let currentURL = directory.appendingPathComponent(url.lastPathComponent)
+                    if fileEvidenceUncoordinated(currentURL) == .absent { return .none }
+                    guard let current = cancellationMarkerUncoordinated(at: currentURL),
+                          current.handoffReplacementSession == nil else { return .unavailable }
+                    return .none
+                }
+            }
+            switch evidence {
+            case .unavailable: return .unavailable
+            case .unresolved(let token): if unresolved == nil { unresolved = token }
+            case .none: break
+            }
+        }
+        return unresolved.map { .unresolved($0) } ?? .none
     }
 
     /// This safety read never removes evidence, including malformed or expired markers.
@@ -920,7 +987,8 @@ struct DarwinBridge {
             guard let hash = sessionToken(replacement.rawValue) else { return .failed }
             let stageURL = directory.appendingPathComponent("dictation-handoff-stage-\(hash).json")
             guard writeUncoordinated(settings, to: stageURL) else { return .failed }
-            guard writeUncoordinated(DictationCancellation(session: source.rawValue, timestamp: timestamp),
+            guard writeUncoordinated(DictationCancellation(session: source.rawValue, timestamp: timestamp,
+                                                           handoffReplacementSession: replacement.rawValue),
                                      to: directory.appendingPathComponent(sourceCancellation)) else {
                 // Even failed cleanup leaves only non-discoverable work.
                 removeUncoordinated(stageURL)
@@ -933,6 +1001,7 @@ struct DarwinBridge {
             do {
                 // Same-directory move publishes the protected atomic stage, never a partial payload.
                 try FileManager.default.moveItem(at: stageURL, to: replacementURL)
+                return .moved(settings)
             } catch {
                 // A reported failure is not proof that the destination was not published.
                 print("[DarwinBridge] Manual handoff promotion failed: \(error.localizedDescription)")
@@ -940,8 +1009,9 @@ struct DarwinBridge {
             let data = try? Data(contentsOf: replacementURL)
             let published = data.flatMap { try? JSONDecoder().decode(DictationSettings.self, from: $0) }
             removeUncoordinated(stageURL)
-            guard published == settings else { return .failed }
-            return .moved(settings)
+            if published == settings { return .moved(settings) }
+            if fileEvidenceUncoordinated(replacementURL) == .absent { return .failed }
+            return .unresolved(replacement)
         }
         if sourceWasCancelled {
             postSessionNotification(base: DarwinNotificationName.requestCancelDictation, session: source.rawValue)
@@ -1333,10 +1403,25 @@ struct DarwinBridge {
         now: TimeInterval = Date().timeIntervalSince1970
     ) {
         guard let directory = containerDirectory() else { return }
-        for url in cancellationFileURLs(in: directory) {
-            guard let data = try? Data(contentsOf: url),
-                  let marker = try? JSONDecoder().decode(DictationCancellation.self, from: data),
-                  cancellationFileName(for: marker.session) == url.lastPathComponent else { continue }
+        let urls = cancellationFileURLs(in: directory)
+        // Resolve linked sources before ordinary GC can delete their expired proofs.
+        for url in urls {
+            guard let marker = cancellationMarkerUncoordinated(at: url),
+                  let source = SessionToken(rawValue: marker.session),
+                  let rawReplacement = marker.handoffReplacementSession,
+                  let replacement = SessionToken(rawValue: rawReplacement) else { continue }
+            _ = withTwoSessionLocks(source: source, replacement: replacement, defaultValue: false) { directory in
+                let currentURL = directory.appendingPathComponent(url.lastPathComponent)
+                guard let current = cancellationMarkerUncoordinated(at: currentURL),
+                      current.handoffReplacementSession == replacement.rawValue,
+                      now - current.timestamp > cancellationMaxAge,
+                      replacementIsConfirmedFinishedUncoordinated(replacement, in: directory) else { return false }
+                return removeUncoordinated(currentURL)
+            }
+        }
+        for url in urls {
+            guard let marker = cancellationMarkerUncoordinated(at: url),
+                  marker.handoffReplacementSession == nil else { continue }
             _ = withSessionLock(session: marker.session, defaultValue: true) { directory in
                 isCancelledUncoordinated(session: marker.session, in: directory, now: now)
             }
@@ -1556,12 +1641,42 @@ struct DarwinBridge {
         case .unavailable: return true
         case .present:
             // Only a valid, identity-matched, positively dated expired marker is garbage.
-            guard let data = try? Data(contentsOf: url),
-                  let marker = try? JSONDecoder().decode(DictationCancellation.self, from: data),
-                  marker.session == session, marker.timestamp.isFinite, marker.timestamp > 0,
+            guard let marker = cancellationMarkerUncoordinated(at: url),
+                  marker.handoffReplacementSession == nil,
                   now - marker.timestamp > maxAge else { return true }
             return !removeUncoordinated(url)
         }
+    }
+
+    private static func cancellationMarkerUncoordinated(at url: URL) -> DictationCancellation? {
+        guard let data = try? Data(contentsOf: url),
+              let marker = try? JSONDecoder().decode(DictationCancellation.self, from: data),
+              cancellationFileName(for: marker.session) == url.lastPathComponent,
+              marker.timestamp.isFinite, marker.timestamp > 0 else { return nil }
+        if let replacement = marker.handoffReplacementSession {
+            guard SessionToken(rawValue: replacement) != nil, replacement != marker.session else { return nil }
+        }
+        return marker
+    }
+
+    /// A past valid terminal is proof even after its ordinary TTL; never clean it here.
+    private static func replacementIsConfirmedFinishedUncoordinated(_ token: SessionToken, in directory: URL) -> Bool {
+        let session = token.rawValue
+        let now = Date().timeIntervalSince1970
+        if let name = cancellationFileName(for: session),
+           let marker = cancellationMarkerUncoordinated(at: directory.appendingPathComponent(name)),
+           marker.timestamp <= now + 5 { return true }
+        if let name = terminalReceiptFileName(for: session),
+           let data = try? Data(contentsOf: directory.appendingPathComponent(name)),
+           let receipt = try? JSONDecoder().decode(DictationTerminalReceipt.self, from: data),
+           receipt.session == session, receipt.timestamp.isFinite,
+           receipt.timestamp > 0, receipt.timestamp <= now + 5 { return true }
+        if let name = resultFileName(for: session),
+           let data = try? Data(contentsOf: directory.appendingPathComponent(name)),
+           let result = try? JSONDecoder().decode(DictationIPCResult.self, from: data),
+           result.session == session, result.timestamp.isFinite,
+           result.timestamp > 0, result.timestamp <= now + 5 { return true }
+        return false
     }
 
     private static func fileEvidenceUncoordinated(_ url: URL) -> CancellationEvidence {

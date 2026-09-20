@@ -53,6 +53,8 @@ struct KeyboardSessionRecoverySnapshot: Codable, Equatable {
 enum KeyboardSessionRecoveryDecision: Equatable {
     case restore(SessionToken)
     case retry(SessionToken)
+    case cancelBeforeRetry(SessionToken)
+    case storageUnavailable
     case none
 }
 
@@ -65,6 +67,13 @@ enum KeyboardSessionRecoveryStore {
 
     static func recoveryDecision(snapshot: KeyboardSessionRecoverySnapshot?,
                                  contextMatches: Bool) -> KeyboardSessionRecoveryDecision {
+        switch DarwinBridge.handoffRecovery() {
+        case .unavailable: return .storageUnavailable
+        case .unresolved(let replacement):
+            let evidence = DarwinBridge.recoverySessionEvidence(for: replacement)
+            return evidence.hasResult || evidence.hasActiveRequest ? .restore(replacement) : .cancelBeforeRetry(replacement)
+        case .none: break
+        }
         let token = snapshot.flatMap { SessionToken(rawValue: $0.session) }
         let evidence = token.map { DarwinBridge.recoverySessionEvidence(for: $0) }
         if let token, let evidence, evidence.hasResult || evidence.hasActiveRequest {

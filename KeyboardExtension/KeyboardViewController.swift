@@ -49,6 +49,7 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
     private var currentExtensionSessionToken: SessionToken?
     private var currentDictationSettings: DictationSettings?
     private var failedHandoffRetryToken: SessionToken?
+    private var deferredTerminalToken: SessionToken?
     private var resultTimeoutTimer: Timer?
     private var resultTimeoutGeneration = UUID()
     private var liveStatePollTimer: Timer?
@@ -1272,7 +1273,28 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
             liveTextLabel.text = "请到设置→键盘→VoType→开启「允许完全访问」"
             return
         }
+        // Check durable handoffs before generating any fresh identity, even without a snapshot.
+        switch DarwinBridge.handoffRecovery() {
+        case .unavailable:
+            showRecoveryStorageUnavailable()
+            return
+        case .unresolved(let replacement):
+            let evidence = DarwinBridge.recoverySessionEvidence(for: replacement)
+            if evidence.hasResult || evidence.hasActiveRequest {
+                recoveredSnapshot = KeyboardSessionRecoveryStore.load().flatMap {
+                    $0.session == replacement.rawValue ? $0 : nil
+                }
+                restoreSession(replacement, snapshot: recoveredSnapshot, contextMatches: false)
+                processPendingResult()
+                refreshLiveState(for: replacement.rawValue)
+            } else {
+                requireHandoffCancellation(replacement)
+            }
+            return
+        case .none: break
+        }
         let token = SessionToken()
+        deferredTerminalToken = nil
         failedHandoffRetryToken = nil
         let launchMode: KeyboardSessionLaunchMode = DarwinBridge.canStartInPlace() ? .inPlace : .manualOpen
         let before = textDocumentProxy.documentContextBeforeInput
@@ -1350,13 +1372,9 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
                 $0.session == oldToken.rawValue ? $0 : nil
             }
             currentExtensionSessionToken = nil
-            if DarwinBridge.recoverySessionEvidence(for: oldToken).hasResult {
-                processPendingResult()
-            } else {
-                // Receipt-only (including no surviving snapshot) is terminal, not an
-                // ongoing request. Keep its IPC barrier and enable an explicit fresh retry.
-                finishSession(session: oldToken.rawValue, message: "旧会话已结束，结果不可用，请点麦克风重试")
-            }
+            processTerminalResult(for: oldToken)
+        case .unresolved(let replacement):
+            requireHandoffCancellation(replacement)
         case .failed:
             currentExtensionSessionToken = nil
             failedHandoffRetryToken = oldToken
@@ -1365,6 +1383,34 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
             // Keep polling for a terminal, but only an explicit tap may cancel/retry.
             showFailedHandoffRetry()
         }
+    }
+
+    private func requireHandoffCancellation(_ token: SessionToken) {
+        finishWaitingState()
+        currentSessionId = token.rawValue
+        currentExtensionSessionToken = nil
+        currentDictationSettings = nil
+        recoveredSnapshot = KeyboardSessionRecoveryStore.load().flatMap {
+            $0.session == token.rawValue ? $0 : nil
+        }
+        isWaitingForResult = true
+        failedHandoffRetryToken = token
+        _ = configureSessionObservers(for: token.rawValue)
+        startLiveStatePolling(for: token.rawValue)
+        showFailedHandoffRetry(message: "旧请求状态尚未确认，请点麦克风取消后重试")
+    }
+
+    private func showRecoveryStorageUnavailable() {
+        finishWaitingState()
+        currentSessionId = nil
+        currentExtensionSessionToken = nil
+        currentDictationSettings = nil
+        recoveredSnapshot = nil
+        // Do not clear the persisted snapshot or anchors while their storage is unknown.
+        liveTextLabel.text = "暂时无法读取会话状态，请点麦克风重试"
+        updateQuickTypeStatus(liveTextLabel.text ?? "请重试", phase: nil)
+        micButton.isEnabled = true
+        micButton.accessibilityLabel = "会话状态不可用，点按重试"
     }
 
     private func showFailedHandoffRetry(message: String = "无法安全切换到前台，请点麦克风重试") {
@@ -1405,13 +1451,8 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
         guard isWaitingForResult, currentSessionId == sessionId else { return }
         hotAckCoordinator.cancel()
         currentExtensionSessionToken = nil
-        guard keyboardIsVisible else { return }
-        if let pending = DarwinBridge.peekResult(expectedSession: sessionId) {
-            if pending.status == .error { completeTerminalError(pending) }
-            else { processPendingResult() }
-        } else {
-            finishSession(session: sessionId, message: "录音未能完成，请点麦克风重试")
-        }
+        guard let token = SessionToken(rawValue: sessionId) else { return }
+        processTerminalResult(for: token)
     }
 
     private func refreshLiveState(for sessionId: String) {
@@ -1551,7 +1592,7 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
 
     /// Recreated extensions never inherit ownership of an automatic insertion.
     private func checkForPendingResult() {
-        guard currentHeldSession == nil else { return }
+        guard keyboardIsVisible, currentHeldSession == nil else { return }
         if isWaitingForResult, let session = currentSessionId {
             processPendingResult()
             refreshLiveState(for: session)
@@ -1573,25 +1614,48 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
         case .retry(let token):
             currentSessionId = token.rawValue
             finishSession(session: token.rawValue, message: "旧会话无法继续，请点麦克风重试")
+        case .cancelBeforeRetry(let token):
+            requireHandoffCancellation(token)
+        case .storageUnavailable:
+            showRecoveryStorageUnavailable()
         case .none:
             recoveredSnapshot = nil
         }
     }
 
-    private func processPendingResult() {
-        guard keyboardIsVisible, isWaitingForResult,
+    private enum PendingResultHandling {
+        case handled, missing, deferredHidden
+    }
+
+    private func processTerminalResult(for token: SessionToken) {
+        guard currentSessionId == token.rawValue, isWaitingForResult else { return }
+        deferredTerminalToken = token
+        resultTimeoutTimer?.invalidate()
+        resultTimeoutTimer = nil
+        processPendingResult()
+    }
+
+    @discardableResult
+    private func processPendingResult() -> PendingResultHandling {
+        guard keyboardIsVisible else { return .deferredHidden }
+        guard isWaitingForResult,
               let session = currentSessionId,
-              let token = SessionToken(rawValue: session),
-              let pending = DarwinBridge.peekResult(expectedSession: token.rawValue),
-              SessionToken(rawValue: pending.session) == token else { return }
+              let token = SessionToken(rawValue: session) else { return .missing }
+        guard let pending = DarwinBridge.peekResult(expectedSession: token.rawValue),
+              SessionToken(rawValue: pending.session) == token else {
+            if deferredTerminalToken == token {
+                finishSession(session: session, message: "旧会话已结束，结果不可用，请点麦克风重试")
+            }
+            return .missing
+        }
         hotAckCoordinator.cancel()
         if pending.status == .error {
             completeTerminalError(pending)
-            return
+            return .handled
         }
         guard let plan = pending.editPlan else {
             holdResult(pending, message: "无法确认结果操作，可复制或丢弃")
-            return
+            return .handled
         }
         // Snapshot all three proxy values once. No proxy reads after validation.
         let before = textDocumentProxy.documentContextBeforeInput
@@ -1612,15 +1676,16 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
             holdResult(pending, message: selectedInsert
                 ? "当前有选中文本，未覆盖原文。请取消选区后插入，或复制结果。"
                 : "结果已就绪，请选择插入、复制或丢弃")
-            return
+            return .handled
         }
         guard let consumed = DarwinBridge.readAndConsumeResult(expectedSession: token.rawValue),
               KeyboardHeldEditValidator.consumedResultMatchesPreview(previewed: pending, consumed: consumed) else {
             finishSession(session: session, message: "结果已变化或由其他键盘窗口处理，请点麦克风重试")
-            return
+            return .handled
         }
         textDocumentProxy.insertText(plan.text)
         finishSession(session: session, message: "已输入 ✓")
+        return .handled
     }
 
     private func matchesRecoveredContext(session: String, before: String?, after: String?, selection: String?) -> Bool {
@@ -1769,6 +1834,7 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
         let session = token.rawValue
         hotAckCoordinator.cancel()
         failedHandoffRetryToken = nil
+        deferredTerminalToken = nil
         currentSessionId = session
         currentExtensionSessionToken = nil
         currentDictationSettings = nil
@@ -1798,6 +1864,7 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
         isWaitingForResult = false
         hotAckCoordinator.cancel()
         failedHandoffRetryToken = nil
+        deferredTerminalToken = nil
         resultTimeoutTimer?.invalidate()
         resultTimeoutTimer = nil
         liveStatePollTimer?.invalidate()

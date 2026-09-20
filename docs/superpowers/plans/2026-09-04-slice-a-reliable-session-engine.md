@@ -4229,6 +4229,8 @@ For R32 cancellation, detach consumers/observers before awaiting `engine.cancel`
 
 R33 narrow contracts stay in the existing bridge/recovery files: `enum DictationHandoffRecovery: Equatable { case none; case unresolved(SessionToken); case unavailable }` and `DarwinBridge.handoffRecovery() -> DictationHandoffRecovery`. Extend `KeyboardSessionRecoveryDecision` with `.cancelBeforeRetry(SessionToken)` and `.storageUnavailable`. The global scan returns the exact unresolved replacement; recovery checks its real evidence to choose `.restore` versus `.cancelBeforeRetry`, without requiring a matching snapshot. Both recovery and fresh launch call the same bridge scan. Directory enumeration, potential-anchor decoding or coordination failure cannot mean `.none`; preserve business bytes and expose storage-unavailable guidance. Process linked-source GC before ordinary cancellation/receipt cleanup so an expired but valid replacement proof is not erased first. Existing cancellation markers decode compatibly, and a link must actually be decoded rather than silently fixed to a default nil property. After existing-API behavior RED, add exact-case tests for claimed/no-live identity, pending/live/result recovery, nil/non-directory/corrupt storage, multiple links and expired settled-pair GC before implementation. Do not add wrapper modules or a new persistence interface. A terminal check deferred while hidden must retain exact-session intent or revalidate it on visible re-entry; the existing waiting branch cannot simply ignore a missing-result outcome and resume disabled polling.
 
+**R35 — do not erase proof still referenced by a surviving anchor:** During R33 self-review the implementer identified a young/recancelled source whose replacement proof is already expired, a source deletion failure, and a linked A→R→S chain. Linked-first enumeration alone cannot prevent subsequent ordinary cleanup from deleting R proof while a source still refers to it. Protect referenced cancellation/terminal proof in GC and all cleanup-capable readers, not just one GC pass, until the referring anchor can actually be retired. Valid referenced expired proof remains authoritative for cancellation/first-terminal rejection; leaving the bytes but treating them as absent is insufficient. Preserve ordinary unreferenced TTL behavior and do not add a topology framework, new record type or nested public-lock calls. Add real-file regressions for young/refreshed source plus expired cancel/receipt, ordinary late-write rejection, linked-chain order and eventual cleanup. Observe the targeted failure on the initial R33 candidate before adding this protection. Filesystem deletion failure itself remains unexercised without an existing reliable fixture. The cost if wrong is a settled handoff becoming unresolved again or accepting a late write; this is the existing durable-evidence invariant, not new product scope.
+
 `onDictationStarted` must parse the notification session as `SessionToken` and call `hotAckCoordinator.acknowledge(token:)` before changing UI state. `onDictationFailed`, cancellation, result completion, reset, and controller teardown call `hotAckCoordinator.cancel()`. A terminal failure clears `currentExtensionSessionToken` and shows the failure with explicit “点麦克风重试” guidance; it never claims that a pending manual request exists or schedules an automatic retry. Explicit Retry snapshots the current field into a new UUID, binds observers/current session to it, and uses the ordinary launch policy; after PiP readiness was disabled this is `.manualOpen` and its result is held. Consume/discard only the old error payload, retaining its receipt. For a cold request that was actually saved, show “请从主屏幕打开 VoType，返回后继续” immediately and do not arm a timer.
 
 Add a retry regression proving the new UUID differs, the old error cannot reappear in the new session, late old commits remain blocked, and the replacement is bound as a held manual result. This is distinct from the existing nonterminal 1.2-second hot handoff regression.
@@ -4462,6 +4464,8 @@ git commit -m "fix: use manual recovery for cold dictation"
 - Modify: `documentation/tests.md`
 - Modify: `documentation/first-run-and-recovery.md`
 - Modify: `docs/release-checklist.md`
+- Modify: `documentation/privacy-data.md`
+- Modify: `docs/privacy-policy.html`
 
 **Interfaces:**
 - Consumes: all Slice A implementation and tests, existing UI smoke scheme, and current unsigned Release/archive commands.
@@ -4559,11 +4563,14 @@ Document these exact delivered facts:
 - a timed-out consumed hot request stages a fresh manual UUID, durably cancels the old UUID, then promotes the replacement; incomplete handoff exposes actual pending work or explicit Retry, never false readiness;
 - the active hot adapter reconciles persisted cancellation as well as notifications, including cancellation during admission; the 0.5-second check is best-effort only while the process runs and is not a guaranteed iOS suspension deadline;
 - cancellation evidence is not erased merely because it is unreadable, and undiscoverable orphan stages are cleaned on ordinary lookup after their retention boundary rather than auto-promoted; do not promise a purge timer while the app is not running;
+- source cancellation records can include only the replacement UUID as a durable handoff identity; unresolved linked records outlive ordinary cancellation TTL until the replacement is confirmed canceled/terminal, including the consumed-pending/no-live recovery gap;
 - manual results are held for insert/copy/discard;
 - held edits validate token, context, selection, fingerprint, and consumed-payload identity before mutation;
 - legacy destructive payloads fail closed to preview;
 - output persistence failure is an in-memory error and never a fabricated completed result;
 - simulator, unsigned device build, and archive evidence are automated only.
+
+**R34 — synchronize retention claims with the delivered safety behavior:** R32/R33 preserve unreadable evidence and unresolved source-to-replacement anchors beyond ordinary TTL. Read-only inspection found `documentation/privacy-data.md` and the public `docs/privacy-policy.html` still promise cancellation/receipt removal within 24 hours. Extend Task9's originally seven-document scope only by these two existing privacy files: accurately distinguish eligibility expiry from actual on-access cleanup, exceptional retained identity/invalid evidence from transcript payloads, and existing deletion controls. An anchor contains random UUIDs/timestamps, not audio or transcript; do not invent an automatic purge or an in-app deletion control. This is factual data-flow synchronization required by the approved commercial/privacy scope, not new legal terms or an unrelated policy rewrite. The cost if omitted is a misleading retention promise. Do not edit these docs before Task8 acceptance or claim physical-device verification.
 
 Every affected document must contain this exact boundary sentence:
 
@@ -4590,7 +4597,7 @@ Expected: the two ownership assertions exit 0, the forbidden-launch query is emp
 - [ ] **Step 7: Commit the verified Slice A documentation**
 
 ```bash
-git add README.md CHANGELOG.md documentation/architecture.md documentation/flows.md documentation/tests.md documentation/first-run-and-recovery.md docs/release-checklist.md
+git add README.md CHANGELOG.md documentation/architecture.md documentation/flows.md documentation/tests.md documentation/first-run-and-recovery.md docs/release-checklist.md documentation/privacy-data.md docs/privacy-policy.html
 git commit -m "docs: record slice a verification"
 ```
 

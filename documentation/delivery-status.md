@@ -9,7 +9,7 @@
 - 规格：[商用 V1](../docs/superpowers/specs/2026-09-04-voice-first-commercial-v1-design.md)。
 - 实施计划：[Slice A 九任务](../docs/superpowers/plans/2026-09-04-slice-a-reliable-session-engine.md)。
 - 当前断点：Task 1–7 已取得真实 RED、GREEN 和独立审查 PASS，实施验收进度 **7/9**。前台迁移 `faedeb6` 已修复退出、重开时丢失后继请求的问题并通过准确提交验证；这不是整个 App 的真机验收。
-- 下一动作：Task 8 首轮修复 `20f9f7c` / #176 自动门禁通过，但独立复审发现发布状态不明时的重复请求、取消完成前过早待机及终态读取竞态三项 Important。原实施者正在补第二轮行为回归及 R33 持久迁移身份；生产修复尚未开始。保持 **7/9**，不以自动门禁替代审查验收。
+- 下一动作：Task 8 第二轮四文件候选已形成；已有 #177/#178 行为 RED 和 #179 精确恢复接口 RED。自审发现源记录仍引用的过期终态证据可能被提前清理，已补 3 条真实文件回归，先跑定向 R35 RED 再补引用保护。保持 **7/9**，待准确提交 GREEN 与独立复审，不以自动门禁替代审查验收。
 
 ## 自主执行约定（2026-09-20 生效）
 
@@ -55,12 +55,18 @@
 | 5 | Apple、文本、Darwin 生产适配 | 完成：`d58ed40` / #164 GREEN，两项审查问题修正，独立复审 PASS |
 | 6 | PiP/原地输入迁移 | 完成：`829e3b8` / #166 GREEN，独立规格、代码与证据审查 PASS |
 | 7 | 前台呈现迁移 | 完成：`faedeb6` / #170 GREEN，后继准入修复及独立规格/质量/证据复审 PASS |
-| 8 | 移除不支持的拉起与手动结果保留 | 修复中：`372dfec` / #173 自动门禁 GREEN，但独立审查未通过；补持久取消、迁移及重建恢复回归，暂不验收 |
+| 8 | 移除不支持的拉起与手动结果保留 | 修复中：`20f9f7c` / #176 自动门禁 GREEN，复审仍有三项 Important；第二轮 #177/#178/#179 RED 已核对，生产候选待新 GREEN/复审 |
 | 9 | 全量回归、Release/Archive 与文档 | 待做 |
 
 任务只有在实现、相应测试及审查证据齐全后才标为完成。后续 Slice 在前片出口有新证据且自己的实施计划完成审查后才能实施。
 
 ## 验证路径与本轮证据
+
+- R33 四文件候选与 R35 三条回归已完成本地检查，准备准确提交的定向 RED：刷新后仍年轻的源记录必须保留替代会话的过期取消/终态证据，普通读取与迟到写入须继续尊重该证据，A→R→S 引用链必须逐层安全回收。R35 保护尚未实现；不把此候选称为完整修复或 GREEN。实际文件删除失败、隐藏 UIKit 回调及真实设备仍未执行。
+
+- [CI #179](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/35535580378) 在准确 `e1155b0f3f87902cfb82fd4bbd35e46ed42046ae` 完成 **缺失契约 RED，45s**。实际编译错误为 ConstantsTests 200/206/445/453 行缺少 `DarwinBridge.handoffRecovery`，另有 4 个派生的 `Equatable.none` 推断错误；无运行时测试，不虚报其他新 enum 已单独产生诊断。正常 setup/source gate 通过。至此同一实施者获准实施剩余 R33 桥接/恢复/键盘修复，整轮生产候选仍须新 GREEN 与独立复审。
+
+- R33 精确契约测试已提交 `e1155b0f3f87902cfb82fd4bbd35e46ed42046ae`，[CI #179](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/35535580378) 运行中。新增 3 条用例并强化已有回归，覆盖精确 replacement、真实 pending/live/result、存储不可用、多链接逐个取消和过期终态证据回收顺序。期望缺失接口 RED 尚待实际编译日志；后台排序候选刻意未包含在这次仅测试/文档提交中。未报告新 GREEN 或验收。
 
 - [CI #178](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/35534896738) 在准确 `e7d0da3bd2e40caa7b9ed9d5439527ef9c9f9d6c` 完成 **行为 RED，7m51s**：227 单元共 20 个失败诊断，仅落在 3 条已知 PiP 用例及 7 条新 R33 用例，0 unexpected。新失败真实证明链接缺失/重复取消丢失、未解决链接被 TTL/GC 清掉、异常记录被覆盖、claim 空隙错误进入 none/无关恢复/普通 Retry、存储不可用被当作无请求。4 个独立 UI 通过（113.652s）；无编译/环境失败。下一阶段只补精确决策契约，再实现桥接/恢复；后台待机排序已有未提交候选，不计入 GREEN。
 
