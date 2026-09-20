@@ -461,6 +461,35 @@ final class KeyboardSessionRecoveryTests: XCTestCase {
         }
     }
 
+    func testFreshResultOnlyHandoffRestoresHeldUntilConsumptionCreatesReceipt() throws {
+        let source = SessionToken()
+        let replacement = SessionToken()
+        try createClaimedHandoff(source: source, replacement: replacement)
+        XCTAssertEqual(DarwinBridge.commit(.completed(recoveryPlan), token: replacement), .written)
+        let receiptURL = recoveryFile("terminal", token: replacement)
+        // Represent the reachable result-write/receipt-failure state, not injected I/O failure.
+        try FileManager.default.removeItem(at: receiptURL)
+        let bytes = try recoveryBusinessBytes()
+
+        XCTAssertEqual(DarwinBridge.handoffRecovery(), .unresolved(replacement))
+        XCTAssertEqual(KeyboardSessionRecoveryStore.recoveryDecision(snapshot: nil, contextMatches: false), .restore(replacement))
+        XCTAssertNil(KeyboardSessionRecoveryStore.load(defaults: defaults))
+        let preview = try XCTUnwrap(DarwinBridge.peekResult(expectedSession: replacement.rawValue))
+        let plan = try XCTUnwrap(preview.editPlan)
+        XCTAssertEqual(KeyboardResultDispositionPolicy.decide(
+            launchMode: .manualOpen, belongsToCurrentExtensionInstance: false,
+            currentSelectedText: nil, hasContextEvidence: false, contextMatches: false,
+            operation: plan.operation, requiresConfirmation: plan.requiresConfirmation), .hold)
+        XCTAssertEqual(try recoveryBusinessBytes(), bytes, "Discovery and preview cannot manufacture settlement")
+
+        XCTAssertEqual(DarwinBridge.readAndConsumeResult(expectedSession: replacement.rawValue), preview)
+        let receipt = try Data(contentsOf: receiptURL)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: recoveryFile("result", token: replacement).path))
+        XCTAssertEqual(DarwinBridge.handoffRecovery(), .none)
+        XCTAssertEqual(KeyboardSessionRecoveryStore.recoveryDecision(snapshot: nil, contextMatches: false), .none)
+        XCTAssertEqual(try Data(contentsOf: receiptURL), receipt)
+    }
+
     func testMultipleClaimedHandoffAnchorsMustBeResolvedOneAtATime() throws {
         let a = SessionToken()
         let b = SessionToken()

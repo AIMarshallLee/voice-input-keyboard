@@ -289,6 +289,47 @@ final class DictationConstantsTests: XCTestCase {
         XCTAssertEqual(DarwinBridge.handoffRecovery(), .none)
     }
 
+    func testExpiredResultOnlyCannotRetireHandoffIdentityBeforeExactCancellation() throws {
+        let now = Date().timeIntervalSince1970
+        let source = SessionToken()
+        let replacement = SessionToken()
+        let settings = handoffSettings(source)
+        XCTAssertTrue(DarwinBridge.writeDictationSettings(settings))
+        guard case .moved = DarwinBridge.handoffDictationSettingsToManual(from: source, to: replacement, original: settings)
+        else { return XCTFail("Fixture handoff must succeed") }
+        XCTAssertNotNil(DarwinBridge.readAndConsumeDictationSettings(expectedSession: replacement.rawValue))
+        XCTAssertEqual(DarwinBridge.commit(.completed(heldPlan), token: replacement), .written)
+        // Remove only this fixture's receipt to represent failed receipt publication/rollback.
+        try FileManager.default.removeItem(at: businessURL("terminal", token: replacement))
+        let sourceURL = businessURL("cancel", token: source)
+        let resultURL = businessURL("result", token: replacement)
+        try setBusinessTimestamp(at: sourceURL, to: now - DarwinBridge.cancellationMaxAge - 10)
+        try setBusinessTimestamp(at: resultURL, to: now - DarwinBridge.resultMaxAge - 10)
+        let sourceBytes = try Data(contentsOf: sourceURL)
+        let resultBytes = try Data(contentsOf: resultURL)
+
+        XCTAssertEqual(DarwinBridge.handoffRecovery(), .unresolved(replacement))
+        let gcTrigger = SessionToken()
+        XCTAssertTrue(DarwinBridge.writeDictationSettings(handoffSettings(gcTrigger)))
+        XCTAssertNotNil(DarwinBridge.readAndConsumeDictationSettings(expectedSession: gcTrigger.rawValue))
+        XCTAssertEqual(try? Data(contentsOf: sourceURL), sourceBytes, "Result-only cannot retire an expired source anchor")
+        XCTAssertEqual(try? Data(contentsOf: resultURL), resultBytes, "Anchor GC does not extend or consume result payloads")
+
+        XCTAssertNil(DarwinBridge.peekResult(expectedSession: replacement.rawValue))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: resultURL.path), "Ordinary five-minute payload expiry remains intact")
+        XCTAssertEqual(try? Data(contentsOf: sourceURL), sourceBytes)
+        XCTAssertEqual(DarwinBridge.handoffRecovery(), .unresolved(replacement))
+        XCTAssertEqual(KeyboardSessionRecoveryStore.recoveryDecision(snapshot: nil, contextMatches: false), .cancelBeforeRetry(replacement))
+
+        XCTAssertTrue(DarwinBridge.cancelSession(replacement.rawValue))
+        let cancellationURL = businessURL("cancel", token: replacement)
+        let cancellation = try Data(contentsOf: cancellationURL)
+        XCTAssertEqual(DarwinBridge.handoffRecovery(), .none)
+        XCTAssertTrue(DarwinBridge.writeDictationSettings(handoffSettings(gcTrigger)))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: sourceURL.path))
+        XCTAssertEqual(try Data(contentsOf: cancellationURL), cancellation)
+    }
+
     private func makeReferencedExpiredProof(kind: String, now: TimeInterval) throws -> (SessionToken, SessionToken) {
         let source = SessionToken()
         let replacement = SessionToken()

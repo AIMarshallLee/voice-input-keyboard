@@ -9,7 +9,7 @@
 - 规格：[商用 V1](../docs/superpowers/specs/2026-09-04-voice-first-commercial-v1-design.md)。
 - 实施计划：[Slice A 九任务](../docs/superpowers/plans/2026-09-04-slice-a-reliable-session-engine.md)。
 - 当前断点：Task 1–7 已取得真实 RED、GREEN 和独立审查 PASS，实施验收进度 **7/9**。前台迁移 `faedeb6` 已修复退出、重开时丢失后继请求的问题并通过准确提交验证；这不是整个 App 的真机验收。
-- 下一动作：Task 8 第二轮 `1d80e3b` / #180 已通过此前取消时序和 R33 恢复回归；233 单元仅新增 3 条 R35 用例产生 18 个预期失败，确证仍被引用的过期终态证据被提前清理。同一实施者仅修复桥接层引用保护，保留全部测试。保持 **7/9**，待准确提交 GREEN 与独立复审，不以自动门禁替代审查验收。
+- 下一动作：Task 8 第二轮 `3fc8d00` / #181 仍在 macOS 验证。独立复审确认原三项 Important 已修复，但新发现 result-only 写入残留可能被误当成已确认终态并清掉迁移身份。父级核实后已补两条 R36 回归，先取得实际行为 RED，再最小修复结案判定。保持 **7/9**，不因旧问题修复或测试通过就提前验收。
 
 ## 自主执行约定（2026-09-20 生效）
 
@@ -55,12 +55,16 @@
 | 5 | Apple、文本、Darwin 生产适配 | 完成：`d58ed40` / #164 GREEN，两项审查问题修正，独立复审 PASS |
 | 6 | PiP/原地输入迁移 | 完成：`829e3b8` / #166 GREEN，独立规格、代码与证据审查 PASS |
 | 7 | 前台呈现迁移 | 完成：`faedeb6` / #170 GREEN，后继准入修复及独立规格/质量/证据复审 PASS |
-| 8 | 移除不支持的拉起与手动结果保留 | 修复中：`20f9f7c` / #176 自动门禁 GREEN，复审仍有三项 Important；第二轮 #177/#178/#179 RED 已核对，生产候选待新 GREEN/复审 |
+| 8 | 移除不支持的拉起与手动结果保留 | 修复中：第二轮 `3fc8d00` 原三项 Important 已关闭，但新增一项 result-only 结案问题；R36 两条回归已准备，#181 自动门禁待结果 |
 | 9 | 全量回归、Release/Archive 与文档 | 待做 |
 
 任务只有在实现、相应测试及审查证据齐全后才标为完成。后续 Slice 在前片出口有新证据且自己的实施计划完成审查后才能实施。
 
 ## 验证路径与本轮证据
+
+- 第二轮独立复审覆盖 `20f9f7c..3fc8d00` 五提交：原三项 Important 均 ADDRESSED，新增一项 Important。若 result 写成而 receipt 写入及 result 回滚删除都失败，API 返回 ioFailure，但残留 payload 被新 helper 当作终态，可能释放/清掉迁移链接。R36 明确仅有效取消标记或 receipt 能解除链接；fresh result-only 仍可保留恢复并由真实消费建立 receipt，过期文本仍按原 TTL 清理。已准备 2 条真实文件回归，尚未取得其 RED；不把 fixture 当作实际 I/O 双故障注入。
+
+- R35 引用保护候选 `3fc8d00db938a92a64691add0245368f676dc45d` / [CI #181](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/35537452948) 运行中。私有引用检查覆盖两类 GC 和普通读取；专用回执读取使过期但仍被引用的有效证据继续阻止迟到写入。父级 plist 2/2（0.025s）、source gate、diff/staged 检查通过。旧混合异常/过期 fixture 的兼容调整无独立 RED，保留全部异常字节断言并要求异常移除后普通 TTL 清理恢复；该事实已交独立审查，不虚报测试经历。未合并或分发。
 
 - [CI #180](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/35536533480) 在准确 `1d80e3bd5f3bceef5f06ec8490489ef6948891a0` 完成 **定向行为 RED，10m9s**。233 单元共 18 个失败诊断，0 unexpected，仅落在 3 条新 R35 回归：引用链中间凭据被删/未解决状态复活/不能最终回收（5），普通读删掉证据后允许迟到写入（9），年轻或刷新过的源记录所引用证据被 GC 删除（4）。此前 3 条 PiP 时序与全部 R33 回归通过，23 条恢复测试零失败；4 个独立 UI 通过（85.632s）。无编译或环境失败；Release/Archive/分发因测试失败跳过。父级据实际证据授权最小桥接层修复，不计为 Task 8 完成。
 
