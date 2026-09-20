@@ -3010,7 +3010,7 @@ git commit -m "refactor: route pip dictation through engine"
 - Consumes: the shared engine environment, Task 1's non-consuming exact settings lookup, Task 2's injectable deadline scheduler, and existing pending-request discovery.
 - Produces: a `@MainActor` `DictationViewModel` that presents ordinary no-deep-link requests, atomically claims the exact request within 3 seconds before issuing `engine.start`, validates the first matching `.authorizing` as the engine handshake, requests permission only in foreground, mirrors ordered engine events, and owns no Apple recording/recognition resource.
 
-- [ ] **Step 1: Replace recorder-centric tests with claim, timeout, and adapter contract tests**
+- [x] **Step 1: Replace recorder-centric tests with claim, timeout, and adapter contract tests**
 
 Keep the current URL/session validation coverage, but change its consumption assertion: `loadSettings` may only peek the exact request; `startRecording` claims it synchronously before calling the engine. The engine can begin permission/capture work before its event stream reaches the UI, so event-time claiming is not a safe ownership boundary with the existing API. Add an injected runner and these behaviors:
 
@@ -3208,7 +3208,7 @@ func testActiveAppEnqueuesPendingRequestWithoutDeepLink() throws {
 
 **R25 — successor admission (independent review refinement):** A model-wide start-in-flight rejection must not discard B after cleanup of gated A. B still claims its exact settings synchronously, then waits for A's admission and necessary detached-A cancellation, never for A's event-stream lifetime. Preserve admission order A then B and reject late A UI effects. If already-claimed B leaves while queued, admit and immediately cancel B through the engine so it receives an engine-owned terminal; do not silently drop it. This retains the existing delayed-cancellation contract and does not promise zero permission work during a cancellation race. Already-returned A may keep exact-token asynchronous cleanup: engine admission B synchronously retires A, and late cancel(A) cannot cancel B. No general cancellation queue or new engine protocol is required. Add gated successor and queued-successor cleanup/cancel regressions before the repair, including cancellation-at-start observation and finite teardown.
 
-- [ ] **Step 2: Run `DictationViewModelTests` and observe the missing injection path**
+- [x] **Step 2: Run `DictationViewModelTests` and observe the missing injection path**
 
 Run:
 
@@ -3218,7 +3218,7 @@ xcodebuild test -project VoType.xcodeproj -scheme VoTypeTests -destination "plat
 
 Expected: FAIL because the view model still owns AVFoundation/Speech, consumes settings during `loadSettings`, lacks injected engine/deadline seams, and the coordinator has no testable pending-enqueue method.
 
-- [ ] **Step 3: Convert `DictationViewModel` into presentation state only**
+- [x] **Step 3: Convert `DictationViewModel` into presentation state only**
 
 Keep its public SwiftUI state and URL/session parsing. Replace all recorder fields and system observers with these dependencies and claim state:
 
@@ -3312,7 +3312,7 @@ rg -n "AVAudioEngine|AVAudioSession|SFSpeech|installTap|requestRecordPermission|
 
 Expected: no matches.
 
-- [ ] **Step 4: Preserve ordinary pending presentation and inject one environment**
+- [x] **Step 4: Preserve ordinary pending presentation and inject one environment**
 
 Move `presentPendingDictationIfNeeded` into the coordinator as an internal, testable method:
 
@@ -3329,7 +3329,7 @@ Give `DictationView` an initializer that constructs its `StateObject` with the s
 
 Preserve the existing 2.5-second completion dismissal delay, but bind its task to the view/result identity and honor cancellation before dismissing. The current untracked `DispatchQueue.asyncAfter` must not dismiss a newer presentation after the old view disappeared. Use the existing SwiftUI task lifecycle; do not introduce a general scheduling framework for this callback.
 
-- [ ] **Step 5: Run both adapter contracts and enforce one Apple implementation**
+- [x] **Step 5: Run both adapter contracts and enforce one Apple implementation**
 
 Run:
 
@@ -3351,7 +3351,7 @@ test "$(rg -l 'SFSpeechAudioBufferRecognitionRequest' VoiceInputApp | wc -l | tr
 
 Expected: tests PASS and both source-count assertions PASS, with the sole matches in `VoiceInputApp/AppleDictationAdapters.swift`.
 
-- [ ] **Step 6: Commit the foreground migration**
+- [x] **Step 6: Commit the foreground migration**
 
 ```bash
 git add VoiceInputApp/DictationView.swift VoiceInputApp/VoiceInputApp.swift VoTypeTests/DictationViewModelTests.swift VoTypeTests/DictationCoordinatorTests.swift VoTypeTests/DictationSessionTestDoubles.swift
@@ -3361,6 +3361,12 @@ git commit -m "refactor: route foreground dictation through engine"
 ---
 
 ### Task 8: Remove Unsupported App Launching and Hold Manual Results
+
+**Execution refinement:** Reuse the current test doubles and bounded readiness/operation helpers (R2). Code examples predate some helper names; do not copy fixed `Task.yield` loops or unbounded `Task.value` waits. Every gate, open stream and spawned task needs failure-path cleanup.
+
+**Test staging:** First change only existing launch-policy behavior expectations and add the synthetic UIKit selection probe, using already-present APIs so this stage compiles. Observe the real policy failures and UIKit result on macOS. Then add the remaining missing-seam tests and observe their expected RED before any Task 8 production implementation. A missing initializer/type cannot substitute for the platform probe or the existing wrong-branch behavior evidence.
+
+**R26 — selection safety:** Existing typed processing can produce `.insertAtCursor` with nonempty selected text when voice editing is disabled; legacy `.previewOnly` can coexist with a selected field. Do not equate the operation name with a non-destructive platform mutation. Before implementing, add a real UIKit `UITextView` selection/insertion probe on macOS (synthetic text only), plus policy/validator regressions. Automatic insertion must hold when the snapshotted current selection is nonempty; explicit insert/preview-only must reject before consuming in that case, leaving Copy/Discard available and asking the user to clear the selection before inserting. Only the already specified, context-validated and explicitly confirmed replace/delete paths may modify a live selection. Pass the same captured selection through policy and validation; do not reread it between validation and mutation. This enforces the existing no-silent-deletion invariant, not a new editing feature. The UIKit probe is not proof of third-party keyboard/device behavior.
 
 **Files:**
 - Create: `Shared/KeyboardResultDispositionPolicy.swift`
@@ -3536,6 +3542,7 @@ func testOnlyCurrentHotNondestructiveSessionCanAutoInsert() {
         KeyboardResultDispositionPolicy.decide(
             launchMode: .inPlace,
             belongsToCurrentExtensionInstance: true,
+            currentSelectedText: nil,
             hasContextEvidence: true,
             contextMatches: true,
             operation: .insertAtCursor,
@@ -3560,6 +3567,7 @@ func testManualRecreatedEmptyChangedAndDestructiveCasesAlwaysHold() {
             KeyboardResultDispositionPolicy.decide(
                 launchMode: value.0,
                 belongsToCurrentExtensionInstance: value.1,
+                currentSelectedText: nil,
                 hasContextEvidence: value.2,
                 contextMatches: value.3,
                 operation: value.4,
@@ -3570,6 +3578,8 @@ func testManualRecreatedEmptyChangedAndDestructiveCasesAlwaysHold() {
     }
 }
 ```
+
+Also test the live-selection guard with otherwise valid hot/context inputs: `currentSelectedText: "original selection"` must return `.hold`, while nil and empty selections retain the ordinary decision. For explicit `.insertAtCursor` and `.previewOnly`, add nonempty-selection cases returning `.reject` without consuming; retain the nil-selection legacy insertion case below. Add a `@MainActor` UIKit probe that sets a `UITextView`'s text and selected range, invokes `insertText`, and checks the resulting text. Inspect its real macOS result rather than treating Windows or a fake proxy as platform evidence.
 
 Add pre-consume/post-consume validation cases in the same policy test file:
 
@@ -4058,6 +4068,7 @@ enum KeyboardResultDispositionPolicy {
     static func decide(
         launchMode: KeyboardSessionLaunchMode,
         belongsToCurrentExtensionInstance: Bool,
+        currentSelectedText: String?,
         hasContextEvidence: Bool,
         contextMatches: Bool,
         operation: EditOperation,
@@ -4065,6 +4076,7 @@ enum KeyboardResultDispositionPolicy {
     ) -> KeyboardResultDisposition {
         guard launchMode == .inPlace,
               belongsToCurrentExtensionInstance,
+              currentSelectedText?.isEmpty != false,
               hasContextEvidence,
               contextMatches,
               operation == .insertAtCursor,
@@ -4098,6 +4110,7 @@ enum KeyboardHeldEditValidator {
         guard previewedToken == heldToken else { return .reject }
         switch plan.operation {
         case .insertAtCursor, .previewOnly:
+            guard currentSelectedText?.isEmpty != false else { return .reject }
             return plan.text.isEmpty ? .reject : .insertAtCursor(plan.text)
         case .replaceSelection:
             guard plan.requiresConfirmation,
@@ -4232,7 +4245,7 @@ Update readiness copy from “VoType 将短暂打开” to “请手动打开 Vo
 
 - [ ] **Step 6: Apply `EditPlan` only after prevalidation**
 
-Before `readAndConsumeResult`, inspect the pending plan and current recovery snapshot. Parse `pending.session`, `currentHeldSession`, and `snapshot.session` through `SessionToken`; an invalid token holds with an error and never reaches a filesystem or mutation helper. Call `KeyboardResultDispositionPolicy.decide` with `belongsToCurrentExtensionInstance == (currentExtensionSessionToken == previewedToken)`. Any recovered snapshot after extension recreation therefore uses false. Only `.autoInsert` may consume and mutate without the action row, and even that path must compare the consumed payload to the preview before inserting.
+Before `readAndConsumeResult`, inspect the pending plan and current recovery snapshot. Parse `pending.session`, `currentHeldSession`, and `snapshot.session` through `SessionToken`; an invalid token holds with an error and never reaches a filesystem or mutation helper. Call `KeyboardResultDispositionPolicy.decide` with `belongsToCurrentExtensionInstance == (currentExtensionSessionToken == previewedToken)` and the once-snapshotted current selection. Any recovered snapshot after extension recreation therefore uses false. Only `.autoInsert` may consume and mutate without the action row, and even that path must compare the consumed payload to the preview before inserting. For an insert/preview-only result blocked by a nonempty selection, preserve the payload and show “当前有选中文本，未覆盖原文。请取消选区后插入，或复制结果。”; Copy/Discard remain available.
 
 For every held result, store its session ID in `private var currentHeldSession: String?` and show `HeldResultActionView` with accessible buttons “插入”, “复制”, and “丢弃”:
 
@@ -4294,12 +4307,15 @@ guard let held = currentHeldSession.flatMap(SessionToken.init(rawValue:)),
 let snapshotToken = recoveredSnapshot.flatMap {
     SessionToken(rawValue: $0.session)
 }
+let currentBefore = textDocumentProxy.documentContextBeforeInput
+let currentAfter = textDocumentProxy.documentContextAfterInput
+let currentSelection = textDocumentProxy.selectedText
 let contextMatches = recoveredSnapshot.map {
     KeyboardSessionRecoveryStore.matches(
         $0,
-        contextBefore: textDocumentProxy.documentContextBeforeInput,
-        contextAfter: textDocumentProxy.documentContextAfterInput,
-        selectedText: textDocumentProxy.selectedText
+        contextBefore: currentBefore,
+        contextAfter: currentAfter,
+        selectedText: currentSelection
     )
 } ?? false
 let application = KeyboardHeldEditValidator.decide(
@@ -4310,7 +4326,7 @@ let application = KeyboardHeldEditValidator.decide(
     snapshotFingerprint: recoveredSnapshot?.contextFingerprint,
     hasContextEvidence: recoveredSnapshot?.hasContextEvidence ?? false,
     contextMatches: contextMatches,
-    currentSelectedText: textDocumentProxy.selectedText
+    currentSelectedText: currentSelection
 )
 guard application != .reject else {
     showHeldResultMessage("选区或输入位置已变化，未修改原文")

@@ -8,8 +8,8 @@
 - 职责机制：[窗口 Agent 规划书](../docs/superpowers/specs/2026-09-05-votype-continuous-delivery-agent-charter.md)，用户已回复“同意”。
 - 规格：[商用 V1](../docs/superpowers/specs/2026-09-04-voice-first-commercial-v1-design.md)。
 - 实施计划：[Slice A 九任务](../docs/superpowers/plans/2026-09-04-slice-a-reliable-session-engine.md)。
-- 当前断点：Task 1–6 已取得真实 RED、GREEN 和独立审查 PASS，实施验收进度 **6/9**。前台迁移候选 `b7f2c3d` 已提交，但独立审查发现快速退出、重开时可能丢失后继请求，尚未验收；不能据此认定 App 真机可用。
-- 下一动作：先为 Task 7 后继准入问题取得行为 RED，再完成最小修复、准确提交 GREEN 与独立复审。保留安全的手动打开路径和键盘停止/取消控制。
+- 当前断点：Task 1–7 已取得真实 RED、GREEN 和独立审查 PASS，实施验收进度 **7/9**。前台迁移 `faedeb6` 已修复退出、重开时丢失后继请求的问题并通过准确提交验证；这不是整个 App 的真机验收。
+- 下一动作：Task 8 先验证现有自动拉起策略的行为失败与 UIKit 选区插入行为，再补齐手动恢复、结果保留和防误覆盖测试；真实 RED 后才实施键盘生产改造。
 
 ## 自主执行约定（2026-09-20 生效）
 
@@ -29,7 +29,7 @@
 - 原有规格、实施计划、职责稿与台账已在授权后提交为 `a5045f2`；没有丢弃原差异。
 - 草稿 [PR #13](https://github.com/AIMarshallLee/voice-input-keyboard/pull/13) 已创建，未合并。
 - `project.yml` 是生成工程的唯一来源；现有测试 target 包含整个 `VoTypeTests` 目录。
-- Task 1–6 已验收；新测试通过 `xcodegen generate` 编入。Task 7 基线为 `829e3b8`，Task 6 全范围基线为 `d58ed40`。
+- Task 1–7 已验收；新测试通过 `xcodegen generate` 编入。Task 8 基线为 `faedeb6`，Task 7 全范围基线为 `829e3b8`。
 
 ## 授权状态
 
@@ -54,8 +54,8 @@
 | 4 | 截止时间、迟到回调、竞态与重用 | 完成：`5247153`，#159 GREEN，独立审查 PASS |
 | 5 | Apple、文本、Darwin 生产适配 | 完成：`d58ed40` / #164 GREEN，两项审查问题修正，独立复审 PASS |
 | 6 | PiP/原地输入迁移 | 完成：`829e3b8` / #166 GREEN，独立规格、代码与证据审查 PASS |
-| 7 | 前台呈现迁移 | 进行中：初版 `b7f2c3d`；独立审查发现启动中退出、重开会丢后继请求，补充回归与修复中 |
-| 8 | 移除不支持的拉起与手动结果保留 | 待做 |
+| 7 | 前台呈现迁移 | 完成：`faedeb6` / #170 GREEN，后继准入修复及独立规格/质量/证据复审 PASS |
+| 8 | 移除不支持的拉起与手动结果保留 | 进行中：先做现有拉起策略行为 RED 与 UIKit 选区 probe，未改生产 |
 | 9 | 全量回归、Release/Archive 与文档 | 待做 |
 
 任务只有在实现、相应测试及审查证据齐全后才标为完成。后续 Slice 在前片出口有新证据且自己的实施计划完成审查后才能实施。
@@ -97,6 +97,8 @@
 - [Task 7 RED #167](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/35525427012) **FAILURE**，准确源码 `dc66ac1483fe0fdfef791aab9d248a07d9a0ab5f`（UTC 2026-09-20 17:18:17–17:20:42，2m25s）。23 个模型与 2 个协调器测试先于生产改造提交。17:20:36Z 模型测试明确报缺少带引擎/时限注入的 initializer、`engineIdentity`；其他 nil/production 推断错误由缺失接口引起，环境/XcodeGen/plist 正常。已向同一实施者发生产 GO；本项尚无 GREEN。预提交补充了同 UUID 重新领取时旧计时回调隔离（UI claim 身份）以及取消绑定的 2.5 秒完成关闭约束，不新增录音所有者或通用调度框架。
 - [Task 7 初版 CI #168](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/35525931280) **SUCCESS**，准确源码 `b7f2c3dc97c3ac3d4f823cfc8bc0ad9548fbc8f8`，build job 12m42s。实际日志为 170 单元零失败（模型 23、协调器 2）、4 个独立 UI 在两个 scheme 均通过，unsigned BUILD 17:39:26Z / ARCHIVE 17:40:16Z 成功；artifact `10609597995`（4,965,979 bytes）为无签名 CI 产物。没有点名本项变更文件的诊断；现有弃用/工具提示保留。签名、上传和元数据步骤跳过。**此 GREEN 不表示 Task 7 验收**：独立审查发现 gated A 退出后 B 被全局启动标记丢弃，正在加入行为回归。修复仅串行未完成的准入，已领取但排队中取消的请求仍由引擎结束，不引入额外录音所有者。
 - [Task 7 行为 RED #169](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/35527213277) **FAILURE**，准确源码 `e3cf37d8be1ea78be897867ed11edd897bd30f88`，build job 8m46s。172 单元仅两处目标失败：17:56:32Z 排队 B 未领取请求、17:56:35Z 重开 B 未同步领取请求；其余单元及 4 个独立 UI 通过，编译/环境正常。已确认全局启动标记丢失后继请求，开始模型内准入顺序最小修复；不是环境缺失或新增接口编译错误。修复不改变引擎协议、终态所有者或录音架构。
+- [Task 7 GREEN #170](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/35527822788) **SUCCESS**，准确源码 `faedeb69f6adcf6da045ad2070fb3a6d6a1eb081`，build job 16m56s。172 单元零失败（19.795s / 22.214s wall），模型 25/25；排队中退出/取消 1.022s、A 退出后 B 正常接续 0.601s 通过。4 个独立 UI 在两个 scheme 均通过（220.646s / 62.390s）；unsigned BUILD 18:19:38Z / ARCHIVE 18:20:23Z 成功。artifact `10609983622`（VoType-IPA，4,978,302 bytes）为无签名产物，签名、App Store Connect、元数据步骤跳过。没有点名本项变更文件的诊断，已有兼容弃用和工具提示仍保留。独立规格/质量/证据复审 PASS，Task 7 验收完成；没有把较慢但仍在运行的 CI 重启。
+- Task 8 准备识别到选区风险：关闭语音编辑时仍可能产生携带非空选区的普通插入结果。已把非空选区的保留/拒绝、明确复制/丢弃及一次快照校验加入测试要求；平台实际插入行为待真实 UIKit probe，不以推测充当结果。真实第三方键盘行为仍需真机验证。
 - 真机语音/跨 App/权限/PiP：**EXTERNAL / NOT_RUN（本轮）**。历史用户测试曾暴露缺陷，不抹去历史结果。
 
 ## 发布基线
