@@ -15,6 +15,18 @@ protocol PiPControlling: AnyObject {
 
 extension AVPictureInPictureController: PiPControlling {}
 
+@MainActor
+protocol PiPStandbyPresenting: AnyObject {
+    var isActive: Bool { get }
+    var onStandbyStopped: (() -> Void)? { get set }
+    func setRecording(text: String)
+    func setProcessing(text: String)
+    func returnToStandby()
+    func stopStandby()
+}
+
+extension PiPStandbyManager: PiPStandbyPresenting {}
+
 /// 用户主动开启的、具有真实产品信息的画中画待命面板。
 ///
 /// 待命时麦克风保持关闭；只有键盘写入一个新会话后才开始录音。PiP 一旦被
@@ -35,6 +47,7 @@ final class PiPStandbyManager: NSObject, ObservableObject {
 
     @Published private(set) var state: State = .unavailable
     @Published private(set) var isStartPossible = false
+    var onStandbyStopped: (() -> Void)?
 
     private let displayLayer = AVSampleBufferDisplayLayer()
     private var controller: PiPControlling?
@@ -153,10 +166,19 @@ final class PiPStandbyManager: NSObject, ObservableObject {
     }
 
     func stopStandby() {
-        controller?.stopPictureInPicture()
+        let wasPresented = isPresented
         leaveStandby()
         state = isSupported ? .ready : .unavailable
+        controller?.stopPictureInPicture()
         pushFrame()
+        if wasPresented { onStandbyStopped?() }
+    }
+
+    private var isPresented: Bool {
+        switch state {
+        case .standby, .recording, .processing: return true
+        default: return false
+        }
     }
 
     func setRecording(text: String = "") {
@@ -263,9 +285,11 @@ final class PiPStandbyManager: NSObject, ObservableObject {
     }
 
     func handleDidStop() {
+        guard !isActive, isPresented else { return }
         leaveStandby()
         state = isSupported ? .ready : .unavailable
         pushFrame()
+        onStandbyStopped?()
     }
 
     private func startFrameTimer() {

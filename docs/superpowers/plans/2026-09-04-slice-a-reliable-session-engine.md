@@ -2964,6 +2964,8 @@ At `.preparing`, post only the existing session-scoped `dictationStarted` hot ac
 
 Add an integration regression using the real engine and Darwin output with injected permission/audio dependencies: a pre-listening permission failure consumes the original pending request, leaves no pending file for its terminal UUID, and its terminal receipt rejects later commits. Keep the manager unit test above separate from that persistence test; a fake runner must not be treated as evidence that production terminal persistence occurred. Task 8 adds the fresh explicit Retry and held/manual disposition assertions.
 
+Task boundary: Task 6 exposes the failure through the existing engine-owned typed terminal output and clears readiness; the visible keyboard Retry guidance and fresh-UUID action are implemented in Task 8. Do not add an unused manager recovery-message property or duplicate terminal writes to claim that UI is already delivered.
+
 Delete every `AVAudioEngine`, `SFSpeechRecognizer`, recognition request/task, generation, silence timer, permission, audio-interruption, and terminal-write member from this manager. After the edit, `rg -n "AVAudioEngine|SFSpeech|installTap|writeTranscription|writeError" VoiceInputApp/BackgroundDictationManager.swift` must return no matches.
 
 - [ ] **Step 5: Run background/PiP and engine suites**

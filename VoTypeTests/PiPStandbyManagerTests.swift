@@ -77,6 +77,7 @@ final class PiPStandbyManagerTests: XCTestCase {
         defer { DarwinBridge.clearReadiness() }
         let controller = FakeController()
         let manager = PiPStandbyManager(controller: controller, isSupported: true)
+        defer { manager.stopStandby() }
 
         manager.startStandby()
         controller.isPictureInPictureActive = true

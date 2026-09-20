@@ -9,7 +9,7 @@
 - 规格：[商用 V1](../docs/superpowers/specs/2026-09-04-voice-first-commercial-v1-design.md)。
 - 实施计划：[Slice A 九任务](../docs/superpowers/plans/2026-09-04-slice-a-reliable-session-engine.md)。
 - 当前断点：Task 1–5 已取得真实 RED、GREEN 和独立审查 PASS，实施验收进度 **5/9**。统一引擎、超时/竞态/重用和生产适配门禁已通过，但尚未接入现有前台/PiP，不能据此认定 App 真机可用。
-- 下一动作：Task 6 画中画/原地输入迁移，先补齐取消、系统关闭、启动挂起和迟到回调的回归测试；观察真实 macOS RED 后替换重复录音器，保留 PiP 渲染与启动 watchdog。
+- 下一动作：Task 6 画中画/原地输入迁移已取得真实 macOS RED；现在替换重复录音器，保留 PiP 渲染与启动 watchdog，随后取得准确提交 GREEN 和独立审查。
 
 ## 自主执行约定（2026-09-20 生效）
 
@@ -53,7 +53,7 @@
 | 3 | 引擎主路径与命令语义 | 完成：`f0a591a`，#156 GREEN，独立审查 PASS |
 | 4 | 截止时间、迟到回调、竞态与重用 | 完成：`5247153`，#159 GREEN，独立审查 PASS |
 | 5 | Apple、文本、Darwin 生产适配 | 完成：`d58ed40` / #164 GREEN，两项审查问题修正，独立复审 PASS |
-| 6 | PiP/原地输入迁移 | 进行中：测试先行准备，尚无本项 RED 或实现验收 |
+| 6 | PiP/原地输入迁移 | 进行中：`e36cd26` / #165 有效 missing-seam RED，生产改造中，尚未验收 |
 | 7 | 前台呈现迁移 | 待做 |
 | 8 | 移除不支持的拉起与手动结果保留 | 待做 |
 | 9 | 全量回归、Release/Archive 与文档 | 待做 |
@@ -91,6 +91,7 @@
 - CI #163 最终 FAILURE（8m53s），136 个单元只有 **1 处预期失败**：UTC 2026-09-20 15:56:40Z，`TextProcessorTests.swift:346` 的 `allRecordingsWereOnMainThread` 断言失败，受控等待、两次真实结果与统计次数均通过，确认为 R22 有效行为 RED。取消通知矩阵 0.001s 通过、适配 7/7、引擎 25/25、4 个独立 UI 通过。已开始方法级隔离最小修复；不改变文本算法或串行阻塞整个处理调用。
 - [Task 5 GREEN #164](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/35521959880) **SUCCESS**，准确源码 `d58ed40fe4ef94715360057b56ea22b698709b53`（UTC 2026-09-20 16:12:16–16:22:55，10m39s）。实际日志：136 单元零失败；取消通知矩阵 0.784s、重叠处理/主线程写入 0.035s 通过；4 个独立 UI 在两个 scheme 下均零失败；unsigned Release BUILD 与 ARCHIVE 成功。artifact `10608841457`（VoType-IPA，4,862,142 bytes）是无签名 CI 产物，不是 TestFlight。签名、App Store Connect 与元数据步骤全部跳过。本地 plist 2/2 通过；没有点名本次变更源文件的 warning/error，已有旧路径/工具提示仍保留。
 - Task 5 独立修复复审 **PASS**：实际提交结果决定通知，文本/翻译方法级 MainActor 覆盖两处共享统计写入且保留等待期间的可重入性，未修改算法或添加整段串行队列。非阻断测试清理观察留待最终全分支复核：超时路径取消/释放 detached 任务，但不 join 后再删除独立 defaults 测试域，不影响本轮产品路径验收。Task 6 已交付单一实施者进行测试准备，未在 Task 5 未验收时替换生产入口。
+- [Task 6 RED #165](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/35523095204) **FAILURE**，准确源码 `e36cd2639428e9cbb9f4982a1e8e7218c435dd7e`（UTC 2026-09-20 16:33:42–16:34:31）。新增 13 个后台适配与 4 个 PiP 生命周期回归；环境、XcodeGen 与 plist 校验成功后，16:34:27Z 在 `DictationSessionTestDoubles.swift:765` 准确报缺少 `PiPStandbyPresenting`，随后 TEST FAILED。只有这处预期 missing-seam error，无 Windows/Xcode 缺失冒充 RED。生产适配 GO 已交给同一实施者，尚无本项 GREEN、合并或新分发。
 - 真机语音/跨 App/权限/PiP：**EXTERNAL / NOT_RUN（本轮）**。历史用户测试曾暴露缺陷，不抹去历史结果。
 
 ## 发布基线
