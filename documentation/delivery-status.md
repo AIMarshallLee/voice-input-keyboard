@@ -9,7 +9,7 @@
 - 规格：[商用 V1](../docs/superpowers/specs/2026-09-04-voice-first-commercial-v1-design.md)。
 - 实施计划：[Slice A 九任务](../docs/superpowers/plans/2026-09-04-slice-a-reliable-session-engine.md)。
 - 当前断点：Task 1–7 已取得真实 RED、GREEN 和独立审查 PASS，实施验收进度 **7/9**。前台迁移 `faedeb6` 已修复退出、重开时丢失后继请求的问题并通过准确提交验证；这不是整个 App 的真机验收。
-- 下一动作：Task 8 首阶段已复现旧拉起分支错误，并观察到真实 UIKit 插入会替换非空选区；现在补齐手动恢复、结果保留和防误覆盖契约测试，取得其缺失接口 RED 后才实施键盘生产改造。
+- 下一动作：Task 8 已取得两阶段真实 RED（旧拉起分支行为、缺失新接口），并观察到真实 UIKit 插入会替换非空选区；同一实施者开始键盘手动恢复、结果保留和防误覆盖生产改造，随后运行准确提交的 GREEN 与独立审查。
 
 ## 自主执行约定（2026-09-20 生效）
 
@@ -55,7 +55,7 @@
 | 5 | Apple、文本、Darwin 生产适配 | 完成：`d58ed40` / #164 GREEN，两项审查问题修正，独立复审 PASS |
 | 6 | PiP/原地输入迁移 | 完成：`829e3b8` / #166 GREEN，独立规格、代码与证据审查 PASS |
 | 7 | 前台呈现迁移 | 完成：`faedeb6` / #170 GREEN，后继准入修复及独立规格/质量/证据复审 PASS |
-| 8 | 移除不支持的拉起与手动结果保留 | 进行中：#171 两处准确行为 RED、UIKit probe PASS；第二阶段契约测试编写中，未改生产 |
+| 8 | 移除不支持的拉起与手动结果保留 | 进行中：#171 行为 RED / UIKit probe PASS、#172 缺失接口 RED；生产实现已获 GO，待 GREEN 与独立审查 |
 | 9 | 全量回归、Release/Archive 与文档 | 待做 |
 
 任务只有在实现、相应测试及审查证据齐全后才标为完成。后续 Slice 在前片出口有新证据且自己的实施计划完成审查后才能实施。
@@ -101,6 +101,7 @@
 - Task 8 选区风险：关闭语音编辑时仍可能产生携带非空选区的普通插入结果。已把非空选区的保留/拒绝、明确复制/丢弃及一次快照校验加入测试要求；#171 的真实 UIKit 合成实验确认 `UITextView.insertText` 替换非空选区，不能仅凭 `.insertAtCursor` 名称视为无破坏。真实第三方键盘行为仍需真机验证。
 - [Task 8 第一阶段 RED #171](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/35529007106) **FAILURE**，准确源码 `c1dc4b0d7b8720c9e32711c6de42a34a888c13b3`，build job 9m5s。173 单元仅两处目标失败：18:31:28Z，LaunchPolicyTests 的冷路径及 1.2 秒超时路径实际返回 `openContainingApp` 而非 `showManualRecovery`，没有缺失接口或编译错误。真实 `UITextView` 选区实验 0.126s PASS，4 个独立 UI 68.074s PASS；失败后 Release/Archive/签名/分发未执行。已向同一实施者发第二阶段 TEST-ONLY GO，补齐剩余契约回归，再跑缺失接口 RED。没有改 Task 8 生产逻辑或发布新候选。
 - Task 8 预检纠正回执语义：现有终态发布已写防重复 receipt；拒绝插入应保持原结果和 receipt 字节不变，不能要求 receipt 不存在。双会话迁移的拒绝检查不得调用会删过期/损坏文件的 reader。沿用真实临时 IPC 文件验证，不引入生产故障注入接口；第二次写入失败回滚分支若无法确定性触发，必须如实标为未运行。
+- [Task 8 第二阶段 RED #172](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/35530072311) **FAILURE**，准确源码 `d35829f30dbb99bdc4a1785ad2b5410d60c3b7ce`，build job 55s。七个测试文件补齐 hot-ack、恢复快照/指纹、选区保护、完整结果比较、真实 IPC 迁移/回执/消费及前后台接续。环境、XcodeGen、plist 成功后，18:46:07Z 精确报缺少 `KeyboardLaunchScheduling` 与 `KeyboardLaunchScheduledTask`（三处诊断），符合缺失接口 RED；单元运行、UI、Release/Archive/分发未进入。本地 plist 2/2（0.027s）、staged diff 校验通过。已向同一实施者发生产 GO，尚无 Task 8 GREEN 或验收结论。
 - 真机语音/跨 App/权限/PiP：**EXTERNAL / NOT_RUN（本轮）**。历史用户测试曾暴露缺陷，不抹去历史结果。
 
 ## 发布基线

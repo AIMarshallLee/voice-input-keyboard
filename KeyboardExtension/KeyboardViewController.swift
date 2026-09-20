@@ -3,8 +3,8 @@ import UIKit
 /// 语音输入键盘 - Darwin 通知 + 命名剪贴板 IPC 架构 (Build 16)
 /// iOS 键盘扩展无法直接录音(平台限制)
 ///
-/// 启动路径: 键盘先把会话写入 App Group，再从用户的麦克风点击打开
-/// VoType。宿主前台消费同一会话，录音开始后用户可立即返回原输入框。
+/// 启动路径: 新鲜待命可原地请求；否则保存会话并提示用户手动打开 VoType。
+/// 手动返回与重建后的结果必须经用户明确操作后才写入输入框。
 ///
 /// 参考 Sayboard 架构
 class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate {
@@ -22,6 +22,7 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
     private let containerView = UIView()
     private let waveformView = WaveformView()
     private let symbolBar = UIScrollView()
+    private let heldResultActionView = HeldResultActionView(frame: .zero)
     private let symbolStack = UIStackView()
     private let quickTypeButton = UIButton(type: .system)
     private let quickTypeContainerView = UIView()
@@ -44,23 +45,25 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
     // MARK: - 通信状态
     private var isWaitingForResult = false
     private var currentSessionId: String?
-    private var darwinFallbackTimer: Timer?
+    private lazy var hotAckCoordinator = DictationHotAckCoordinator(scheduler: TimerKeyboardLaunchScheduler())
+    private var currentExtensionSessionToken: SessionToken?
+    private var currentDictationSettings: DictationSettings?
+    private var failedHandoffRetryToken: SessionToken?
     private var resultTimeoutTimer: Timer?
     private var liveStatePollTimer: Timer?
     private var readinessPollTimer: Timer?
-    private var recoveredPendingSessionId: String?
+    private var currentHeldSession: String?
+    private var heldResultPreview: DictationIPCResult?
     private var recoveredSnapshot: KeyboardSessionRecoverySnapshot?
     private var currentLivePhase: DictationLivePhase?
     private var keyboardIsVisible = false
     private var requiresContextRevalidation = false
 
     // 暂存启动时的设置,处理结果时使用
-    private var pendingSelectedText: String?
     private var pendingKbType: Int = 0
 
     // MARK: - 模式状态
     private var isWhisperMode = false
-    private var selectedTextBeforeRecording: String?
 
     private enum QuickTypeLayout: Equatable {
         case letters
@@ -131,7 +134,7 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
 
     deinit {
         deleteTimer?.invalidate()
-        darwinFallbackTimer?.invalidate()
+        MainActor.assumeIsolated { hotAckCoordinator.cancel() }
         resultTimeoutTimer?.invalidate()
         liveStatePollTimer?.invalidate()
         readinessPollTimer?.invalidate()
@@ -387,6 +390,10 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
         containerView.addSubview(liveTextLabel)
         containerView.addSubview(waveformView)
         containerView.addSubview(symbolBar)
+        containerView.addSubview(heldResultActionView)
+        heldResultActionView.onInsert = { [weak self] in self?.insertHeldResult() }
+        heldResultActionView.onCopy = { [weak self] in self?.copyHeldResult() }
+        heldResultActionView.onDiscard = { [weak self] in self?.discardHeldResult() }
         containerView.addSubview(bottomBar)
 
         NSLayoutConstraint.activate([
@@ -422,6 +429,11 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
             symbolBar.leadingAnchor.constraint(equalTo: containerView.leadingAnchor, constant: 6),
             symbolBar.trailingAnchor.constraint(equalTo: containerView.trailingAnchor, constant: -6),
             symbolBar.heightAnchor.constraint(equalToConstant: 40),
+
+            heldResultActionView.topAnchor.constraint(equalTo: symbolBar.topAnchor),
+            heldResultActionView.leadingAnchor.constraint(equalTo: symbolBar.leadingAnchor),
+            heldResultActionView.trailingAnchor.constraint(equalTo: symbolBar.trailingAnchor),
+            heldResultActionView.heightAnchor.constraint(equalTo: symbolBar.heightAnchor),
 
             symbolStack.topAnchor.constraint(equalTo: symbolBar.topAnchor),
             symbolStack.leadingAnchor.constraint(equalTo: symbolBar.leadingAnchor, constant: 6),
@@ -1052,6 +1064,7 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
         guard gestureRecognizer.view === containerView,
               let touchedView = touch.view else { return true }
         return touchedView !== symbolBar && !touchedView.isDescendant(of: symbolBar)
+            && touchedView !== heldResultActionView && !touchedView.isDescendant(of: heldResultActionView)
     }
 
     // MARK: - 语言切换
@@ -1139,8 +1152,25 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
         let impact = UIImpactFeedbackGenerator(style: .medium)
         impact.impactOccurred()
 
-        if recoveredPendingSessionId != nil {
-            confirmRecoveredResult()
+        if currentHeldSession != nil {
+            showHeldResultMessage("请先选择插入、复制或丢弃当前结果")
+            return
+        }
+
+        if let failedToken = failedHandoffRetryToken,
+           currentSessionId == failedToken.rawValue {
+            processPendingResult()
+            guard failedHandoffRetryToken == failedToken,
+                  currentSessionId == failedToken.rawValue, isWaitingForResult else { return }
+            guard DarwinBridge.cancelSession(failedToken.rawValue) else {
+                showFailedHandoffRetry(message: "暂时无法确认取消，请点麦克风重试")
+                return
+            }
+            DarwinBridge.postSessionNotification(
+                base: DarwinNotificationName.requestCancelDictation, session: failedToken.rawValue
+            )
+            finishSession(session: failedToken.rawValue, message: "正在重新创建语音会话")
+            launchDictation()
             return
         }
 
@@ -1171,7 +1201,7 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
                 }
                 KeyboardSessionRecoveryStore.clear(expectedSession: session)
                 DarwinBridge.postSessionNotification(
-                    base: DarwinNotificationName.requestStopDictation,
+                    base: DarwinNotificationName.requestCancelDictation,
                     session: session
                 )
                 resetWaitingState(
@@ -1235,170 +1265,121 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
 
     // MARK: - 启动听写
 
-    /// 先写入完整会话并通知仍在运行的宿主，然后用这次明确的用户点击
-    /// 请求打开 VoType。这样宿主无论运行、挂起还是已终止都能消费同一会话。
+    /// 保存不可变设置和上下文指纹；冷路径只提示用户手动打开。
     private func launchDictation() {
         guard hasFullAccess else {
             liveTextLabel.text = "请到设置→键盘→VoType→开启「允许完全访问」"
             return
         }
-
-        let sessionId = UUID().uuidString
-        currentSessionId = sessionId
-        currentLivePhase = .starting
-
-        selectedTextBeforeRecording = textDocumentProxy.selectedText
-        pendingSelectedText = selectedTextBeforeRecording
+        let token = SessionToken()
+        failedHandoffRetryToken = nil
+        let launchMode: KeyboardSessionLaunchMode = DarwinBridge.canStartInPlace() ? .inPlace : .manualOpen
+        let before = textDocumentProxy.documentContextBeforeInput
+        let after = textDocumentProxy.documentContextAfterInput
+        let selection = textDocumentProxy.selectedText
         pendingKbType = textDocumentProxy.keyboardType?.rawValue ?? 0
+        currentSessionId = token.rawValue
+        currentExtensionSessionToken = token
+        currentLivePhase = .starting
         recoveredSnapshot = KeyboardSessionRecoveryStore.save(
-            session: sessionId,
-            contextBefore: textDocumentProxy.documentContextBeforeInput,
-            contextAfter: textDocumentProxy.documentContextAfterInput,
-            selectedText: selectedTextBeforeRecording
+            session: token.rawValue, launchMode: launchMode,
+            contextBefore: before, contextAfter: after, selectedText: selection
         )
-
         let settings = DictationSettings(
             language: LanguageManager.shared.currentLanguage.id,
             whisper: isWhisperMode,
             translateEnabled: TranslationManager.shared.translationEnabled,
             translateTarget: TranslationManager.shared.targetLanguageID,
-            selectedText: selectedTextBeforeRecording,
-            keyboardType: pendingKbType,
-            session: sessionId
+            selectedText: selection, keyboardType: pendingKbType, session: token.rawValue,
+            expectedContextFingerprint: recoveredSnapshot?.contextFingerprint
         )
+        currentDictationSettings = settings
         guard DarwinBridge.writeDictationSettings(settings) else {
-            resetWaitingState(
-                message: "无法访问共享数据，请检查 App Group 配置",
-                discardPendingSettings: false
-            )
+            resetWaitingState(message: "无法访问共享数据，请点麦克风重试", discardPendingSettings: false)
             return
         }
-        guard configureSessionObservers(for: sessionId) else {
-            resetWaitingState(message: "无法创建安全的语音会话")
+        guard configureSessionObservers(for: token.rawValue) else {
+            resetWaitingState(message: "无法创建安全的语音会话，请点麦克风重试")
             return
         }
-
         isWaitingForResult = true
-        recoveredPendingSessionId = nil
         liveTextLabel.text = "正在连接 VoType..."
         updateQuickTypeStatus("正在连接 VoType...", phase: .starting)
+        let config = UIImage.SymbolConfiguration(pointSize: 34, weight: .bold)
+        micButton.setImage(UIImage(systemName: "ellipsis", withConfiguration: config), for: .normal)
+        micButton.backgroundColor = .systemOrange
         micButton.isEnabled = true
-        startResultTimeout(for: sessionId, interval: 65)
-        startLiveStatePolling(for: sessionId)
-
-        // 麦克风按钮变声纹图标
-        let waveConfig = UIImage.SymbolConfiguration(pointSize: 34, weight: .bold)
-        micButton.setImage(UIImage(systemName: "ellipsis", withConfiguration: waveConfig), for: .normal)
-        micButton.backgroundColor = UIColor.systemOrange
         micButton.accessibilityLabel = "正在连接 VoType"
+        startResultTimeout(for: token.rawValue, interval: 65)
+        startLiveStatePolling(for: token.rawValue)
 
-        // 热路径会先尝试原地启动，1.2 秒没有 started 才降级到冷启动；
-        // 整条路径必须给出明确状态，不再永远停在“打开后即可说话”。
-        // 收到 dictationStarted 会取消此 timer
-        // 收到 dictationFailed 也会取消此 timer 并降级
-        darwinFallbackTimer = Timer.scheduledTimer(
-            withTimeInterval: DictationLaunchPolicy.manualRecoveryDeadline,
-            repeats: false
-        ) { [weak self] _ in
-            guard let self = self, self.isWaitingForResult else { return }
-            print("[KB] No supported background response; asking user to open VoType")
-            self.showManualOpenFallback(sessionId: sessionId)
-        }
-
-        routeDictationStart(sessionId: sessionId)
-    }
-
-    private func routeDictationStart(sessionId: String) {
-        let initialAction = DictationLaunchPolicy.initialAction(
-            canStartInPlace: DarwinBridge.canStartInPlace()
-        )
-        guard initialAction == .requestInPlace else {
-            liveTextLabel.text = "正在打开 VoType…"
-            updateQuickTypeStatus("正在打开 VoType…", phase: .starting)
-            requestContainingAppOpen(sessionId: sessionId)
-            return
-        }
-
-        liveTextLabel.text = "已连接待命服务，正在开麦…"
-        updateQuickTypeStatus("已连接待命服务，正在开麦…", phase: .starting)
-        DarwinBridge.postNotification(DarwinNotificationName.requestStartDictation)
-
-        DispatchQueue.main.asyncAfter(
-            deadline: .now() + DictationLaunchPolicy.inPlaceResponseDeadline
-        ) { [weak self] in
-            guard let self,
-                  self.keyboardIsVisible,
-                  self.isWaitingForResult,
-                  self.currentSessionId == sessionId,
-                  self.currentLivePhase == .starting else { return }
-            self.liveTextLabel.text = "待命响应超时，正在打开 VoType…"
-            self.updateQuickTypeStatus(
-                "待命响应超时，正在打开 VoType…",
-                phase: .starting
-            )
-            self.requestContainingAppOpen(sessionId: sessionId)
-        }
-    }
-
-    /// Apple does not guarantee `NSExtensionContext.open` for custom keyboards.
-    /// Run the responder-chain request immediately from the user's tap instead
-    /// of trusting the extension-context completion value, then retry only while
-    /// the keyboard is still visible and the same session is waiting.
-    private func requestContainingAppOpen(sessionId: String) {
-        guard let url = DictationConstants.buildDictationURL(session: sessionId) else {
-            showManualOpenFallback(sessionId: sessionId)
-            return
-        }
-
-        // Build 112 tried extensionContext first. On the tested iPhone it could
-        // report the request as accepted without actually switching apps, so the
-        // responder route never ran. Do not gate the real fallback on that flag.
-        _ = openURLThroughResponderChain(url)
-
-        extensionContext?.open(url) { opened in
-            print("[KB] extensionContext.open completion: \(opened)")
-        }
-
-        for delay in [0.20, 0.65] {
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-                guard let self = self,
-                      self.keyboardIsVisible,
-                      self.isWaitingForResult,
-                      self.currentSessionId == sessionId,
-                      self.currentLivePhase == .starting else { return }
-                print("[KB] Retrying containing-app open after \(delay)s")
-                _ = self.openURLThroughResponderChain(url)
+        if DictationLaunchPolicy.initialAction(canStartInPlace: launchMode == .inPlace) == .requestInPlace {
+            hotAckCoordinator.arm(token: token) { [weak self] expiredToken in
+                self?.handoffTimedOutHotRequest(expiredToken)
             }
+            DarwinBridge.postNotification(DarwinNotificationName.requestStartDictation)
+        } else {
+            showManualOpenFallback(sessionId: token.rawValue)
         }
     }
 
-    @discardableResult
-    private func openURLThroughResponderChain(_ url: URL) -> Bool {
-        let selector = NSSelectorFromString("openURL:")
-        var responder: UIResponder? = self
-        while let current = responder {
-            if current.responds(to: selector) {
-                print("[KB] Sending openURL: through \(type(of: current))")
-                current.perform(selector, with: url)
-                return true
+    private func handoffTimedOutHotRequest(_ oldToken: SessionToken) {
+        guard currentSessionId == oldToken.rawValue, isWaitingForResult,
+              let original = currentDictationSettings, original.session == oldToken.rawValue else { return }
+        let manualToken = SessionToken()
+        switch DarwinBridge.handoffDictationSettingsToManual(from: oldToken, to: manualToken, original: original) {
+        case .moved(let replacement):
+            _ = KeyboardSessionRecoveryStore.rebindForManualHandoff(from: oldToken, to: manualToken)
+            DarwinBridge.postSessionNotification(base: DarwinNotificationName.requestCancelDictation, session: oldToken.rawValue)
+            finishWaitingState()
+            currentSessionId = manualToken.rawValue
+            currentDictationSettings = replacement
+            currentExtensionSessionToken = nil
+            // Only bind the exact rebound snapshot; missing evidence always holds.
+            recoveredSnapshot = KeyboardSessionRecoveryStore.load().flatMap {
+                $0.session == manualToken.rawValue ? $0 : nil
             }
-            responder = current.next
+            isWaitingForResult = true
+            _ = configureSessionObservers(for: manualToken.rawValue)
+            startResultTimeout(for: manualToken.rawValue, interval: 65)
+            startLiveStatePolling(for: manualToken.rawValue)
+            showManualOpenFallback(sessionId: manualToken.rawValue)
+        case .alreadyTerminal:
+            _ = KeyboardSessionRecoveryStore.markManualOpen(session: oldToken.rawValue)
+            recoveredSnapshot = KeyboardSessionRecoveryStore.load().flatMap {
+                $0.session == oldToken.rawValue ? $0 : nil
+            }
+            currentExtensionSessionToken = nil
+            processPendingResult()
+        case .failed:
+            currentExtensionSessionToken = nil
+            failedHandoffRetryToken = oldToken
+            resultTimeoutTimer?.invalidate()
+            resultTimeoutTimer = nil
+            // Keep polling for a terminal, but only an explicit tap may cancel/retry.
+            showFailedHandoffRetry()
         }
-        print("[KB] No responder accepted openURL:")
-        return false
     }
 
-    /// 如果系统拒绝打开请求，仍保留会话；用户手动打开 VoType 后会自动消费。
+    private func showFailedHandoffRetry(message: String = "无法安全切换到前台，请点麦克风重试") {
+        guard let token = failedHandoffRetryToken,
+              currentSessionId == token.rawValue, isWaitingForResult else { return }
+        liveTextLabel.text = message
+        updateQuickTypeStatus(message, phase: nil)
+        let config = UIImage.SymbolConfiguration(pointSize: 34, weight: .bold)
+        micButton.setImage(UIImage(systemName: "arrow.clockwise", withConfiguration: config), for: .normal)
+        micButton.isEnabled = true
+        micButton.backgroundColor = .systemOrange
+        micButton.accessibilityLabel = "语音连接失败，点按重试"
+        stopPulse()
+    }
+
     private func showManualOpenFallback(sessionId: String) {
-        darwinFallbackTimer?.invalidate()
-        darwinFallbackTimer = nil
+        hotAckCoordinator.cancel()
         guard isWaitingForResult, currentSessionId == sessionId else { return }
         currentLivePhase = .starting
-        liveTextLabel.text = "系统未允许自动打开，请从主屏幕点 VoType"
-        updateQuickTypeStatus(
-            "系统未允许自动打开，请从主屏幕点 VoType",
-            phase: .starting
-        )
+        liveTextLabel.text = "请从主屏幕打开 VoType，返回后继续"
+        updateQuickTypeStatus(liveTextLabel.text ?? "请手动打开 VoType", phase: .starting)
         micButton.backgroundColor = .systemOrange
         micButton.accessibilityLabel = "请从主屏幕打开 VoType"
         stopPulse()
@@ -1406,48 +1387,24 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
 
     // MARK: - Darwin 通知回调
 
-    /// 主 App 确认开始录音
     private func onDictationStarted(sessionId: String) {
-        guard currentSessionId == sessionId, isWaitingForResult else { return }
-        darwinFallbackTimer?.invalidate()
-        darwinFallbackTimer = nil
-        isWaitingForResult = true
-        currentLivePhase = .listening
-
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self else { return }
-            self.liveTextLabel.text = "正在聆听... 再点麦克风结束"
-            self.updateQuickTypeStatus(
-                "正在聆听... 点此结束",
-                phase: .listening
-            )
-            // 声纹波浪图标 + 红色背景
-            let waveConfig = UIImage.SymbolConfiguration(pointSize: 34, weight: .bold)
-            self.micButton.setImage(UIImage(systemName: "stop.fill", withConfiguration: waveConfig), for: .normal)
-            self.micButton.backgroundColor = UIColor.systemRed
-            self.micButton.isEnabled = true
-            self.micButton.accessibilityLabel = "正在聆听，点按结束"
-            self.startPulse()
-        }
+        guard currentSessionId == sessionId, isWaitingForResult,
+              let token = SessionToken(rawValue: sessionId) else { return }
+        _ = hotAckCoordinator.acknowledge(token: token)
+        // started acknowledges admission; only a live listening state proves microphone capture.
+        refreshLiveState(for: sessionId)
     }
 
-    /// 主 App 后台识别失败 → 提示用户打开前台录音页。
     private func onDictationFailed(sessionId: String) {
         guard isWaitingForResult, currentSessionId == sessionId else { return }
-        print("[KB] Background recognition failed; foreground handoff required")
-        darwinFallbackTimer?.invalidate()
-        darwinFallbackTimer = nil
-        liveTextLabel.text = "原地录音未启动，正在打开 VoType…"
-        updateQuickTypeStatus(
-            "原地录音未启动，正在打开 VoType…",
-            phase: .starting
-        )
-        requestContainingAppOpen(sessionId: sessionId)
-        darwinFallbackTimer = Timer.scheduledTimer(
-            withTimeInterval: 1.8,
-            repeats: false
-        ) { [weak self] _ in
-            self?.showManualOpenFallback(sessionId: sessionId)
+        hotAckCoordinator.cancel()
+        currentExtensionSessionToken = nil
+        guard keyboardIsVisible else { return }
+        if let pending = DarwinBridge.peekResult(expectedSession: sessionId) {
+            if pending.status == .error { completeTerminalError(pending) }
+            else { processPendingResult() }
+        } else {
+            finishSession(session: sessionId, message: "录音未能完成，请点麦克风重试")
         }
     }
 
@@ -1455,6 +1412,13 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
         guard keyboardIsVisible,
               isWaitingForResult,
               currentSessionId == sessionId else { return }
+
+        processPendingResult()
+        guard isWaitingForResult, currentSessionId == sessionId else { return }
+        if failedHandoffRetryToken?.rawValue == sessionId {
+            showFailedHandoffRetry()
+            return
+        }
 
         let hasSafeContext = hasSafeRecoveryContext(for: sessionId)
         if requiresContextRevalidation, hasSafeContext {
@@ -1565,11 +1529,11 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
     private func updateReadinessAppearance() {
         guard keyboardIsVisible,
               !isWaitingForResult,
-              recoveredPendingSessionId == nil else { return }
+              currentHeldSession == nil else { return }
         restoreMicButton()
         let message = DarwinBridge.canStartInPlace()
             ? "已待命，点实心麦克风原地说话"
-            : "点空心麦克风，VoType 将短暂打开"
+            : "点空心麦克风，请手动打开 VoType 后继续"
         if liveTextLabel.text == "点击麦克风开始语音输入"
             || liveTextLabel.text?.hasPrefix("已待命") == true
             || liveTextLabel.text?.hasPrefix("点空心") == true {
@@ -1579,186 +1543,247 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
 
     // MARK: - 处理识别结果
 
-    /// 扩展重建后用会话快照恢复。只有输入框上下文哈希仍匹配、结果不涉及
-    /// 删除选区时才自动插入；空输入框或破坏性编辑仍要求用户明确确认。
+    /// Recreated extensions never inherit ownership of an automatic insertion.
     private func checkForPendingResult() {
+        guard currentHeldSession == nil else { return }
         if isWaitingForResult, let session = currentSessionId {
             processPendingResult()
             refreshLiveState(for: session)
             return
         }
-
         if let snapshot = KeyboardSessionRecoveryStore.load() {
             recoveredSnapshot = snapshot
-            let contextMatches = KeyboardSessionRecoveryStore.matches(
-                snapshot,
-                contextBefore: textDocumentProxy.documentContextBeforeInput,
-                contextAfter: textDocumentProxy.documentContextAfterInput,
-                selectedText: textDocumentProxy.selectedText
+            let before = textDocumentProxy.documentContextBeforeInput
+            let after = textDocumentProxy.documentContextAfterInput
+            let selection = textDocumentProxy.selectedText
+            let matches = KeyboardSessionRecoveryStore.matches(
+                snapshot, contextBefore: before, contextAfter: after, selectedText: selection
             )
-
-            if let pending = DarwinBridge.peekResult(
-                expectedSession: snapshot.session
-            ) {
-                if pending.status == .error
-                    || (!pending.deleteSelected
-                        && snapshot.hasContextEvidence
-                        && contextMatches) {
-                    restoreSession(snapshot, contextMatches: contextMatches)
-                    processPendingResult()
-                    return
-                }
-
-                recoveredPendingSessionId = pending.session
-                liveTextLabel.text = pending.deleteSelected
-                    ? "语音编辑结果已就绪，再点麦克风确认"
-                    : "结果已就绪，再点麦克风插入"
-                restoreMicButton()
-                micButton.backgroundColor = .systemGreen
-                updateQuickTypeStatus(liveTextLabel.text ?? "结果已就绪", phase: nil)
-                return
-            }
-
-            if DarwinBridge.readLiveState(expectedSession: snapshot.session) != nil
-                || DarwinBridge.peekPendingDictationSettings()?.session == snapshot.session {
-                restoreSession(snapshot, contextMatches: contextMatches)
-                refreshLiveState(for: snapshot.session)
-                return
-            }
-
-            // live 快照可能在长听写期间过期，但恢复快照仍能证明当前输入框
-            // 没有变化。重新接上同一 session，终态通知即使丢失也会被轮询发现。
-            if snapshot.hasContextEvidence, contextMatches {
-                restoreSession(snapshot, contextMatches: true)
+            if DarwinBridge.peekResult(expectedSession: snapshot.session) != nil
+                || DarwinBridge.readLiveState(expectedSession: snapshot.session) != nil
+                || DarwinBridge.peekDictationSettings(expectedSession: snapshot.session) != nil
+                || (snapshot.hasContextEvidence && matches) {
+                restoreSession(snapshot, contextMatches: matches)
+                processPendingResult()
                 refreshLiveState(for: snapshot.session)
                 return
             }
         }
-
-        guard let pending = DarwinBridge.peekResult() else { return }
-        recoveredPendingSessionId = pending.session
-        liveTextLabel.text = pending.status == .completed
-            ? "检测到待插入结果，再点麦克风确认"
-            : "检测到语音输入状态，再点麦克风查看"
-        restoreMicButton()
-        micButton.backgroundColor = .systemGreen
-        updateQuickTypeStatus(liveTextLabel.text ?? "结果已就绪", phase: nil)
-    }
-
-    private func confirmRecoveredResult() {
-        guard let session = recoveredPendingSessionId else { return }
-        guard let pending = DarwinBridge.peekResult(expectedSession: session) else {
-            recoveredPendingSessionId = nil
-            restoreMicButton()
-            liveTextLabel.text = "待插入结果已过期，请重新录音"
-            return
-        }
-
-        if pending.deleteSelected {
-            guard let snapshot = recoveredSnapshot,
-                  snapshot.session == session,
-                  snapshot.hasContextEvidence,
-                  KeyboardSessionRecoveryStore.matches(
-                      snapshot,
-                      contextBefore: textDocumentProxy.documentContextBeforeInput,
-                      contextAfter: textDocumentProxy.documentContextAfterInput,
-                      selectedText: textDocumentProxy.selectedText
-                  ),
-                  let selectedText = textDocumentProxy.selectedText,
-                  !selectedText.isEmpty else {
-                liveTextLabel.text = "选区已变化，结果未插入，请重新录音"
-                return
-            }
-            pendingSelectedText = selectedText
-        }
-
-        guard let result = DarwinBridge.readAndConsumeResult(expectedSession: session) else {
-            recoveredPendingSessionId = nil
-            restoreMicButton()
-            liveTextLabel.text = "待插入结果已过期，请重新录音"
-            return
-        }
-        DarwinBridge.discardResults(through: result.timestamp)
-        currentSessionId = session
-        recoveredPendingSessionId = nil
-        finishWaitingState()
-        handle(result)
+        guard let pending = DarwinBridge.peekResult(),
+              SessionToken(rawValue: pending.session) != nil else { return }
+        currentSessionId = pending.session
+        currentExtensionSessionToken = nil
+        currentDictationSettings = nil
+        if recoveredSnapshot?.session != pending.session { recoveredSnapshot = nil }
+        isWaitingForResult = true
+        processPendingResult()
     }
 
     private func processPendingResult() {
-        guard keyboardIsVisible,
-              isWaitingForResult,
-              let session = currentSessionId else { return }
-        guard let pending = DarwinBridge.peekResult(expectedSession: session) else {
-            // session 不匹配或尚未写完时绝不消费现有文件。
+        guard keyboardIsVisible, isWaitingForResult,
+              let session = currentSessionId,
+              let token = SessionToken(rawValue: session),
+              let pending = DarwinBridge.peekResult(expectedSession: token.rawValue),
+              SessionToken(rawValue: pending.session) == token else { return }
+        hotAckCoordinator.cancel()
+        if pending.status == .error {
+            completeTerminalError(pending)
             return
         }
-        if pending.status == .completed,
-           requiresContextRevalidation,
-           !hasSafeRecoveryContext(for: session) {
-            recoveredPendingSessionId = session
-            finishWaitingState()
-            liveTextLabel.text = pending.deleteSelected
-                ? "输入位置已变化，点麦克风核对编辑结果"
-                : "结果已就绪，点麦克风确认插入"
-            micButton.backgroundColor = .systemGreen
-            updateQuickTypeStatus(liveTextLabel.text ?? "结果已就绪", phase: nil)
+        guard let plan = pending.editPlan else {
+            holdResult(pending, message: "无法确认结果操作，可复制或丢弃")
             return
         }
-        guard let result = DarwinBridge.readAndConsumeResult(expectedSession: session) else {
+        // Snapshot all three proxy values once. No proxy reads after validation.
+        let before = textDocumentProxy.documentContextBeforeInput
+        let after = textDocumentProxy.documentContextAfterInput
+        let selection = textDocumentProxy.selectedText
+        let matches = matchesRecoveredContext(session: session, before: before, after: after, selection: selection)
+        let disposition = KeyboardResultDispositionPolicy.decide(
+            launchMode: recoveredSnapshot?.launchMode ?? .manualOpen,
+            belongsToCurrentExtensionInstance: currentExtensionSessionToken == token,
+            currentSelectedText: selection,
+            hasContextEvidence: recoveredSnapshot?.hasContextEvidence ?? false,
+            contextMatches: matches, operation: plan.operation,
+            requiresConfirmation: plan.requiresConfirmation
+        )
+        guard disposition == .autoInsert, !plan.text.isEmpty else {
+            let selectedInsert = selection?.isEmpty == false
+                && (plan.operation == .insertAtCursor || plan.operation == .previewOnly)
+            holdResult(pending, message: selectedInsert
+                ? "当前有选中文本，未覆盖原文。请取消选区后插入，或复制结果。"
+                : "结果已就绪，请选择插入、复制或丢弃")
             return
         }
-        finishWaitingState()
-        handle(result)
+        guard let consumed = DarwinBridge.readAndConsumeResult(expectedSession: token.rawValue),
+              KeyboardHeldEditValidator.consumedResultMatchesPreview(previewed: pending, consumed: consumed) else {
+            finishSession(session: session, message: "结果已变化或由其他键盘窗口处理，请点麦克风重试")
+            return
+        }
+        textDocumentProxy.insertText(plan.text)
+        finishSession(session: session, message: "已输入 ✓")
     }
 
-    private func hasSafeRecoveryContext(for session: String) -> Bool {
+    private func matchesRecoveredContext(session: String, before: String?, after: String?, selection: String?) -> Bool {
         guard let snapshot = recoveredSnapshot,
-              snapshot.session == session,
+              let snapshotToken = SessionToken(rawValue: snapshot.session),
+              snapshotToken.rawValue == session,
               snapshot.hasContextEvidence else { return false }
         return KeyboardSessionRecoveryStore.matches(
-            snapshot,
-            contextBefore: textDocumentProxy.documentContextBeforeInput,
-            contextAfter: textDocumentProxy.documentContextAfterInput,
-            selectedText: textDocumentProxy.selectedText
+            snapshot, contextBefore: before, contextAfter: after, selectedText: selection
         )
     }
 
-    private func handle(_ result: DictationIPCResult) {
-        if let text = result.transcription {
-            insertResult(text, deleteSelected: result.deleteSelected)
-        } else if let error = result.error {
-            liveTextLabel.text = error
-        }
-        updateQuickTypeStatus(liveTextLabel.text ?? "语音输入", phase: nil)
-        KeyboardSessionRecoveryStore.clear(expectedSession: result.session)
-        recoveredSnapshot = nil
-        recoveredPendingSessionId = nil
-        pendingSelectedText = nil
-        currentSessionId = nil
+    private func hasSafeRecoveryContext(for session: String) -> Bool {
+        let before = textDocumentProxy.documentContextBeforeInput
+        let after = textDocumentProxy.documentContextAfterInput
+        let selection = textDocumentProxy.selectedText
+        return matchesRecoveredContext(session: session, before: before, after: after, selection: selection)
     }
 
-    private func restoreSession(
-        _ snapshot: KeyboardSessionRecoverySnapshot,
-        contextMatches: Bool
-    ) {
+    private func holdResult(_ result: DictationIPCResult, message: String) {
+        guard SessionToken(rawValue: result.session) != nil else {
+            showHeldResultMessage("结果会话无效，未修改原文")
+            return
+        }
+        finishWaitingState()
+        currentHeldSession = result.session
+        heldResultPreview = result
+        currentSessionId = result.session
+        currentExtensionSessionToken = nil
+        currentDictationSettings = nil
+        heldResultActionView.isHidden = false
+        symbolBar.isHidden = true
+        showVoiceInput()
+        micButton.backgroundColor = .systemGreen
+        micButton.accessibilityLabel = "结果待确认，请选择插入、复制或丢弃"
+        showHeldResultMessage(message)
+    }
+
+    private func showHeldResultMessage(_ message: String) {
+        let text = heldResultPreview?.editPlan?.text ?? ""
+        liveTextLabel.text = text.isEmpty ? message : message + "\n" + text
+        updateQuickTypeStatus(message, phase: nil)
+    }
+
+    /// The preview is frozen when displayed. A tap cannot silently adopt a changed payload.
+    private func validatedHeldPreview() -> (SessionToken, DictationIPCResult)? {
+        guard let held = currentHeldSession.flatMap(SessionToken.init(rawValue:)),
+              let preview = heldResultPreview,
+              let previewToken = SessionToken(rawValue: preview.session),
+              previewToken == held else {
+            showHeldResultMessage("结果会话无效，未修改原文")
+            return nil
+        }
+        guard let pending = DarwinBridge.peekResult(expectedSession: held.rawValue) else {
+            finishSession(session: held.rawValue, message: "结果已过期或由其他键盘窗口处理，请点麦克风重试")
+            return nil
+        }
+        guard pending == preview else {
+            showHeldResultMessage("结果已变化，未修改原文")
+            return nil
+        }
+        return (held, preview)
+    }
+
+    private func insertHeldResult() {
+        guard let (token, preview) = validatedHeldPreview(), let plan = preview.editPlan else { return }
+        let snapshotToken = recoveredSnapshot.flatMap { SessionToken(rawValue: $0.session) }
+        let before = textDocumentProxy.documentContextBeforeInput
+        let after = textDocumentProxy.documentContextAfterInput
+        let selection = textDocumentProxy.selectedText
+        let application = KeyboardHeldEditValidator.decide(
+            plan: plan, previewedToken: token, heldToken: token,
+            snapshotToken: snapshotToken, snapshotFingerprint: recoveredSnapshot?.contextFingerprint,
+            hasContextEvidence: recoveredSnapshot?.hasContextEvidence ?? false,
+            contextMatches: matchesRecoveredContext(session: token.rawValue, before: before, after: after, selection: selection),
+            currentSelectedText: selection
+        )
+        guard application != .reject else {
+            let selectedInsert = selection?.isEmpty == false
+                && (plan.operation == .insertAtCursor || plan.operation == .previewOnly)
+            showHeldResultMessage(selectedInsert
+                ? "当前有选中文本，未覆盖原文。请取消选区后插入，或复制结果。"
+                : "选区或输入位置已变化，未修改原文")
+            return
+        }
+        guard let consumed = DarwinBridge.readAndConsumeResult(expectedSession: token.rawValue),
+              KeyboardHeldEditValidator.consumedResultMatchesPreview(previewed: preview, consumed: consumed) else {
+            finishSession(session: token.rawValue, message: "结果已变化或由其他键盘窗口处理，请点麦克风重试")
+            return
+        }
+        // Synchronous main-thread mutation with the already validated selection.
+        switch application {
+        case .insertAtCursor(let text):
+            textDocumentProxy.insertText(text)
+        case .replaceSelection(let text):
+            textDocumentProxy.deleteBackward()
+            textDocumentProxy.insertText(text)
+        case .deleteSelection:
+            textDocumentProxy.deleteBackward()
+        case .reject:
+            assertionFailure("Rejected edit cannot reach document mutation")
+            return
+        }
+        finishSession(session: token.rawValue, message: application == .deleteSelection ? "已删除选中文本 ✓" : "已输入 ✓")
+    }
+
+    private func copyHeldResult() {
+        guard let (token, preview) = validatedHeldPreview() else { return }
+        guard let text = preview.editPlan?.text, !text.isEmpty else {
+            showHeldResultMessage("没有可复制的文字，可选择丢弃")
+            return
+        }
+        guard let consumed = DarwinBridge.readAndConsumeResult(expectedSession: token.rawValue),
+              KeyboardHeldEditValidator.consumedResultMatchesPreview(previewed: preview, consumed: consumed) else {
+            finishSession(session: token.rawValue, message: "结果已变化或由其他键盘窗口处理，请点麦克风重试")
+            return
+        }
+        UIPasteboard.general.string = text
+        finishSession(session: token.rawValue, message: "已复制结果 ✓")
+    }
+
+    private func discardHeldResult() {
+        guard let (token, _) = validatedHeldPreview() else { return }
+        guard DarwinBridge.readAndConsumeResult(expectedSession: token.rawValue) != nil else {
+            finishSession(session: token.rawValue, message: "结果已由其他键盘窗口处理，请点麦克风重试")
+            return
+        }
+        finishSession(session: token.rawValue, message: "已丢弃结果")
+    }
+
+    private func completeTerminalError(_ pending: DictationIPCResult) {
+        guard let token = SessionToken(rawValue: pending.session),
+              currentSessionId == token.rawValue, pending.status == .error else { return }
+        currentExtensionSessionToken = nil
+        hotAckCoordinator.cancel()
+        guard let consumed = DarwinBridge.readAndConsumeResult(expectedSession: token.rawValue),
+              consumed == pending else {
+            finishSession(session: token.rawValue, message: "结果已变化或由其他键盘窗口处理，请点麦克风重试")
+            return
+        }
+        // Consume only the old failure; its terminal receipt remains authoritative.
+        finishSession(session: token.rawValue, message: pending.text + "，请点麦克风重试")
+    }
+
+    private func restoreSession(_ snapshot: KeyboardSessionRecoverySnapshot, contextMatches: Bool) {
+        guard SessionToken(rawValue: snapshot.session) != nil else { return }
+        hotAckCoordinator.cancel()
         currentSessionId = snapshot.session
-        recoveredPendingSessionId = nil
+        currentExtensionSessionToken = nil
+        currentDictationSettings = nil
         isWaitingForResult = true
         requiresContextRevalidation = !(snapshot.hasContextEvidence && contextMatches)
-        pendingSelectedText = contextMatches ? textDocumentProxy.selectedText : nil
         _ = configureSessionObservers(for: snapshot.session)
         startResultTimeout(for: snapshot.session, interval: 65)
         startLiveStatePolling(for: snapshot.session)
         if let state = DarwinBridge.readLiveState(expectedSession: snapshot.session) {
             currentLivePhase = state.phase
-            let interval: TimeInterval
             switch state.phase {
-            case .starting: interval = 65
-            case .listening: interval = 5 * 60
-            case .processing: interval = 90
+            case .starting: break
+            case .listening: startResultTimeout(for: snapshot.session, interval: 5 * 60)
+            case .processing: startResultTimeout(for: snapshot.session, interval: 90)
             }
-            startResultTimeout(for: snapshot.session, interval: interval)
         } else {
             currentLivePhase = .starting
             liveTextLabel.text = "正在等待 VoType..."
@@ -1767,8 +1792,8 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
 
     private func finishWaitingState() {
         isWaitingForResult = false
-        darwinFallbackTimer?.invalidate()
-        darwinFallbackTimer = nil
+        hotAckCoordinator.cancel()
+        failedHandoffRetryToken = nil
         resultTimeoutTimer?.invalidate()
         resultTimeoutTimer = nil
         liveStatePollTimer?.invalidate()
@@ -1778,101 +1803,65 @@ class KeyboardViewController: UIInputViewController, UIGestureRecognizerDelegate
         liveStateChangedObserver = nil
         currentLivePhase = nil
         requiresContextRevalidation = false
-        micButton.isEnabled = true
         restoreMicButton()
     }
 
-    private func resetWaitingState(
-        message: String,
-        discardPendingSettings: Bool = true
-    ) {
-        let session = currentSessionId
-        if discardPendingSettings, let session {
-            guard DarwinBridge.cancelSession(session) else {
-                liveTextLabel.text = "无法确认取消，正在保留会话以防结果丢失"
-                updateQuickTypeStatus(
-                    "无法确认取消，正在保留会话以防结果丢失",
-                    phase: currentLivePhase
-                )
-                return
-            }
-            KeyboardSessionRecoveryStore.clear(expectedSession: session)
-        }
+    private func finishSession(session: String, message: String) {
+        guard currentSessionId == session || currentHeldSession == session else { return }
         finishWaitingState()
+        KeyboardSessionRecoveryStore.clear(expectedSession: session)
         currentSessionId = nil
-        recoveredPendingSessionId = nil
+        currentHeldSession = nil
+        heldResultPreview = nil
+        currentExtensionSessionToken = nil
+        currentDictationSettings = nil
         recoveredSnapshot = nil
-        pendingSelectedText = nil
+        heldResultActionView.isHidden = true
+        symbolBar.isHidden = false
         liveTextLabel.text = message
         updateQuickTypeStatus(message, phase: nil)
     }
 
-    private func startResultTimeout(
-        for session: String,
-        interval: TimeInterval
-    ) {
+    private func resetWaitingState(message: String, discardPendingSettings: Bool = true) {
+        guard let session = currentSessionId else {
+            finishWaitingState()
+            currentExtensionSessionToken = nil
+            currentDictationSettings = nil
+            liveTextLabel.text = message
+            updateQuickTypeStatus(message, phase: nil)
+            return
+        }
+        if discardPendingSettings {
+            guard DarwinBridge.cancelSession(session) else {
+                liveTextLabel.text = "无法确认取消，正在保留会话以防结果丢失"
+                updateQuickTypeStatus(liveTextLabel.text ?? "请重试", phase: currentLivePhase)
+                return
+            }
+            DarwinBridge.postSessionNotification(base: DarwinNotificationName.requestCancelDictation, session: session)
+        }
+        finishSession(session: session, message: message)
+    }
+
+    private func startResultTimeout(for session: String, interval: TimeInterval) {
         resultTimeoutTimer?.invalidate()
-        resultTimeoutTimer = Timer.scheduledTimer(
-            withTimeInterval: interval,
-            repeats: false
-        ) { [weak self] _ in
-            guard let self,
-                  self.isWaitingForResult,
-                  self.currentSessionId == session else { return }
+        resultTimeoutTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: false) { [weak self] _ in
+            guard let self, self.isWaitingForResult, self.currentSessionId == session else { return }
             self.processPendingResult()
-            guard self.isWaitingForResult,
-                  self.currentSessionId == session else { return }
+            guard self.isWaitingForResult, self.currentSessionId == session else { return }
+            // A hidden keyboard defers presentation, never discards a ready result on timeout.
+            if DarwinBridge.peekResult(expectedSession: session) != nil {
+                self.hotAckCoordinator.cancel()
+                return
+            }
             guard DarwinBridge.cancelSession(session) else {
                 self.liveTextLabel.text = "取消确认失败，继续等待结果"
-                self.updateQuickTypeStatus(
-                    "取消确认失败，继续等待结果",
-                    phase: self.currentLivePhase
-                )
+                self.updateQuickTypeStatus("取消确认失败，继续等待结果", phase: self.currentLivePhase)
                 self.startResultTimeout(for: session, interval: 15)
                 return
             }
-            KeyboardSessionRecoveryStore.clear(expectedSession: session)
-            DarwinBridge.postSessionNotification(
-                base: DarwinNotificationName.requestStopDictation,
-                session: session
-            )
-            self.resetWaitingState(
-                message: "语音输入超时，请重试",
-                discardPendingSettings: false
-            )
+            DarwinBridge.postSessionNotification(base: DarwinNotificationName.requestCancelDictation, session: session)
+            self.resetWaitingState(message: "语音输入超时，请点麦克风重试", discardPendingSettings: false)
         }
-    }
-
-    /// 插入识别结果到光标位置
-    /// 主 App 已完成所有文字处理 (LLM/翻译/格式化/语音编辑)
-    /// 键盘只负责插入,不跑任何 AI 模型
-    private func insertResult(_ text: String, deleteSelected: Bool) {
-        // 语音编辑结果只能作用于发起会话时的同一选区。切换 App 或扩展重启
-        // 可能使选区丢失；此时宁可放弃结果，也不能误删光标前一个字符。
-        if deleteSelected {
-            guard let expectedSelection = pendingSelectedText,
-                  !expectedSelection.isEmpty,
-                  textDocumentProxy.selectedText == expectedSelection else {
-                liveTextLabel.text = "选区已变化，请重新选择后录音"
-                return
-            }
-            textDocumentProxy.deleteBackward()
-        }
-
-        if text.isEmpty {
-            if deleteSelected {
-                liveTextLabel.text = "已删除选中文本 ✓"
-            } else {
-                liveTextLabel.text = "未识别到语音,请重试"
-            }
-            return
-        }
-
-        textDocumentProxy.insertText(text)
-
-        let preview = text.prefix(30)
-        liveTextLabel.text = "已输入 ✓  \(preview)\(text.count > 30 ? "…" : "")"
-        restoreMicButton()
     }
 
     // MARK: - 脉冲动画

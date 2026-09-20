@@ -4209,6 +4209,8 @@ private func handoffTimedOutHotRequest(_ oldToken: SessionToken) {
 
 The `.moved` outcome is the only branch that shows “请从主屏幕打开 VoType，返回后继续”. It first guarantees a fresh pending request and tombstones the old token, then sends the dedicated cancel command so the old App-side engine terminates even if already processing. Never reuse `requestStopDictation` for this handoff because stop during processing is intentionally a no-op. A late `dictationStarted` for the old UUID fails the existing `currentSessionId` guard and `hotAckCoordinator.acknowledge`, so it cannot restore hot mode or automatic insertion. `.failed` keeps a visible retry path and never claims that manual recovery is ready.
 
+**R29 — make failed-handoff Retry usable during processing:** Ordinary processing deliberately disables the microphone and ignores stop, so failure copy alone is not an actionable retry path. Bind the failed-handoff retry state to its exact `SessionToken`. While that token remains current, live polling must retain the enabled Retry control and truthful failure copy, including when the old runner is processing. On explicit tap, process an already-available terminal first; otherwise persist cancellation for that old token and only after success clear its local state and start the ordinary launch flow with a fresh UUID/current-field snapshot. A cancellation write failure leaves a visible, enabled retry state and creates no replacement. Clear this state on finish/reset/held-result/new-session transitions. Normal processing behavior is unchanged; never auto-retry or reuse the old UUID. This closes the existing visible-recovery requirement without a new Shared abstraction. Shared IPC tests are not proof of controller taps; retain the controller static-review and physical-device verification boundary.
+
 `onDictationStarted` must parse the notification session as `SessionToken` and call `hotAckCoordinator.acknowledge(token:)` before changing UI state. `onDictationFailed`, cancellation, result completion, reset, and controller teardown call `hotAckCoordinator.cancel()`. A terminal failure clears `currentExtensionSessionToken` and shows the failure with explicit “点麦克风重试” guidance; it never claims that a pending manual request exists or schedules an automatic retry. Explicit Retry snapshots the current field into a new UUID, binds observers/current session to it, and uses the ordinary launch policy; after PiP readiness was disabled this is `.manualOpen` and its result is held. Consume/discard only the old error payload, retaining its receipt. For a cold request that was actually saved, show “请从主屏幕打开 VoType，返回后继续” immediately and do not arm a timer.
 
 Add a retry regression proving the new UUID differs, the old error cannot reappear in the new session, late old commits remain blocked, and the replacement is bound as a held manual result. This is distinct from the existing nonterminal 1.2-second hot handoff regression.
@@ -4382,7 +4384,7 @@ NSSelectorFromString
 sel_registerName
 \.perform[[:space:]]*\(
 \.responds[[:space:]]*\([[:space:]]*to:
-responder[[:space:]]*=[^\n]*\.next
+responder[[:space:]]*=.*\.next
 DictationConstants\.buildDictationURL
 PATTERNS
 
@@ -4395,6 +4397,8 @@ echo "Keyboard distribution launch gate passed"
 ```
 
 Run `chmod +x scripts/verify_distribution_keyboard_launch.sh`. The patterns intentionally cover public extension-context opening, `UIApplication.open`, Objective-C selector construction, responder-chain traversal, and rebuilding the host deep link anywhere under the distributed keyboard source—not only today's exact helper names. Add `bash scripts/verify_distribution_keyboard_launch.sh` to `.github/workflows/build.yml` before unit tests and again before the unsigned Release build so every distribution configuration is covered.
+
+**R28 — exercise the source gate's negative cases:** In grep ERE, `[^\n]` excludes the letter `n` rather than representing a generic non-newline character; the original example missed `responder = current.next`. Use `responder[[:space:]]*=.*\.next` for that line-based check and verify every forbidden pattern against synthetic source fixtures as well as the clean keyboard tree. Keep fixtures out of the distributed source. This repairs the existing forbidden-launch requirement, not a new capability; an incorrectly weak gate would silently permit a removed launch technique to return.
 
 - [ ] **Step 8: Run launch, recovery, IPC, and source gates**
 

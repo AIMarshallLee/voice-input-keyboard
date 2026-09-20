@@ -428,6 +428,12 @@ extension DictationReadiness: TimestampedIPCValue {}
 extension DictationCancellation: TimestampedIPCValue {}
 extension DictationTerminalReceipt: TimestampedIPCValue {}
 
+enum DictationManualHandoffOutcome: Equatable {
+    case moved(DictationSettings)
+    case alreadyTerminal
+    case failed
+}
+
 /// App Group 原子文件 IPC。Darwin 通知只传信号，文件承载带 session 的数据。
 struct DarwinBridge {
     static let appGroupIdentifier = SharedDefaults.suiteName
@@ -827,6 +833,60 @@ struct DarwinBridge {
     }
 
     // MARK: 设置（键盘 -> 主 App）
+
+    static func handoffDictationSettingsToManual(
+        from source: SessionToken,
+        to replacement: SessionToken,
+        original: DictationSettings,
+        timestamp: TimeInterval = Date().timeIntervalSince1970
+    ) -> DictationManualHandoffOutcome {
+        guard source != replacement, original.session == source.rawValue,
+              timestamp.isFinite, timestamp > 0,
+              let sourceSettings = settingsFileName(for: source.rawValue),
+              let sourceResult = resultFileName(for: source.rawValue),
+              let sourceReceipt = terminalReceiptFileName(for: source.rawValue),
+              let sourceCancellation = cancellationFileName(for: source.rawValue),
+              let sourceLive = liveStateFileName(for: source.rawValue),
+              let replacementSettings = settingsFileName(for: replacement.rawValue),
+              let replacementResult = resultFileName(for: replacement.rawValue),
+              let replacementReceipt = terminalReceiptFileName(for: replacement.rawValue),
+              let replacementCancellation = cancellationFileName(for: replacement.rawValue) else { return .failed }
+
+        let outcome: DictationManualHandoffOutcome = withTwoSessionLocks(
+            source: source, replacement: replacement, defaultValue: .failed
+        ) { directory in
+            // Existence is deliberately conservative: never clean malformed/expired
+            // evidence while deciding whether a UUID can be handed off or reused.
+            func exists(_ name: String) -> Bool {
+                FileManager.default.fileExists(atPath: directory.appendingPathComponent(name).path)
+            }
+            if exists(sourceReceipt) || exists(sourceResult) { return .alreadyTerminal }
+            guard !exists(sourceCancellation),
+                  ![replacementSettings, replacementResult, replacementReceipt, replacementCancellation].contains(where: exists)
+            else { return .failed }
+
+            let settings = DictationSettings(language: original.language, whisper: original.whisper,
+                translateEnabled: original.translateEnabled, translateTarget: original.translateTarget,
+                selectedText: original.selectedText, keyboardType: original.keyboardType,
+                session: replacement.rawValue, expectedContextFingerprint: original.expectedContextFingerprint,
+                timestamp: max(timestamp, original.timestamp.nextUp))
+            let replacementURL = directory.appendingPathComponent(replacementSettings)
+            guard writeUncoordinated(settings, to: replacementURL) else { return .failed }
+            guard writeUncoordinated(DictationCancellation(session: source.rawValue, timestamp: timestamp),
+                                     to: directory.appendingPathComponent(sourceCancellation)) else {
+                removeUncoordinated(replacementURL)
+                return .failed
+            }
+            for name in [sourceSettings, sourceLive, sourceResult] {
+                removeUncoordinated(directory.appendingPathComponent(name))
+            }
+            return .moved(settings)
+        }
+        if case .moved = outcome {
+            postSessionNotification(base: DarwinNotificationName.liveStateChanged, session: source.rawValue)
+        }
+        return outcome
+    }
 
     @discardableResult
     static func writeDictationSettings(_ settings: DictationSettings) -> Bool {
@@ -1288,6 +1348,30 @@ struct DarwinBridge {
             return defaultValue
         }
         return didRun ? value : defaultValue
+    }
+
+    private static func withTwoSessionLocks<Value>(
+        source: SessionToken, replacement: SessionToken, defaultValue: Value,
+        _ body: (URL) -> Value
+    ) -> Value {
+        let tokens = [source.rawValue, replacement.rawValue].sorted()
+        guard let firstName = sessionLockFileName(for: tokens[0]),
+              let secondName = sessionLockFileName(for: tokens[1]),
+              let firstURL = fileURL(named: firstName),
+              let secondURL = fileURL(named: secondName) else { return defaultValue }
+        ioLock.lock()
+        defer { ioLock.unlock() }
+        let coordinator = NSFileCoordinator(filePresenter: nil)
+        var coordinationError: NSError?
+        var didRun = false
+        var value = defaultValue
+        coordinator.coordinate(writingItemAt: firstURL, options: .forMerging,
+                               writingItemAt: secondURL, options: .forMerging,
+                               error: &coordinationError) { first, _ in
+            value = body(first.deletingLastPathComponent())
+            didRun = true
+        }
+        return coordinationError == nil && didRun ? value : defaultValue
     }
 
     private static func writeTerminalResult(
