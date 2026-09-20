@@ -13,6 +13,11 @@ final class DictationCoordinator: ObservableObject {
     private var queuedPresentations: [DictationPresentation] = []
     private var transitioningPresentation: DictationPresentation?
 
+    func enqueuePendingIfAvailable() {
+        guard let pending = DarwinBridge.peekPendingDictationSettings() else { return }
+        enqueue(session: pending.session, url: nil)
+    }
+
     func enqueue(session: String, url: URL?) {
         guard DictationConstants.isValidSession(session),
               presentation?.id != session,
@@ -58,15 +63,16 @@ struct VoiceInputApp: App {
                 ) { request in
                     DictationView(
                         expectedSession: request.id,
-                        url: request.url
+                        url: request.url,
+                        engine: DictationSessionEnvironment.shared.engine
                     )
                 }
                 .onAppear {
-                    presentPendingDictationIfNeeded()
+                    coordinator.enqueuePendingIfAvailable()
                 }
                 .onChange(of: scenePhase) { phase in
                     if phase == .active {
-                        presentPendingDictationIfNeeded()
+                        coordinator.enqueuePendingIfAvailable()
                     }
                 }
                 .onOpenURL { url in
@@ -87,10 +93,4 @@ struct VoiceInputApp: App {
         }
     }
 
-    /// 深链或用户手动打开 VoType 时，继续处理一分钟内尚未消费的
-    /// App Group 听写请求。
-    private func presentPendingDictationIfNeeded() {
-        guard let pending = DarwinBridge.peekPendingDictationSettings() else { return }
-        coordinator.enqueue(session: pending.session, url: nil)
-    }
 }
