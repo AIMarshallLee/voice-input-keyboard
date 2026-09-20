@@ -252,6 +252,96 @@ final class DictationConstantsTests: XCTestCase {
         XCTAssertEqual(try businessBytes(), bytes)
     }
 
+    func testOrphanHandoffStagesAreNeverPendingAndExpireOnlyBeyondSettingsLifetime() throws {
+        let now: TimeInterval = 1_000
+        let officialToken = SessionToken()
+        let official = handoffSettings(officialToken, timestamp: now)
+        XCTAssertTrue(DarwinBridge.writeDictationSettings(official))
+        let officialBytes = try Data(contentsOf: businessURL("settings", token: officialToken))
+        let fresh = SessionToken()
+        let boundary = SessionToken()
+        let expired = SessionToken()
+        let corruptExpired = SessionToken()
+        let stageCases: [(SessionToken, TimeInterval, Bool)] = [
+            (fresh, now, false),
+            (boundary, now - 60, false),
+            (expired, now - 61, false),
+            (corruptExpired, now - 61, true)
+        ]
+        for (token, modified, corrupt) in stageCases {
+            let data: Data
+            if corrupt { data = Data("interrupted-stage-json".utf8) }
+            else { data = try JSONEncoder().encode(handoffSettings(token, timestamp: modified)) }
+            let url = businessURL("handoff-stage", token: token)
+            try data.write(to: url, options: [.atomic, .completeFileProtection])
+            try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: modified)],
+                                                 ofItemAtPath: url.path)
+        }
+        let unrelated = ipcDirectory.appendingPathComponent("unrelated-stage.json")
+        try Data("unrelated".utf8).write(to: unrelated)
+        try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: 1)],
+                                             ofItemAtPath: unrelated.path)
+
+        XCTAssertEqual(DarwinBridge.peekPendingDictationSettings(now: now), official)
+        XCTAssertEqual(try Data(contentsOf: businessURL("settings", token: officialToken)), officialBytes)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: businessURL("handoff-stage", token: fresh).path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: businessURL("handoff-stage", token: boundary).path),
+                      "Exactly 60 seconds is still within the existing settings lifetime")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: businessURL("handoff-stage", token: expired).path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: businessURL("handoff-stage", token: corruptExpired).path),
+                       "Corrupt orphan data must not evade bounded retention")
+        XCTAssertEqual(try Data(contentsOf: unrelated), Data("unrelated".utf8))
+        XCTAssertEqual(DarwinBridge.readAndConsumeDictationSettings(expectedSession: officialToken.rawValue, now: now), official)
+        XCTAssertNil(DarwinBridge.peekPendingDictationSettings(now: now))
+        for (token, _, _) in stageCases {
+            XCTAssertFalse(FileManager.default.fileExists(atPath: businessURL("settings", token: token).path),
+                           "An orphan stage must never auto-promote into a discoverable request")
+        }
+    }
+
+    func testNewSettingsGCPreservesMalformedOrInvalidCancellationEvidenceButExpiresValidMarkers() throws {
+        let now = Date().timeIntervalSince1970
+        let corrupt = SessionToken()
+        let invalidTime = SessionToken()
+        let mismatchedIdentity = SessionToken()
+        let expired = SessionToken()
+        let evidence: [(SessionToken, Data)] = [
+            (corrupt, Data("broken-cancellation-json".utf8)),
+            (invalidTime, Data("{\"session\":\"\(invalidTime.rawValue)\",\"timestamp\":-1}".utf8)),
+            (mismatchedIdentity, Data("{\"session\":\"\(SessionToken().rawValue)\",\"timestamp\":1}".utf8))
+        ]
+        for (token, bytes) in evidence {
+            try bytes.write(to: businessURL("cancel", token: token), options: [.atomic, .completeFileProtection])
+        }
+        let validExpired = Data("{\"session\":\"\(expired.rawValue)\",\"timestamp\":\(now - 86_401)}".utf8)
+        try validExpired.write(to: businessURL("cancel", token: expired), options: [.atomic, .completeFileProtection])
+
+        // This public API invokes cancellation GC before an admitted owner's next poll.
+        XCTAssertTrue(DarwinBridge.writeDictationSettings(handoffSettings(SessionToken())))
+
+        for (token, bytes) in evidence {
+            XCTAssertEqual(try? Data(contentsOf: businessURL("cancel", token: token)), bytes,
+                           "Unreadable or invalid evidence is not proof that cancellation is absent")
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: businessURL("cancel", token: expired).path),
+                       "A valid identity and positive, confirmed-expired timestamp still permit cleanup")
+    }
+
+    func testCorruptCancellationEvidenceRejectsLateLiveAndTerminalWritesWithoutErasingMarker() throws {
+        let token = SessionToken()
+        let marker = Data("unreadable-cancellation-evidence".utf8)
+        let markerURL = businessURL("cancel", token: token)
+        try marker.write(to: markerURL, options: [.atomic, .completeFileProtection])
+
+        XCTAssertFalse(DarwinBridge.writeLiveState(phase: .listening, partialTranscript: "late", session: token.rawValue))
+        XCTAssertEqual(try? Data(contentsOf: markerURL), marker)
+        XCTAssertEqual(DarwinBridge.commit(.completed(heldPlan), token: token), .cancelled)
+        XCTAssertEqual(try? Data(contentsOf: markerURL), marker)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: businessURL("live", token: token).path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: businessURL("result", token: token).path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: businessURL("terminal", token: token).path))
+    }
+
     func testExplicitRetryUsesFreshManualUUIDAndCannotReplayOldTerminal() throws {
         let old = SessionToken()
         let retry = SessionToken()

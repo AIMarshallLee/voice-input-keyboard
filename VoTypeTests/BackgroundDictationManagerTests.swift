@@ -160,6 +160,130 @@ final class BackgroundDictationManagerTests: XCTestCase {
         await runner.finishAllStreams()
     }
 
+    func testPersistedCancellationWithoutNotificationStopsListeningAndProcessingOwner() async throws {
+        let phases: [[DictationSessionEvent]] = [[.listening(partial: "live")], [.preparing, .processing]]
+        for events in phases {
+            let token = store()
+            let runner = runner(events)
+            let pip = RecordingPiPStandbyPresenter(isActive: true)
+            let manager = BackgroundDictationManager(engine: runner, pip: pip)
+            defer { withExtendedLifetime(manager) {} }
+            try await start(manager)
+            try await waitUntil("active owner presentation") { !pip.states.isEmpty }
+
+            // Simulate eviction after durable cancellation and before the dedicated notification.
+            // cancelSession posts only live-state notification; this test never calls the cancel adapter.
+            XCTAssertTrue(DarwinBridge.cancelSession(token.rawValue))
+            try await waitUntil("durable cancellation reaches current runner without notification", timeout: 2) {
+                await runner.cancelledTokens == [token]
+            }
+            let owner = await runner.owner
+            let stops = await runner.stoppedTokens
+            XCTAssertNil(owner)
+            XCTAssertTrue(stops.isEmpty)
+            try await requireStableCondition("durable cancellation is forwarded once", duration: 0.6) {
+                await runner.cancelledTokens == [token]
+            }
+            await runner.finishAllStreams()
+        }
+    }
+
+    func testPersistedCancellationBeforeAdmissionCancelsAfterStartReturnsWithoutRendering() async throws {
+        let token = store()
+        let runner = runner([.listening(partial: "must not render")])
+        let pip = RecordingPiPStandbyPresenter(isActive: true)
+        let manager = BackgroundDictationManager(engine: runner, pip: pip)
+        runner.startGates.enable(.commit, token: token)
+        let returned = LockedTestBox(false)
+        let task = Task { await manager.handlePendingRequest(); returned.set(true) }
+        defer { runner.startGates.releaseAll(); task.cancel() }
+        try await waitUntil("gated start entered") { await runner.requests.count == 1 }
+        XCTAssertTrue(DarwinBridge.cancelSession(token.rawValue))
+        try await requireStableCondition("no ineffective cancellation before admission", duration: 0.6) {
+            await runner.cancelledTokens.isEmpty
+        }
+        runner.startGates.releaseAll()
+        try await waitUntil("post-admission durable cancellation", timeout: 2) {
+            let cancelled = await runner.cancelledTokens
+            return returned.value && cancelled == [token]
+        }
+        let owner = await runner.owner
+        XCTAssertNil(owner)
+        XCTAssertTrue(pip.states.isEmpty, "Canceled admission must not briefly present buffered listening events")
+        await runner.finishAllStreams()
+    }
+
+    func testOldCancellationReconciliationCannotCancelReplacementAndTracksItsNewTombstone() async throws {
+        let runner = runner([.listening(partial: "live")])
+        let pip = RecordingPiPStandbyPresenter(isActive: true)
+        let manager = BackgroundDictationManager(engine: runner, pip: pip)
+        defer { withExtendedLifetime(manager) {} }
+        let old = store()
+        try await start(manager)
+        try await waitUntil("old owner active") { await runner.owner == old }
+        XCTAssertTrue(DarwinBridge.cancelSession(old.rawValue))
+        let replacement = store()
+        try await start(manager)
+        await runner.send(.listening(partial: "replacement"), token: replacement)
+        try await waitUntil("replacement visible") { pip.states.last == .recording("replacement") }
+        try await requireStableCondition("old polling cannot touch the replacement", duration: 1.1) {
+            let cancelled = await runner.cancelledTokens
+            let owner = await runner.owner
+            return !cancelled.contains(replacement) && owner == replacement
+                && pip.states.last == .recording("replacement")
+        }
+        XCTAssertTrue(DarwinBridge.cancelSession(replacement.rawValue))
+        try await waitUntil("replacement tombstone is independently reconciled", timeout: 2) {
+            await runner.cancelledTokens.filter { $0 == replacement }.count == 1
+        }
+        let stops = await runner.stoppedTokens
+        XCTAssertTrue(stops.isEmpty)
+        await runner.finishAllStreams()
+    }
+
+    func testUnavailableCancellationStorageConservativelyCancelsCurrentOwner() async throws {
+        let token = store()
+        let runner = runner([.listening(partial: "live")])
+        let pip = RecordingPiPStandbyPresenter(isActive: true)
+        let manager = BackgroundDictationManager(engine: runner, pip: pip)
+        defer { withExtendedLifetime(manager) {} }
+        try await start(manager)
+        try await waitUntil("owner admitted before storage loss") { await runner.owner == token }
+        DarwinBridge.setContainerDirectoryForTesting(nil)
+        defer { DarwinBridge.setContainerDirectoryForTesting(directory) }
+        try await waitUntil("unavailable storage fails closed for active owner", timeout: 2) {
+            await runner.cancelledTokens == [token]
+        }
+        let owner = await runner.owner
+        XCTAssertNil(owner)
+        await runner.finishAllStreams()
+    }
+
+    func testCancelNotificationDuringStartDefersEffectiveForwardUntilAdmission() async throws {
+        let token = store()
+        let runner = runner([.listening(partial: "must not render")])
+        let pip = RecordingPiPStandbyPresenter(isActive: true)
+        let manager = BackgroundDictationManager(engine: runner, pip: pip)
+        runner.startGates.enable(.commit, token: token)
+        let returned = LockedTestBox(false)
+        let task = Task { await manager.handlePendingRequest(); returned.set(true) }
+        defer { runner.startGates.releaseAll(); task.cancel() }
+        try await waitUntil("start entered before dedicated cancel") { await runner.requests.count == 1 }
+        try await runBoundedOperation("pre-admission cancel notification returns") {
+            await manager.handleCancelNotification(session: token.rawValue)
+        }
+        let beforeAdmission = await runner.cancelledTokens
+        XCTAssertTrue(beforeAdmission.isEmpty, "Sending cancel before the runner owns this token is ineffective")
+        runner.startGates.releaseAll()
+        try await waitUntil("deferred notification cancels admitted owner", timeout: 2) {
+            let cancelled = await runner.cancelledTokens
+            let owner = await runner.owner
+            return returned.value && cancelled == [token] && owner == nil
+        }
+        XCTAssertTrue(pip.states.isEmpty)
+        await runner.finishAllStreams()
+    }
+
     func testTerminalDetachesTokenBeforeLaterCommandsOrPiPStop() async throws {
         let runner = runner([.listening(partial: "done"), .completed(plan)], finishes: true)
         let pip = RecordingPiPStandbyPresenter(isActive: true)

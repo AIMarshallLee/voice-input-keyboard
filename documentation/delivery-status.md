@@ -9,7 +9,7 @@
 - 规格：[商用 V1](../docs/superpowers/specs/2026-09-04-voice-first-commercial-v1-design.md)。
 - 实施计划：[Slice A 九任务](../docs/superpowers/plans/2026-09-04-slice-a-reliable-session-engine.md)。
 - 当前断点：Task 1–7 已取得真实 RED、GREEN 和独立审查 PASS，实施验收进度 **7/9**。前台迁移 `faedeb6` 已修复退出、重开时丢失后继请求的问题并通过准确提交验证；这不是整个 App 的真机验收。
-- 下一动作：Task 8 已取得两阶段真实 RED（旧拉起分支行为、缺失新接口），并观察到真实 UIKit 插入会替换非空选区；同一实施者开始键盘手动恢复、结果保留和防误覆盖生产改造，随后运行准确提交的 GREEN 与独立审查。
+- 下一动作：Task 8 生产提交 `372dfec` 的独立审查发现 receipt-only 禁用重试、迁移回滚失败可遗留请求两项重要问题；另已确认上下文快照可能遮住新手动结果。按 R30/R31 修复并补回归，保持 **7/9**，不以正在通过的自动门禁替代审查验收。
 
 ## 自主执行约定（2026-09-20 生效）
 
@@ -55,12 +55,16 @@
 | 5 | Apple、文本、Darwin 生产适配 | 完成：`d58ed40` / #164 GREEN，两项审查问题修正，独立复审 PASS |
 | 6 | PiP/原地输入迁移 | 完成：`829e3b8` / #166 GREEN，独立规格、代码与证据审查 PASS |
 | 7 | 前台呈现迁移 | 完成：`faedeb6` / #170 GREEN，后继准入修复及独立规格/质量/证据复审 PASS |
-| 8 | 移除不支持的拉起与手动结果保留 | 进行中：#171 行为 RED / UIKit probe PASS、#172 缺失接口 RED；生产实现已获 GO，待 GREEN 与独立审查 |
+| 8 | 移除不支持的拉起与手动结果保留 | 修复中：`372dfec` / #173 自动门禁 GREEN，但独立审查未通过；补持久取消、迁移及重建恢复回归，暂不验收 |
 | 9 | 全量回归、Release/Archive 与文档 | 待做 |
 
 任务只有在实现、相应测试及审查证据齐全后才标为完成。后续 Slice 在前片出口有新证据且自己的实施计划完成审查后才能实施。
 
 ## 验证路径与本轮证据
+
+- `372dfec` / [CI #173](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/35531019490) **SUCCESS**，13m45s：实际 197 单元零失败（24.836s，26.327s wall）、4 个独立 UI 零失败（两 scheme 重复运行分别 174.522s / 51.008s，不算 8 个）、source gate、unsigned BUILD（19:15:59Z）和 ARCHIVE（19:16:47Z）通过。artifact `10610939870` / 5,050,883 bytes 是无签名产物，签名/Apple 上传跳过。该结果不覆盖独立审查确认的 receipt-only 禁用重试、迁移回滚双请求、快照遮挡；进一步只读检查确认后台不主动读取取消墓碑，键盘退出丢通知时无可靠停止上界。父级 R30/R31 与后续取消协调修复正在补测试。新 Timer 回调 main-actor 告警（KeyboardViewController:1853）也纳入修复；不宣称零警告或 Task 8 完成。
+
+- Task 8 生产实现 `372dfec1f3fb5a0d57c6a86636780acd1fe9640f` 已提交并非强制推送，[CI #173](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/35531019490) 已确认运行。实现手动恢复、双 UUID 迁移/取消、冻结预览三动作、选区保护及失败重试；source gate 置于测试与 unsigned Release 前。自查修正 responder traversal 正则漏检，并使失败迁移在 processing 时仍可按精确 token 重试。本地 plist 2/2（父级 0.025s）、source gate/语法/staged diff 通过，九类合成禁止调用分别被拒绝；脚本 Git 模式为 100755。独立规格/质量审查已启动；尚无本次 macOS GREEN，不增加已验收任务数，也没有合并或发布。
 
 - `git status --short` / `git branch --show-current` / `git rev-parse --git-dir --git-common-dir --show-superproject-working-tree`：确认上述 checkout 与保留差异。
 - `Get-Command xcodebuild` / `Get-Command swift`：两者当前均不可用。环境缺失不算测试 RED，也不能算测试通过。
