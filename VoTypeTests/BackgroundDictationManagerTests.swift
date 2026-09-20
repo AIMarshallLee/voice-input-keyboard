@@ -135,6 +135,31 @@ final class BackgroundDictationManagerTests: XCTestCase {
         XCTAssertTrue(cancels.isEmpty)
     }
 
+    func testHotTimeoutSendsCancelWhenOldRunnerIsAlreadyProcessing() async throws {
+        let old = store()
+        let manual = SessionToken()
+        let original = try XCTUnwrap(DarwinBridge.peekDictationSettings(expectedSession: old.rawValue))
+        let runner = runner([.preparing, .processing])
+        let pip = RecordingPiPStandbyPresenter(isActive: true)
+        let manager = BackgroundDictationManager(engine: runner, pip: pip)
+        try await start(manager)
+        try await waitUntil("old runner processing") { pip.states.last == .processing("") }
+        guard case .moved = DarwinBridge.handoffDictationSettingsToManual(
+            from: old, to: manual, original: original) else {
+            return XCTFail("Expected manual handoff after old settings were consumed")
+        }
+        try await runBoundedOperation("dedicated cancel reaches processing runner") {
+            await manager.handleCancelNotification(session: old.rawValue)
+        }
+        let cancelled = await runner.cancelledTokens
+        let stopped = await runner.stoppedTokens
+        XCTAssertEqual(cancelled, [old])
+        XCTAssertTrue(stopped.isEmpty)
+        XCTAssertEqual(DarwinBridge.commit(.failed(.recognition), token: old), .cancelled)
+        XCTAssertEqual(DarwinBridge.peekDictationSettings(expectedSession: manual.rawValue)?.session, manual.rawValue)
+        await runner.finishAllStreams()
+    }
+
     func testTerminalDetachesTokenBeforeLaterCommandsOrPiPStop() async throws {
         let runner = runner([.listening(partial: "done"), .completed(plan)], finishes: true)
         let pip = RecordingPiPStandbyPresenter(isActive: true)

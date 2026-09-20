@@ -1,4 +1,5 @@
 import XCTest
+import CryptoKit
 @testable import VoiceInputApp
 
 final class DictationConstantsTests: XCTestCase {
@@ -23,6 +24,263 @@ final class DictationConstantsTests: XCTestCase {
             try? FileManager.default.removeItem(at: ipcDirectory)
         }
         try super.tearDownWithError()
+    }
+
+    // MARK: - Manual recovery and held-result contracts
+
+    private func handoffSettings(_ token: SessionToken, timestamp: TimeInterval = Date().timeIntervalSince1970) -> DictationSettings {
+        DictationSettings(language: "ja-JP", whisper: true, translateEnabled: true,
+            translateTarget: "en-US", selectedText: "original selection", keyboardType: 7,
+            session: token.rawValue, expectedContextFingerprint: "fingerprint", timestamp: timestamp)
+    }
+
+    private var heldPlan: EditPlan {
+        EditPlan(intent: .dictate, operation: .insertAtCursor, text: "result",
+                 expectedContextFingerprint: "fingerprint", requiresConfirmation: false)
+    }
+
+    private func businessBytes() throws -> [String: Data] {
+        let urls = try FileManager.default.contentsOfDirectory(at: ipcDirectory, includingPropertiesForKeys: nil)
+        return try Dictionary(uniqueKeysWithValues: urls.filter { $0.pathExtension == "json" }.map {
+            ($0.lastPathComponent, try Data(contentsOf: $0))
+        })
+    }
+
+    private func businessURL(_ kind: String, token: SessionToken) -> URL {
+        let digest = SHA256.hash(data: Data(token.rawValue.utf8)).map { String(format: "%02x", $0) }.joined()
+        return ipcDirectory.appendingPathComponent("dictation-\(kind)-\(digest).json")
+    }
+
+    func testTypedPreviewConsumeRaceReturnsPayloadOnlyOnceAndPreservesReceipt() throws {
+        let token = SessionToken()
+        let other = SessionToken()
+        XCTAssertEqual(DarwinBridge.commit(.completed(heldPlan), token: token), .written)
+        XCTAssertEqual(DarwinBridge.commit(.completed(heldPlan), token: other), .written)
+        let preview = try XCTUnwrap(DarwinBridge.peekResult(expectedSession: token.rawValue))
+        let receipt = try Data(contentsOf: businessURL("terminal", token: token))
+        let otherBytes = try Data(contentsOf: businessURL("result", token: other))
+        let winner = try XCTUnwrap(DarwinBridge.readAndConsumeResult(expectedSession: token.rawValue))
+        XCTAssertEqual(winner, preview)
+        XCTAssertTrue(KeyboardHeldEditValidator.consumedResultMatchesPreview(previewed: preview, consumed: winner))
+        // A second action holding the same preview loses the consume race.
+        XCTAssertNil(DarwinBridge.readAndConsumeResult(expectedSession: token.rawValue))
+        XCTAssertEqual(try Data(contentsOf: businessURL("terminal", token: token)), receipt)
+        XCTAssertEqual(try Data(contentsOf: businessURL("result", token: other)), otherBytes)
+        XCTAssertEqual(DarwinBridge.commit(.failed(.recognition), token: token), .alreadyTerminal)
+    }
+
+    func testSelectionRejectionLeavesPublishedPayloadAndReceiptBytesUntouched() throws {
+        for operation in [EditOperation.insertAtCursor, .previewOnly] {
+            let token = SessionToken()
+            let plan = EditPlan(intent: .rewrite, operation: operation, text: "result",
+                                expectedContextFingerprint: nil, requiresConfirmation: true)
+            XCTAssertEqual(DarwinBridge.commit(.completed(plan), token: token), .written)
+            let preview = try XCTUnwrap(DarwinBridge.peekResult(expectedSession: token.rawValue))
+            let bytes = try businessBytes()
+            // Pure validator + real IPC retention contract, not a keyboard controller test.
+            XCTAssertEqual(KeyboardHeldEditValidator.decide(
+                plan: try XCTUnwrap(preview.editPlan), previewedToken: token, heldToken: token,
+                snapshotToken: nil, snapshotFingerprint: nil, hasContextEvidence: false,
+                contextMatches: false, currentSelectedText: "original selection"), .reject)
+            XCTAssertEqual(try businessBytes(), bytes)
+            XCTAssertEqual(DarwinBridge.peekResult(expectedSession: token.rawValue), preview)
+            // Copy/Discard can still consume that exact payload after rejection.
+            XCTAssertEqual(DarwinBridge.readAndConsumeResult(expectedSession: token.rawValue), preview)
+        }
+    }
+
+    func testHotTimeoutHandoffCopiesImmutableSettingsAfterBackgroundClaimAndBlocksOldWrites() throws {
+        let old = SessionToken()
+        let manual = SessionToken()
+        let now = Date().timeIntervalSince1970
+        let original = handoffSettings(old, timestamp: now)
+        XCTAssertTrue(DarwinBridge.writeDictationSettings(original))
+        XCTAssertEqual(DarwinBridge.readAndConsumeDictationSettings(expectedSession: old.rawValue), original)
+        XCTAssertTrue(DarwinBridge.writeLiveState(phase: .processing, session: old.rawValue))
+        guard case .moved(let replacement) = DarwinBridge.handoffDictationSettingsToManual(
+            from: old, to: manual, original: original, timestamp: now - 1) else {
+            return XCTFail("Expected a fresh pending manual request")
+        }
+        XCTAssertEqual(replacement, DictationSettings(language: "ja-JP", whisper: true,
+            translateEnabled: true, translateTarget: "en-US", selectedText: "original selection",
+            keyboardType: 7, session: manual.rawValue, expectedContextFingerprint: "fingerprint",
+            timestamp: now.nextUp))
+        XCTAssertEqual(DarwinBridge.peekPendingDictationSettings(), replacement)
+        XCTAssertNil(DarwinBridge.peekDictationSettings(expectedSession: old.rawValue))
+        XCTAssertNil(DarwinBridge.readLiveState(expectedSession: old.rawValue))
+        XCTAssertTrue(DarwinBridge.isSessionCancelled(session: old.rawValue))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: businessURL("terminal", token: old).path))
+        XCTAssertEqual(DarwinBridge.commit(.completed(heldPlan), token: old), .cancelled)
+        XCTAssertEqual(DarwinBridge.commit(.failed(.recognition), token: old), .cancelled)
+        XCTAssertFalse(DarwinBridge.writeLiveState(phase: .listening, session: old.rawValue))
+        XCTAssertFalse(DarwinBridge.writeDictationSettings(original))
+        XCTAssertFalse(DarwinBridge.requeueDictationSettingsIfNotSuperseded(original))
+        XCTAssertEqual(DarwinBridge.peekDictationSettings(expectedSession: manual.rawValue), replacement)
+    }
+
+    func testHandoffTerminalPayloadAndConsumedReceiptRemainUnchanged() throws {
+        for mode in ["published", "consumed", "result-only"] {
+            let old = SessionToken()
+            let original = handoffSettings(old)
+            XCTAssertTrue(DarwinBridge.writeDictationSettings(original))
+            XCTAssertEqual(DarwinBridge.commit(.completed(heldPlan), token: old), .written)
+            if mode == "consumed" {
+                XCTAssertNotNil(DarwinBridge.readAndConsumeResult(expectedSession: old.rawValue))
+            } else if mode == "result-only" {
+                try FileManager.default.removeItem(at: businessURL("terminal", token: old))
+            }
+            let bytes = try businessBytes()
+            XCTAssertEqual(DarwinBridge.handoffDictationSettingsToManual(
+                from: old, to: SessionToken(), original: original), .alreadyTerminal, mode)
+            XCTAssertEqual(try businessBytes(), bytes, mode)
+        }
+    }
+
+    func testHandoffMalformedAndExpiredSourceTerminalFilesAreReadOnlyBarriers() throws {
+        for kind in ["terminal", "result"] {
+            for malformed in [false, true] {
+                let old = SessionToken()
+                let original = handoffSettings(old)
+                XCTAssertTrue(DarwinBridge.writeDictationSettings(original))
+                let expired = kind == "terminal"
+                    ? "{\"session\":\"\(old.rawValue)\",\"timestamp\":1}"
+                    : "{\"session\":\"\(old.rawValue)\",\"status\":\"completed\",\"text\":\"expired\",\"timestamp\":1}"
+                try Data((malformed ? "broken-json" : expired).utf8).write(to: businessURL(kind, token: old))
+                let bytes = try businessBytes()
+                XCTAssertEqual(DarwinBridge.handoffDictationSettingsToManual(
+                    from: old, to: SessionToken(), original: original), .alreadyTerminal)
+                XCTAssertEqual(try businessBytes(), bytes)
+                // Isolate deliberately stale/corrupt fixtures from later public-API GC.
+                DarwinBridge.clearIPCFilesForTesting()
+            }
+        }
+    }
+
+    func testHandoffCancelledSourceAndOccupiedReplacementNeverChangeBusinessFiles() throws {
+        for kind in ["settings", "result", "terminal", "cancel"] {
+            let old = SessionToken()
+            let replacement = SessionToken()
+            let original = handoffSettings(old)
+            XCTAssertTrue(DarwinBridge.writeDictationSettings(original))
+            switch kind {
+            case "settings": XCTAssertTrue(DarwinBridge.writeDictationSettings(handoffSettings(replacement)))
+            case "cancel": XCTAssertTrue(DarwinBridge.cancelSession(replacement.rawValue))
+            default:
+                XCTAssertEqual(DarwinBridge.commit(.completed(heldPlan), token: replacement), .written)
+                if kind == "terminal" {
+                    XCTAssertNotNil(DarwinBridge.readAndConsumeResult(expectedSession: replacement.rawValue))
+                } else {
+                    try FileManager.default.removeItem(at: businessURL("terminal", token: replacement))
+                }
+            }
+            let bytes = try businessBytes()
+            XCTAssertEqual(DarwinBridge.handoffDictationSettingsToManual(
+                from: old, to: replacement, original: original), .failed, kind)
+            XCTAssertEqual(try businessBytes(), bytes, kind)
+        }
+        let old = SessionToken()
+        let original = handoffSettings(old)
+        XCTAssertTrue(DarwinBridge.writeDictationSettings(original))
+        XCTAssertTrue(DarwinBridge.cancelSession(old.rawValue))
+        let bytes = try businessBytes()
+        XCTAssertEqual(DarwinBridge.handoffDictationSettingsToManual(
+            from: old, to: SessionToken(), original: original), .failed)
+        XCTAssertEqual(try businessBytes(), bytes)
+    }
+
+    func testHandoffCorruptAndExpiredOccupancyCannotBeCleanedOrReused() throws {
+        for kind in ["settings", "result", "terminal", "cancel"] {
+            for malformed in [false, true] {
+                let old = SessionToken()
+                let replacement = SessionToken()
+                let original = handoffSettings(old)
+                XCTAssertTrue(DarwinBridge.writeDictationSettings(original))
+                let expired: Data
+                switch kind {
+                case "settings": expired = try JSONEncoder().encode(handoffSettings(replacement, timestamp: 1))
+                case "result": expired = try JSONEncoder().encode(DictationIPCResult(status: .completed,
+                    text: "expired", token: replacement, editPlan: heldPlan, timestamp: 1))
+                default: expired = Data("{\"session\":\"\(replacement.rawValue)\",\"timestamp\":1}".utf8)
+                }
+                try (malformed ? Data("broken-json".utf8) : expired).write(to: businessURL(kind, token: replacement))
+                let bytes = try businessBytes()
+                XCTAssertEqual(DarwinBridge.handoffDictationSettingsToManual(
+                    from: old, to: replacement, original: original), .failed)
+                XCTAssertEqual(try businessBytes(), bytes)
+                DarwinBridge.clearIPCFilesForTesting()
+            }
+        }
+        for malformed in [false, true] {
+            let old = SessionToken()
+            let original = handoffSettings(old)
+            XCTAssertTrue(DarwinBridge.writeDictationSettings(original))
+            let expired = "{\"session\":\"\(old.rawValue)\",\"timestamp\":1}"
+            try Data((malformed ? "broken-json" : expired).utf8).write(to: businessURL("cancel", token: old))
+            let bytes = try businessBytes()
+            XCTAssertEqual(DarwinBridge.handoffDictationSettingsToManual(
+                from: old, to: SessionToken(), original: original), .failed)
+            XCTAssertEqual(try businessBytes(), bytes)
+            DarwinBridge.clearIPCFilesForTesting()
+        }
+    }
+
+    func testHandoffInvalidIdentityOrTimestampIsReadOnly() throws {
+        let old = SessionToken()
+        let replacement = SessionToken()
+        let original = handoffSettings(old)
+        XCTAssertTrue(DarwinBridge.writeDictationSettings(original))
+        let bytes = try businessBytes()
+        XCTAssertEqual(DarwinBridge.handoffDictationSettingsToManual(from: old, to: old, original: original), .failed)
+        XCTAssertEqual(DarwinBridge.handoffDictationSettingsToManual(
+            from: old, to: replacement, original: handoffSettings(SessionToken())), .failed)
+        for timestamp in [0.0, -1.0, Double.nan, Double.infinity] {
+            XCTAssertEqual(DarwinBridge.handoffDictationSettingsToManual(
+                from: old, to: replacement, original: original, timestamp: timestamp), .failed)
+            XCTAssertEqual(try businessBytes(), bytes)
+        }
+    }
+
+    func testHandoffMissingContainerFailsWithoutChangingExistingFiles() throws {
+        let old = SessionToken()
+        let original = handoffSettings(old)
+        XCTAssertTrue(DarwinBridge.writeDictationSettings(original))
+        let bytes = try businessBytes()
+        DarwinBridge.setContainerDirectoryForTesting(nil)
+        defer { DarwinBridge.setContainerDirectoryForTesting(ipcDirectory) }
+        XCTAssertEqual(DarwinBridge.handoffDictationSettingsToManual(
+            from: old, to: SessionToken(), original: original), .failed)
+        XCTAssertEqual(try businessBytes(), bytes)
+    }
+
+    func testExplicitRetryUsesFreshManualUUIDAndCannotReplayOldTerminal() throws {
+        let old = SessionToken()
+        let retry = SessionToken()
+        XCTAssertEqual(DarwinBridge.commit(.failed(.recognition), token: old), .written)
+        XCTAssertNotNil(DarwinBridge.readAndConsumeResult(expectedSession: old.rawValue))
+        let oldReceipt = try Data(contentsOf: businessURL("terminal", token: old))
+        let suite = "ManualRetry-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let snapshot = try XCTUnwrap(KeyboardSessionRecoveryStore.save(
+            session: retry.rawValue, launchMode: .manualOpen, contextBefore: "new field",
+            contextAfter: nil, selectedText: nil, defaults: defaults))
+        XCTAssertNotEqual(retry, old)
+        let settings = DictationSettings(language: "zh-CN", whisper: false,
+            translateEnabled: false, translateTarget: "en-US", selectedText: nil,
+            keyboardType: 0, session: retry.rawValue, expectedContextFingerprint: snapshot.contextFingerprint)
+        XCTAssertTrue(DarwinBridge.writeDictationSettings(settings))
+        XCTAssertEqual(DarwinBridge.peekPendingDictationSettings(), settings)
+        XCTAssertEqual(snapshot.session, retry.rawValue)
+        XCTAssertNil(DarwinBridge.peekResult(expectedSession: retry.rawValue))
+        XCTAssertEqual(DarwinBridge.commit(.completed(heldPlan), token: old), .alreadyTerminal)
+        XCTAssertNil(DarwinBridge.peekResult(expectedSession: old.rawValue))
+        XCTAssertEqual(try Data(contentsOf: businessURL("terminal", token: old)), oldReceipt)
+        XCTAssertEqual(DarwinBridge.commit(.completed(heldPlan), token: retry), .written)
+        XCTAssertEqual(KeyboardResultDispositionPolicy.decide(
+            launchMode: snapshot.launchMode, belongsToCurrentExtensionInstance: true,
+            currentSelectedText: nil, hasContextEvidence: snapshot.hasContextEvidence,
+            contextMatches: true, operation: .insertAtCursor, requiresConfirmation: false), .hold)
+        XCTAssertNotNil(DarwinBridge.peekResult(expectedSession: retry.rawValue))
     }
 
     // MARK: - URL 构建 (Path B 降级路径)

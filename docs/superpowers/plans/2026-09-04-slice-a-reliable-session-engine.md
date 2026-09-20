@@ -3368,6 +3368,8 @@ git commit -m "refactor: route foreground dictation through engine"
 
 **R26 — selection safety:** Existing typed processing can produce `.insertAtCursor` with nonempty selected text when voice editing is disabled; legacy `.previewOnly` can coexist with a selected field. Do not equate the operation name with a non-destructive platform mutation. Before implementing, add a real UIKit `UITextView` selection/insertion probe on macOS (synthetic text only), plus policy/validator regressions. Automatic insertion must hold when the snapshotted current selection is nonempty; explicit insert/preview-only must reject before consuming in that case, leaving Copy/Discard available and asking the user to clear the selection before inserting. Only the already specified, context-validated and explicitly confirmed replace/delete paths may modify a live selection. Pass the same captured selection through policy and validation; do not reread it between validation and mutation. This enforces the existing no-silent-deletion invariant, not a new editing feature. The UIKit probe is not proof of third-party keyboard/device behavior.
 
+**R27 — preserve existing receipt semantics and read-only rejection:** `DarwinBridge.commit(.completed)` already writes the terminal receipt at publication, before any keyboard consumption. Rejected held actions must leave the pending payload and existing receipt bytes unchanged, not require an absent receipt or move its creation later. Successful consumption preserves that first-writer barrier. Handoff preconditions use non-mutating file-existence checks under the coordinated locks: even malformed/expired source terminal files mean `.alreadyTerminal`, and an existing source cancellation or occupied replacement file means `.failed`. Do not use cleanup-capable `readUncoordinated`, recursively lock through public helpers, or delete such evidence in these rejection paths. Compare actual IPC business-file bytes in tests; lock coordination metadata is not a business write. The existing test-container injection is sufficient; do not add a production fault-injection interface solely to claim the second-write rollback branch was executed. Record that branch's runtime coverage honestly. This clarifies existing idempotence/no-mutation requirements, with conservative rejection of an unusable UUID rather than silently reusing it.
+
 **Files:**
 - Create: `Shared/KeyboardResultDispositionPolicy.swift`
 - Create: `Shared/DictationHotAckCoordinator.swift`
@@ -4047,7 +4049,7 @@ static func handoffDictationSettingsToManual(
 
 Implement it under a new `withTwoSessionLocks` helper that acquires the source and replacement lock URLs in lexicographically sorted token order through one `NSFileCoordinator` two-item write coordination while holding the existing process-local `ioLock`. The body must enforce all of these rules in order:
 
-1. Source and replacement differ, `original.session == source.rawValue`, both tokens are already validated, and `timestamp > 0`.
+1. Source and replacement differ, `original.session == source.rawValue`, both tokens are already validated, and `timestamp.isFinite && timestamp > 0`.
 2. If the source has a terminal receipt or result, return `.alreadyTerminal` without writing or deleting anything.
 3. If the source is already cancelled, or any settings/result/receipt/cancellation file exists for the fresh replacement UUID, return `.failed`.
 4. Construct replacement settings by copying language, whisper, translation, selection, keyboard type, and `expectedContextFingerprint`; set only `session = replacement.rawValue` and `timestamp = max(timestamp, original.timestamp.nextUp)`.
@@ -4249,9 +4251,9 @@ Before `readAndConsumeResult`, inspect the pending plan and current recovery sna
 
 For every held result, store its session ID in `private var currentHeldSession: String?` and show `HeldResultActionView` with accessible buttons “插入”, “复制”, and “丢弃”:
 
-- Insert: snapshot current proxy context once, call `KeyboardHeldEditValidator.decide` before consumption, and reject without a receipt if it returns `.reject`; then consume, require the consumed payload to exactly equal the preview, and synchronously apply the prevalidated action on the same main-thread turn.
+- Insert: snapshot current proxy context once, call `KeyboardHeldEditValidator.decide` before consumption, and leave the pending payload and existing receipt unchanged if it returns `.reject`; then consume, require the consumed payload to exactly equal the preview, and synchronously apply the prevalidated action on the same main-thread turn.
 - Copy: consume only the currently previewed session, require exact preview/consumed identity, set `UIPasteboard.general.string` to nonempty plan text, and perform no document mutation.
-- Discard: consume only the currently previewed session and ignore the returned content; this creates the receipt and blocks a late duplicate.
+- Discard: consume only the currently previewed session and ignore the returned content; preserve the existing terminal receipt so a late duplicate stays blocked.
 
 Create the action row as a small UIKit component whose only responsibility is forwarding explicit taps:
 
@@ -4357,7 +4359,7 @@ case .reject:
 }
 ```
 
-The automatic non-destructive path uses the same peek → policy → consume → exact-equality sequence before `insertText`. `.previewOnly` can become only an explicit `.insertAtCursor`; it never deletes selection. A required confirmation with missing/changed selection stays held and shows “选区或输入位置已变化，未修改原文”. If another consumer wins after preview, `readAndConsumeResult` returns `nil`; do not mutate, copy, clear a different session, or fabricate a success state. No receipt is created until prevalidation succeeds.
+The automatic non-destructive path uses the same peek → policy → consume → exact-equality sequence before `insertText`. `.previewOnly` can become only an explicit `.insertAtCursor`; it never deletes selection. A required confirmation with missing/changed selection stays held and shows “选区或输入位置已变化，未修改原文”. If another consumer wins after preview, `readAndConsumeResult` returns `nil`; do not mutate, copy, clear a different session, or fabricate a success state. Prevalidation rejection performs no consumption or new persistence side effect; the publication-time terminal receipt remains unchanged.
 
 - [ ] **Step 7: Add the distribution source gate**
 
@@ -4591,7 +4593,7 @@ Expected: a clean worktree on the Slice A branch. Record the exact commit SHA an
 - [ ] Cold and timed-out hot routes instruct manual open within the required bound and never call unsupported launch APIs.
 - [ ] The 1.2-second hot acknowledgement timer is tested through its injected scheduler and cancels on only the matching acknowledgement.
 - [ ] A hot timeout cannot strand consumed settings: a fresh manual token is pending before the old token is stopped, and late old acknowledgements/results are ignored or rejected.
-- [ ] Manual/recreated/empty/destructive results stay held; token/context/selection/fingerprint are prevalidated, the consumed payload must equal the preview, and no receipt is written before prevalidation and explicit action.
+- [ ] Manual/recreated/empty/destructive results stay held; token/context/selection/fingerprint are prevalidated, the consumed payload must equal the preview, and rejection leaves the pending payload and publication-time receipt unchanged.
 - [ ] New result encoding writes `EditPlan`; legacy destructive decoding is non-destructive.
 - [ ] Full unit/UI, source gate, unsigned Release, archive contents, and `git diff --check` have fresh evidence.
 - [ ] Physical-device and Apple distribution gates remain explicitly `EXTERNAL / NOT_RUN`.

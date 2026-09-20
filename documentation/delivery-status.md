@@ -9,7 +9,7 @@
 - 规格：[商用 V1](../docs/superpowers/specs/2026-09-04-voice-first-commercial-v1-design.md)。
 - 实施计划：[Slice A 九任务](../docs/superpowers/plans/2026-09-04-slice-a-reliable-session-engine.md)。
 - 当前断点：Task 1–7 已取得真实 RED、GREEN 和独立审查 PASS，实施验收进度 **7/9**。前台迁移 `faedeb6` 已修复退出、重开时丢失后继请求的问题并通过准确提交验证；这不是整个 App 的真机验收。
-- 下一动作：Task 8 先验证现有自动拉起策略的行为失败与 UIKit 选区插入行为，再补齐手动恢复、结果保留和防误覆盖测试；真实 RED 后才实施键盘生产改造。
+- 下一动作：Task 8 首阶段已复现旧拉起分支错误，并观察到真实 UIKit 插入会替换非空选区；现在补齐手动恢复、结果保留和防误覆盖契约测试，取得其缺失接口 RED 后才实施键盘生产改造。
 
 ## 自主执行约定（2026-09-20 生效）
 
@@ -55,7 +55,7 @@
 | 5 | Apple、文本、Darwin 生产适配 | 完成：`d58ed40` / #164 GREEN，两项审查问题修正，独立复审 PASS |
 | 6 | PiP/原地输入迁移 | 完成：`829e3b8` / #166 GREEN，独立规格、代码与证据审查 PASS |
 | 7 | 前台呈现迁移 | 完成：`faedeb6` / #170 GREEN，后继准入修复及独立规格/质量/证据复审 PASS |
-| 8 | 移除不支持的拉起与手动结果保留 | 进行中：先做现有拉起策略行为 RED 与 UIKit 选区 probe，未改生产 |
+| 8 | 移除不支持的拉起与手动结果保留 | 进行中：#171 两处准确行为 RED、UIKit probe PASS；第二阶段契约测试编写中，未改生产 |
 | 9 | 全量回归、Release/Archive 与文档 | 待做 |
 
 任务只有在实现、相应测试及审查证据齐全后才标为完成。后续 Slice 在前片出口有新证据且自己的实施计划完成审查后才能实施。
@@ -98,7 +98,9 @@
 - [Task 7 初版 CI #168](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/35525931280) **SUCCESS**，准确源码 `b7f2c3dc97c3ac3d4f823cfc8bc0ad9548fbc8f8`，build job 12m42s。实际日志为 170 单元零失败（模型 23、协调器 2）、4 个独立 UI 在两个 scheme 均通过，unsigned BUILD 17:39:26Z / ARCHIVE 17:40:16Z 成功；artifact `10609597995`（4,965,979 bytes）为无签名 CI 产物。没有点名本项变更文件的诊断；现有弃用/工具提示保留。签名、上传和元数据步骤跳过。**此 GREEN 不表示 Task 7 验收**：独立审查发现 gated A 退出后 B 被全局启动标记丢弃，正在加入行为回归。修复仅串行未完成的准入，已领取但排队中取消的请求仍由引擎结束，不引入额外录音所有者。
 - [Task 7 行为 RED #169](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/35527213277) **FAILURE**，准确源码 `e3cf37d8be1ea78be897867ed11edd897bd30f88`，build job 8m46s。172 单元仅两处目标失败：17:56:32Z 排队 B 未领取请求、17:56:35Z 重开 B 未同步领取请求；其余单元及 4 个独立 UI 通过，编译/环境正常。已确认全局启动标记丢失后继请求，开始模型内准入顺序最小修复；不是环境缺失或新增接口编译错误。修复不改变引擎协议、终态所有者或录音架构。
 - [Task 7 GREEN #170](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/35527822788) **SUCCESS**，准确源码 `faedeb69f6adcf6da045ad2070fb3a6d6a1eb081`，build job 16m56s。172 单元零失败（19.795s / 22.214s wall），模型 25/25；排队中退出/取消 1.022s、A 退出后 B 正常接续 0.601s 通过。4 个独立 UI 在两个 scheme 均通过（220.646s / 62.390s）；unsigned BUILD 18:19:38Z / ARCHIVE 18:20:23Z 成功。artifact `10609983622`（VoType-IPA，4,978,302 bytes）为无签名产物，签名、App Store Connect、元数据步骤跳过。没有点名本项变更文件的诊断，已有兼容弃用和工具提示仍保留。独立规格/质量/证据复审 PASS，Task 7 验收完成；没有把较慢但仍在运行的 CI 重启。
-- Task 8 准备识别到选区风险：关闭语音编辑时仍可能产生携带非空选区的普通插入结果。已把非空选区的保留/拒绝、明确复制/丢弃及一次快照校验加入测试要求；平台实际插入行为待真实 UIKit probe，不以推测充当结果。真实第三方键盘行为仍需真机验证。
+- Task 8 选区风险：关闭语音编辑时仍可能产生携带非空选区的普通插入结果。已把非空选区的保留/拒绝、明确复制/丢弃及一次快照校验加入测试要求；#171 的真实 UIKit 合成实验确认 `UITextView.insertText` 替换非空选区，不能仅凭 `.insertAtCursor` 名称视为无破坏。真实第三方键盘行为仍需真机验证。
+- [Task 8 第一阶段 RED #171](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/35529007106) **FAILURE**，准确源码 `c1dc4b0d7b8720c9e32711c6de42a34a888c13b3`，build job 9m5s。173 单元仅两处目标失败：18:31:28Z，LaunchPolicyTests 的冷路径及 1.2 秒超时路径实际返回 `openContainingApp` 而非 `showManualRecovery`，没有缺失接口或编译错误。真实 `UITextView` 选区实验 0.126s PASS，4 个独立 UI 68.074s PASS；失败后 Release/Archive/签名/分发未执行。已向同一实施者发第二阶段 TEST-ONLY GO，补齐剩余契约回归，再跑缺失接口 RED。没有改 Task 8 生产逻辑或发布新候选。
+- Task 8 预检纠正回执语义：现有终态发布已写防重复 receipt；拒绝插入应保持原结果和 receipt 字节不变，不能要求 receipt 不存在。双会话迁移的拒绝检查不得调用会删过期/损坏文件的 reader。沿用真实临时 IPC 文件验证，不引入生产故障注入接口；第二次写入失败回滚分支若无法确定性触发，必须如实标为未运行。
 - 真机语音/跨 App/权限/PiP：**EXTERNAL / NOT_RUN（本轮）**。历史用户测试曾暴露缺陷，不抹去历史结果。
 
 ## 发布基线

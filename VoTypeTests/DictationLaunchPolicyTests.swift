@@ -33,18 +33,10 @@ final class DictationLaunchPolicyTests: XCTestCase {
         )
     }
 
-    func testEveryUnresponsiveRouteEndsWithManualRecovery() {
-        for initial in [
-            DictationLaunchAction.requestInPlace,
-            DictationLaunchAction.openContainingApp
-        ] {
-            XCTAssertEqual(
-                DictationLaunchPolicy.actionAfterNoResponse(
-                    elapsed: DictationLaunchPolicy.manualRecoveryDeadline,
-                    initialAction: initial
-                ),
-                .showManualRecovery
-            )
-        }
+    func testUnansweredHotRequestStaysManualAfterDeadline() {
+        XCTAssertEqual(
+            DictationLaunchPolicy.actionAfterNoResponse(elapsed: 10, initialAction: .requestInPlace),
+            .showManualRecovery
+        )
     }
 }
