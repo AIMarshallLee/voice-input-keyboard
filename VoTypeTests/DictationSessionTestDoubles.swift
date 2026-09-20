@@ -713,6 +713,7 @@ actor RecordingSessionRunner: DictationSessionRunning {
     private var isClosed = false
     private(set) var requests: [DictationSessionRequest] = []
     private(set) var settingsPresentAtStart: [Bool] = []
+    private(set) var cancellationsAtStart: [[SessionToken]] = []
     private(set) var admittedTokens: [SessionToken] = []
     private(set) var stoppedTokens: [SessionToken] = []
     private(set) var cancelledTokens: [SessionToken] = []
@@ -726,6 +727,7 @@ actor RecordingSessionRunner: DictationSessionRunning {
 
     func start(_ request: DictationSessionRequest) async -> AsyncStream<DictationSessionEventEnvelope> {
         settingsPresentAtStart.append(DarwinBridge.peekDictationSettings(expectedSession: request.token.rawValue) != nil)
+        cancellationsAtStart.append(cancelledTokens)
         requests.append(request)
         await startGates.waitIfEnabled(.commit, token: request.token)
         admittedTokens.append(request.token)

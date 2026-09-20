@@ -3206,6 +3206,8 @@ func testActiveAppEnqueuesPendingRequestWithoutDeepLink() throws {
 }
 ```
 
+**R25 — successor admission (independent review refinement):** A model-wide start-in-flight rejection must not discard B after cleanup of gated A. B still claims its exact settings synchronously, then waits for A's admission and necessary detached-A cancellation, never for A's event-stream lifetime. Preserve admission order A then B and reject late A UI effects. If already-claimed B leaves while queued, admit and immediately cancel B through the engine so it receives an engine-owned terminal; do not silently drop it. This retains the existing delayed-cancellation contract and does not promise zero permission work during a cancellation race. Already-returned A may keep exact-token asynchronous cleanup: engine admission B synchronously retires A, and late cancel(A) cannot cancel B. No general cancellation queue or new engine protocol is required. Add gated successor and queued-successor cleanup/cancel regressions before the repair, including cancellation-at-start observation and finite teardown.
+
 - [ ] **Step 2: Run `DictationViewModelTests` and observe the missing injection path**
 
 Run:

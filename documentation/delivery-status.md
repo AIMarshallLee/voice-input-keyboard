@@ -8,8 +8,8 @@
 - 职责机制：[窗口 Agent 规划书](../docs/superpowers/specs/2026-09-05-votype-continuous-delivery-agent-charter.md)，用户已回复“同意”。
 - 规格：[商用 V1](../docs/superpowers/specs/2026-09-04-voice-first-commercial-v1-design.md)。
 - 实施计划：[Slice A 九任务](../docs/superpowers/plans/2026-09-04-slice-a-reliable-session-engine.md)。
-- 当前断点：Task 1–6 已取得真实 RED、GREEN 和独立审查 PASS，实施验收进度 **6/9**。统一引擎和画中画/原地入口已接通，前台入口仍待迁移，不能据此认定 App 真机可用。
-- 下一动作：Task 7 前台呈现迁移已取得准确 macOS RED，开始接入同一引擎；随后取得 GREEN 与独立审查。保留安全的手动打开路径和键盘停止/取消控制。
+- 当前断点：Task 1–6 已取得真实 RED、GREEN 和独立审查 PASS，实施验收进度 **6/9**。前台迁移候选 `b7f2c3d` 已提交，但独立审查发现快速退出、重开时可能丢失后继请求，尚未验收；不能据此认定 App 真机可用。
+- 下一动作：先为 Task 7 后继准入问题取得行为 RED，再完成最小修复、准确提交 GREEN 与独立复审。保留安全的手动打开路径和键盘停止/取消控制。
 
 ## 自主执行约定（2026-09-20 生效）
 
@@ -54,7 +54,7 @@
 | 4 | 截止时间、迟到回调、竞态与重用 | 完成：`5247153`，#159 GREEN，独立审查 PASS |
 | 5 | Apple、文本、Darwin 生产适配 | 完成：`d58ed40` / #164 GREEN，两项审查问题修正，独立复审 PASS |
 | 6 | PiP/原地输入迁移 | 完成：`829e3b8` / #166 GREEN，独立规格、代码与证据审查 PASS |
-| 7 | 前台呈现迁移 | 进行中：`dc66ac1` / #167 有效 missing-seam RED，生产改造中 |
+| 7 | 前台呈现迁移 | 进行中：初版 `b7f2c3d`；独立审查发现启动中退出、重开会丢后继请求，补充回归与修复中 |
 | 8 | 移除不支持的拉起与手动结果保留 | 待做 |
 | 9 | 全量回归、Release/Archive 与文档 | 待做 |
 
@@ -95,6 +95,7 @@
 - [Task 6 GREEN #166](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/35523520321) **SUCCESS**，准确源码 `829e3b83814cd8cbbf0ce0a63cbd144c27c4c44d`（UTC 2026-09-20 16:41:55–16:50:03，8m8s）。153 单元零失败（14.549s / 26.716s wall），含后台适配 13/13、PiP 9/9、引擎 25/25；4 个独立 UI 在两个 scheme 均通过（54.838s / 41.645s）。挂起 A→B 准入 0.458s、启动中关闭 PiP 延迟取消 0.427s、真实引擎/Darwin 终态回执 0.045s、意外 EOF 0.223s 均通过。无签名 BUILD 16:49:27Z、ARCHIVE 16:49:57Z 成功；artifact `10609083953`（VoType-IPA，4,989,830 bytes）不是 TestFlight。签名、App Store Connect 和元数据步骤跳过。
 - Task 6 独立规格/代码/证据审查 **PASS**，无本项待修问题；本地 plist 2/2、源码所有权门禁和 diff 校验通过。本次源文件没有命名 warning/error，既有工具提示仍保留。画中画适配器为 197 行，不再持有重复录音、权限、Speech、心跳或终态写入；保留 PiP 渲染/watchdog。用户可见的新 UUID Retry 交互明确属于 Task 8，未用无消费者变量冒充完成。此验收不放行整个 Slice A、真机或分发。
 - [Task 7 RED #167](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/35525427012) **FAILURE**，准确源码 `dc66ac1483fe0fdfef791aab9d248a07d9a0ab5f`（UTC 2026-09-20 17:18:17–17:20:42，2m25s）。23 个模型与 2 个协调器测试先于生产改造提交。17:20:36Z 模型测试明确报缺少带引擎/时限注入的 initializer、`engineIdentity`；其他 nil/production 推断错误由缺失接口引起，环境/XcodeGen/plist 正常。已向同一实施者发生产 GO；本项尚无 GREEN。预提交补充了同 UUID 重新领取时旧计时回调隔离（UI claim 身份）以及取消绑定的 2.5 秒完成关闭约束，不新增录音所有者或通用调度框架。
+- [Task 7 初版 CI #168](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/35525931280) **SUCCESS**，准确源码 `b7f2c3dc97c3ac3d4f823cfc8bc0ad9548fbc8f8`，build job 12m42s。实际日志为 170 单元零失败（模型 23、协调器 2）、4 个独立 UI 在两个 scheme 均通过，unsigned BUILD 17:39:26Z / ARCHIVE 17:40:16Z 成功；artifact `10609597995`（4,965,979 bytes）为无签名 CI 产物。没有点名本项变更文件的诊断；现有弃用/工具提示保留。签名、上传和元数据步骤跳过。**此 GREEN 不表示 Task 7 验收**：独立审查发现 gated A 退出后 B 被全局启动标记丢弃，正在加入行为回归。修复仅串行未完成的准入，已领取但排队中取消的请求仍由引擎结束，不引入额外录音所有者。
 - 真机语音/跨 App/权限/PiP：**EXTERNAL / NOT_RUN（本轮）**。历史用户测试曾暴露缺陷，不抹去历史结果。
 
 ## 发布基线

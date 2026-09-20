@@ -424,6 +424,126 @@ final class DictationViewModelTests: XCTestCase {
     }
 
     @MainActor
+    func testSuccessorSurvivesCleanupDuringGatedStartAndOwnsEngineAfterPredecessorReturns() async throws {
+        let runner = makeRunner([.authorizing, .listening(partial: "ready")])
+        let model = DictationViewModel(engine: runner)
+        let a = SessionToken()
+        load(model, token: a)
+        runner.startGates.enable(.commit, token: a)
+        let first = begin(model)
+        defer { runner.startGates.releaseAll(); first.cancel(); model.cleanup() }
+        try await waitUntil("A start waiting before admission") { await runner.requests.map(\.token) == [a] }
+
+        model.cleanup()
+        let b = SessionToken()
+        load(model, token: b)
+        let successor = begin(model)
+        defer { successor.cancel() }
+        try await waitUntil("B synchronously claims before waiting for previous admission") {
+            DarwinBridge.peekDictationSettings(expectedSession: b.rawValue) == nil
+        }
+        try await requireStableCondition("B cannot enter engine before delayed A returns") {
+            await runner.requests.map(\.token) == [a]
+        }
+        runner.startGates.releaseAll()
+        try await waitUntil("B admitted after A") { await runner.admittedTokens == [a, b] }
+        try await waitUntil("B owns current presentation") { model.sessionId == b.rawValue && model.isRecording }
+        try await runBoundedOperation("detached A returns") { await first.value }
+        await runner.send(.listening(partial: "B current"), token: b)
+        try await waitUntil("B text visible") { model.liveText == "B current" }
+
+        first.cancel()
+        await runner.send(.listening(partial: "late A"), token: a)
+        await runner.send(.completed(plan), token: a)
+        await runner.finish(token: a)
+        try await requireStableCondition("late A cannot overwrite or cancel B") {
+            let owner = await runner.owner
+            let cancels = await runner.cancelledTokens
+            return owner == b && cancels == [a] && model.liveText == "B current" && !model.hasResult
+        }
+        await model.stopRecording()
+        let stops = await runner.stoppedTokens
+        let pendingAtEntry = await runner.settingsPresentAtStart
+        let cancellationsAtEntry = await runner.cancellationsAtStart
+        XCTAssertEqual(stops, [b])
+        XCTAssertEqual(pendingAtEntry, [false, false])
+        XCTAssertEqual(cancellationsAtEntry, [[], [a]], "A cancellation must finish before B engine entry")
+        await runner.send(.completed(plan), token: b)
+        try await runBoundedOperation("B terminal ends consumer") { await successor.value }
+        XCTAssertTrue(model.hasResult)
+        XCTAssertEqual(model.statusMessage, "识别完成 ✓")
+        await model.cancelRecording()
+        let cancels = await runner.cancelledTokens
+        XCTAssertEqual(cancels, [a], "Terminal cleanup must not cancel the completed successor")
+    }
+
+    @MainActor
+    func testClaimedQueuedSuccessorStillAdmitsAndCancelsOnceAfterCleanupOrCancel() async throws {
+        for explicitCancel in [false, true] {
+            let runner = makeRunner([.authorizing, .listening(partial: "must remain detached")])
+            let model = DictationViewModel(engine: runner)
+            let a = SessionToken()
+            load(model, token: a)
+            runner.startGates.enable(.commit, token: a)
+            let first = begin(model)
+            defer { runner.startGates.releaseAll(); first.cancel(); model.cleanup() }
+            try await waitUntil("A suspended before admission") { await runner.requests.map(\.token) == [a] }
+            model.cleanup()
+            let b = SessionToken()
+            load(model, token: b)
+            let successor = begin(model)
+            defer { successor.cancel() }
+            try await waitUntil("B claimed while queued") {
+                DarwinBridge.peekDictationSettings(expectedSession: b.rawValue) == nil
+            }
+            if explicitCancel {
+                await model.cancelRecording()
+            } else {
+                model.cleanup()
+            }
+            XCTAssertFalse(model.hasValidSettings)
+            XCTAssertFalse(model.isRecording)
+            let detachedText = model.liveText
+            let detachedStatus = model.statusMessage
+            await model.stopRecording()
+            await model.cancelRecording()
+            model.cleanup()
+            try await requireStableCondition("queued successor cannot cancel before its admission") {
+                await runner.cancelledTokens.isEmpty
+            }
+            runner.startGates.releaseAll()
+            try await waitUntil("both claimed requests admitted and cancelled") {
+                let admissions = await runner.admittedTokens
+                let cancels = await runner.cancelledTokens
+                return admissions == [a, b] && cancels == [a, b]
+            }
+            try await runBoundedOperation("detached predecessor returns") { await first.value }
+            try await runBoundedOperation("detached claimed successor returns") { await successor.value }
+            let owner = await runner.owner
+            let cancellationsAtEntry = await runner.cancellationsAtStart
+            let pendingAtEntry = await runner.settingsPresentAtStart
+            XCTAssertNil(owner)
+            XCTAssertEqual(cancellationsAtEntry, [[], [a]])
+            XCTAssertEqual(pendingAtEntry, [false, false])
+            await runner.send(.listening(partial: "late B"), token: b)
+            await runner.send(.completed(plan), token: b)
+            await runner.finish(token: a)
+            await runner.finish(token: b)
+            await model.stopRecording()
+            await model.cancelRecording()
+            model.cleanup()
+            try await requireStableCondition("detached B cannot revive UI or issue duplicate commands") {
+                let cancels = await runner.cancelledTokens
+                let stops = await runner.stoppedTokens
+                let currentOwner = await runner.owner
+                return cancels == [a, b] && stops.isEmpty && currentOwner == nil
+                    && model.liveText == detachedText && model.statusMessage == detachedStatus
+                    && !model.isRecording && !model.hasResult
+            }
+        }
+    }
+
+    @MainActor
     func testWrongMatchingHandshakeAndNonterminalEOFFailClosed() async throws {
         let streams: [[DictationSessionEvent]] = [[.listening(partial: "invalid")], [.authorizing, .listening(partial: "unfinished")], []]
         for events in streams {
