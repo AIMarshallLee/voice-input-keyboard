@@ -704,6 +704,85 @@ actor RecordingSessionOutput: DictationSessionOutput {
     }
 }
 
+actor RecordingSessionRunner: DictationSessionRunning {
+    private let events: [DictationSessionEvent]
+    private let finishesStream: Bool
+    nonisolated let startGates = OutputGateBank()
+    private var continuations: [SessionToken: AsyncStream<DictationSessionEventEnvelope>.Continuation] = [:]
+    private var sequences: [SessionToken: UInt64] = [:]
+    private var isClosed = false
+    private(set) var requests: [DictationSessionRequest] = []
+    private(set) var admittedTokens: [SessionToken] = []
+    private(set) var stoppedTokens: [SessionToken] = []
+    private(set) var cancelledTokens: [SessionToken] = []
+    private(set) var audioEvents: [DictationAudioSystemEvent] = []
+    private(set) var owner: SessionToken?
+
+    init(events: [DictationSessionEvent], finishesStream: Bool = true) {
+        self.events = events
+        self.finishesStream = finishesStream
+    }
+
+    func start(_ request: DictationSessionRequest) async -> AsyncStream<DictationSessionEventEnvelope> {
+        requests.append(request)
+        await startGates.waitIfEnabled(.commit, token: request.token)
+        admittedTokens.append(request.token)
+        owner = request.token
+        return AsyncStream { continuation in
+            guard !isClosed else {
+                continuation.finish()
+                return
+            }
+            continuations[request.token] = continuation
+            for event in events { send(event, token: request.token) }
+            if finishesStream { continuation.finish() }
+        }
+    }
+
+    func send(_ event: DictationSessionEvent, token: SessionToken, envelopeToken: SessionToken? = nil) {
+        sequences[token, default: 0] += 1
+        continuations[token]?.yield(DictationSessionEventEnvelope(
+            token: envelopeToken ?? token, sequence: sequences[token]!, event: event
+        ))
+    }
+
+    func finish(token: SessionToken) { continuations[token]?.finish() }
+    func finishAllStreams() {
+        isClosed = true
+        startGates.releaseAll()
+        continuations.values.forEach { $0.finish() }
+        continuations.removeAll()
+    }
+    func stop(token: SessionToken) async { stoppedTokens.append(token) }
+    func cancel(token: SessionToken) async {
+        cancelledTokens.append(token)
+        if owner == token { owner = nil }
+    }
+    func handleAudioSystemEvent(_ event: DictationAudioSystemEvent) async { audioEvents.append(event) }
+}
+
+@MainActor
+final class RecordingPiPStandbyPresenter: PiPStandbyPresenting {
+    enum RecordedState: Equatable {
+        case recording(String)
+        case processing(String)
+        case standby
+    }
+    var isActive: Bool
+    var onStandbyStopped: (() -> Void)?
+    private(set) var states: [RecordedState] = []
+    private(set) var stopStandbyCount = 0
+    init(isActive: Bool) { self.isActive = isActive }
+    func setRecording(text: String) { states.append(.recording(text)) }
+    func setProcessing(text: String) { states.append(.processing(text)) }
+    func returnToStandby() { states.append(.standby) }
+    func stopStandby() {
+        stopStandbyCount += 1
+        isActive = false
+        onStandbyStopped?()
+    }
+}
+
 final class EngineHarness: @unchecked Sendable {
     let deadlines: DictationSessionDeadlines
     let completedPlan: EditPlan

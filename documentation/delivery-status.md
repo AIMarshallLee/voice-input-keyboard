@@ -8,8 +8,8 @@
 - 职责机制：[窗口 Agent 规划书](../docs/superpowers/specs/2026-09-05-votype-continuous-delivery-agent-charter.md)，用户已回复“同意”。
 - 规格：[商用 V1](../docs/superpowers/specs/2026-09-04-voice-first-commercial-v1-design.md)。
 - 实施计划：[Slice A 九任务](../docs/superpowers/plans/2026-09-04-slice-a-reliable-session-engine.md)。
-- 当前断点：Task 1–4 已取得真实 RED、GREEN 和独立审查 PASS，实施验收进度 **4/9**。统一引擎、超时/竞态/重用门禁已通过，但尚未接入现有前台/PiP，不能据此认定 App 真机可用。
-- 下一动作：Task 5 的 CI #163（`ab1cd70`）已验证取消通知回归通过，并准确复现文本统计写入的线程问题；实施方法级 MainActor 隔离，随后取得准确提交 GREEN 与独立复审。
+- 当前断点：Task 1–5 已取得真实 RED、GREEN 和独立审查 PASS，实施验收进度 **5/9**。统一引擎、超时/竞态/重用和生产适配门禁已通过，但尚未接入现有前台/PiP，不能据此认定 App 真机可用。
+- 下一动作：Task 6 画中画/原地输入迁移，先补齐取消、系统关闭、启动挂起和迟到回调的回归测试；观察真实 macOS RED 后替换重复录音器，保留 PiP 渲染与启动 watchdog。
 
 ## 自主执行约定（2026-09-20 生效）
 
@@ -29,7 +29,7 @@
 - 原有规格、实施计划、职责稿与台账已在授权后提交为 `a5045f2`；没有丢弃原差异。
 - 草稿 [PR #13](https://github.com/AIMarshallLee/voice-input-keyboard/pull/13) 已创建，未合并。
 - `project.yml` 是生成工程的唯一来源；现有测试 target 包含整个 `VoTypeTests` 目录。
-- Task 1–4 已验收；新测试通过 `xcodegen generate` 编入。Task 5 基线为 `5247153`。
+- Task 1–5 已验收；新测试通过 `xcodegen generate` 编入。Task 6 基线为 `d58ed40`，Task 5 全范围基线为 `5247153`。
 
 ## 授权状态
 
@@ -52,8 +52,8 @@
 | 2 | 依赖端口与同步音频屏障 | 完成：`c6ed787`，#153 GREEN，独立审查 PASS |
 | 3 | 引擎主路径与命令语义 | 完成：`f0a591a`，#156 GREEN，独立审查 PASS |
 | 4 | 截止时间、迟到回调、竞态与重用 | 完成：`5247153`，#159 GREEN，独立审查 PASS |
-| 5 | Apple、文本、Darwin 生产适配 | 进行中：`36f9ed8` / #161 CI 绿，审查要求两项修正，尚未验收 |
-| 6 | PiP/原地输入迁移 | 待做 |
+| 5 | Apple、文本、Darwin 生产适配 | 完成：`d58ed40` / #164 GREEN，两项审查问题修正，独立复审 PASS |
+| 6 | PiP/原地输入迁移 | 进行中：测试先行准备，尚无本项 RED 或实现验收 |
 | 7 | 前台呈现迁移 | 待做 |
 | 8 | 移除不支持的拉起与手动结果保留 | 待做 |
 | 9 | 全量回归、Release/Archive 与文档 | 待做 |
@@ -89,6 +89,8 @@
 - CI #162 已结束 FAILURE（6m12s）：136 个单元测试中的通知矩阵在 15:46:08Z 准确复现取消后多发 failed，计为 R21 有效 RED；重叠文本测试没有进入受控翻译，出现三次有限等待超时、结果 nil/统计 0，不能计为 R22 有效 RED。该独立 defaults suite 漏关默认启用的 LLM 润色；先关闭测试外部模型依赖，同时只修复已证实的 R21，再取得 R22 的准确行为失败。四个独立 UI 测试通过，后续构建/分发跳过；未伪称所有红色来自目标缺陷。
 - `ab1cd70a76a6f928efaa4e0b19e9a07caf21b53f` 已提交并非强制推送：生产仅将 failed 通知限定到 `.written`，测试仅增加 `llmPolish=false`。新 [CI #163](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/35520888792) 已核对为 in_progress；尚未取得新 GREEN，不能把修复提交等同于任务验收。下一步继续读取同一 run，不重复启动。
 - CI #163 最终 FAILURE（8m53s），136 个单元只有 **1 处预期失败**：UTC 2026-09-20 15:56:40Z，`TextProcessorTests.swift:346` 的 `allRecordingsWereOnMainThread` 断言失败，受控等待、两次真实结果与统计次数均通过，确认为 R22 有效行为 RED。取消通知矩阵 0.001s 通过、适配 7/7、引擎 25/25、4 个独立 UI 通过。已开始方法级隔离最小修复；不改变文本算法或串行阻塞整个处理调用。
+- [Task 5 GREEN #164](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/35521959880) **SUCCESS**，准确源码 `d58ed40fe4ef94715360057b56ea22b698709b53`（UTC 2026-09-20 16:12:16–16:22:55，10m39s）。实际日志：136 单元零失败；取消通知矩阵 0.784s、重叠处理/主线程写入 0.035s 通过；4 个独立 UI 在两个 scheme 下均零失败；unsigned Release BUILD 与 ARCHIVE 成功。artifact `10608841457`（VoType-IPA，4,862,142 bytes）是无签名 CI 产物，不是 TestFlight。签名、App Store Connect 与元数据步骤全部跳过。本地 plist 2/2 通过；没有点名本次变更源文件的 warning/error，已有旧路径/工具提示仍保留。
+- Task 5 独立修复复审 **PASS**：实际提交结果决定通知，文本/翻译方法级 MainActor 覆盖两处共享统计写入且保留等待期间的可重入性，未修改算法或添加整段串行队列。非阻断测试清理观察留待最终全分支复核：超时路径取消/释放 detached 任务，但不 join 后再删除独立 defaults 测试域，不影响本轮产品路径验收。Task 6 已交付单一实施者进行测试准备，未在 Task 5 未验收时替换生产入口。
 - 真机语音/跨 App/权限/PiP：**EXTERNAL / NOT_RUN（本轮）**。历史用户测试曾暴露缺陷，不抹去历史结果。
 
 ## 发布基线
