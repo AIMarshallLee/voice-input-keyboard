@@ -11,6 +11,7 @@ private final class TranslationSpy: TranslationProviding {
     var result: String?
     private(set) var calls: [Call] = []
 
+    @MainActor
     func translate(_ text: String, from sourceLang: String, to targetLang: String) async -> String? {
         calls.append(Call(text: text, source: sourceLang, target: targetLang))
         return result
@@ -27,6 +28,7 @@ private final class BlockingTranslationProvider: TranslationProviding {
         self.firstEntered = firstEntered
     }
 
+    @MainActor
     func translate(_ text: String, from sourceLang: String, to targetLang: String) async -> String? {
         if text == "first" {
             await withCheckedContinuation { continuation in

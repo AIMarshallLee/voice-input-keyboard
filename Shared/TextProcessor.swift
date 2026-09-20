@@ -182,6 +182,7 @@ class TextProcessor {
     ///   - translateEnabled: 本次会话是否翻译
     ///   - translateTarget: 本次会话的目标语言 ID
     ///   - voiceEditEnabled: 本次会话是否启用语音编辑
+    @MainActor
     func process(
         _ rawText: String,
         selectedText: String? = nil,
@@ -291,6 +292,7 @@ class TextProcessor {
 
     /// 过渡兼容入口。调用时捕获一次当前设置；新会话必须传入显式快照。
     @available(*, deprecated, message: "Pass an explicit per-session voiceEditEnabled snapshot")
+    @MainActor
     func process(
         _ rawText: String,
         selectedText: String? = nil,
@@ -312,6 +314,7 @@ class TextProcessor {
 
     /// 旧调用端兼容入口。新代码应传入会话快照并处理 `TextProcessingResult`。
     @available(*, deprecated, message: "Pass per-session language and translation settings and handle TextProcessingResult")
+    @MainActor
     func process(_ rawText: String, selectedText: String? = nil, keyboardType: Int = 0) async -> String {
         let languageManager = LanguageManager(defaults: sharedDefaults)
         let translationManager = TranslationManager(defaults: sharedDefaults)
@@ -342,6 +345,7 @@ class TextProcessor {
     /// 2. "删掉" / "删除" → 返回明确的删除选区结果
     /// 3. "在后面加XXX" / "加上XXX" → 选中文本 + XXX
     /// 4. 无明确指令 → LLM 智能合并(iOS 26+) 或直接替换
+    @MainActor
     func processVoiceEditResult(
         spoken: String,
         selectedText: String,
@@ -397,6 +401,7 @@ class TextProcessor {
 
     /// 旧调用端兼容入口；删除选区仍映射为空字符串。
     @available(*, deprecated, message: "Use processVoiceEditResult and handle deleteSelection explicitly")
+    @MainActor
     func processVoiceEdit(spoken: String, selectedText: String, context: InputContext) async -> String {
         switch await processVoiceEditResult(spoken: spoken, selectedText: selectedText, context: context) {
         case .insert(let text):
@@ -410,6 +415,7 @@ class TextProcessor {
 
     #if canImport(FoundationModels)
     @available(iOS 26, *)
+    @MainActor
     private func llmVoiceEdit(spoken: String, selectedText: String, context: InputContext) async -> String? {
         guard SystemLanguageModel.default.isAvailable else { return nil }
 
@@ -562,6 +568,7 @@ class TextProcessor {
 
     #if canImport(FoundationModels)
     @available(iOS 26, *)
+    @MainActor
     private func llmPolish(
         _ text: String,
         context: InputContext = .general,

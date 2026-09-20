@@ -1,6 +1,6 @@
 # VoType 持续交付台账
 
-更新：2026-09-20。仅记录经过核对的事实；未提交工作不计入已合并实现。
+更新：2026-09-21。仅记录经过核对的事实；未提交工作不计入已合并实现。
 
 ## 当前目标与断点
 
@@ -9,7 +9,7 @@
 - 规格：[商用 V1](../docs/superpowers/specs/2026-09-04-voice-first-commercial-v1-design.md)。
 - 实施计划：[Slice A 九任务](../docs/superpowers/plans/2026-09-04-slice-a-reliable-session-engine.md)。
 - 当前断点：Task 1–4 已取得真实 RED、GREEN 和独立审查 PASS，实施验收进度 **4/9**。统一引擎、超时/竞态/重用门禁已通过，但尚未接入现有前台/PiP，不能据此认定 App 真机可用。
-- 下一动作：Task 5 初版 CI 已绿，但独立审查要求修正取消通知和共享文本处理隔离；补充行为 RED 后最小修复，再跑准确提交的 GREEN 与审查。
+- 下一动作：Task 5 的 CI #163（`ab1cd70`）已验证取消通知回归通过，并准确复现文本统计写入的线程问题；实施方法级 MainActor 隔离，随后取得准确提交 GREEN 与独立复审。
 
 ## 自主执行约定（2026-09-20 生效）
 
@@ -87,6 +87,8 @@
 - Task 5 尚未验收：独立审查发现取消已获胜时仍可能发失败通知，以及异步文本处理中的共享统计复合写入缺少隔离。正在补充行为回归；修复保持 MainActor 在异步等待期间可重入，不让挂起的旧处理阻塞新会话。初版 CI 绿色不能覆盖这些审查发现。
 - 2026-09-20 恢复执行：职责/计划校正提交 `fc38f13`，EXTRA RED 测试提交 `2ff8025ff7a77df60666312a0e75d679e177b78f` 已非强制推送；[CI #162](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/35520386307) 已触发，初次核对为 queued。新增取消通知矩阵和带有限等待/清理的重叠文本处理回归；生产通知提取保持旧行为，隔离修复尚未应用。下一动作先核对本次真实行为失败，再最小修复，不能把排队当 RED/PASS。本地 plist 2/2 与 diff 检查通过。
 - CI #162 已结束 FAILURE（6m12s）：136 个单元测试中的通知矩阵在 15:46:08Z 准确复现取消后多发 failed，计为 R21 有效 RED；重叠文本测试没有进入受控翻译，出现三次有限等待超时、结果 nil/统计 0，不能计为 R22 有效 RED。该独立 defaults suite 漏关默认启用的 LLM 润色；先关闭测试外部模型依赖，同时只修复已证实的 R21，再取得 R22 的准确行为失败。四个独立 UI 测试通过，后续构建/分发跳过；未伪称所有红色来自目标缺陷。
+- `ab1cd70a76a6f928efaa4e0b19e9a07caf21b53f` 已提交并非强制推送：生产仅将 failed 通知限定到 `.written`，测试仅增加 `llmPolish=false`。新 [CI #163](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/35520888792) 已核对为 in_progress；尚未取得新 GREEN，不能把修复提交等同于任务验收。下一步继续读取同一 run，不重复启动。
+- CI #163 最终 FAILURE（8m53s），136 个单元只有 **1 处预期失败**：UTC 2026-09-20 15:56:40Z，`TextProcessorTests.swift:346` 的 `allRecordingsWereOnMainThread` 断言失败，受控等待、两次真实结果与统计次数均通过，确认为 R22 有效行为 RED。取消通知矩阵 0.001s 通过、适配 7/7、引擎 25/25、4 个独立 UI 通过。已开始方法级隔离最小修复；不改变文本算法或串行阻塞整个处理调用。
 - 真机语音/跨 App/权限/PiP：**EXTERNAL / NOT_RUN（本轮）**。历史用户测试曾暴露缺陷，不抹去历史结果。
 
 ## 发布基线
