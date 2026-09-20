@@ -367,6 +367,98 @@ final class KeyboardSessionRecoveryTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: blockedContainer), bytes)
     }
 
+    func testClaimedHandoffCannotDisappearWithoutUsableSourceSnapshot() throws {
+        for context in ["none", "unrelated-matching", "source-mismatched"] {
+            let source = SessionToken()
+            let replacement = SessionToken()
+            try createClaimedHandoff(source: source, replacement: replacement)
+            let snapshot: KeyboardSessionRecoverySnapshot?
+            switch context {
+            case "none": snapshot = nil
+            case "unrelated-matching": snapshot = try recoverySnapshot(SessionToken())
+            default: snapshot = try recoverySnapshot(source)
+            }
+            let before = try recoveryBusinessBytes()
+            let storedSnapshot = defaults.data(forKey: "keyboardSessionRecovery.v1")
+            let decision = KeyboardSessionRecoveryStore.recoveryDecision(
+                snapshot: snapshot, contextMatches: context == "unrelated-matching")
+            assertNoUnsafeClaimGapDecision(decision, source: source, replacement: replacement, snapshot: snapshot)
+            XCTAssertEqual(try recoveryBusinessBytes(), before)
+            XCTAssertEqual(defaults.data(forKey: "keyboardSessionRecovery.v1"), storedSnapshot)
+            DarwinBridge.clearIPCFilesForTesting()
+        }
+    }
+
+    func testFailedReplacementCancellationKeepsClaimedHandoffBlockedAfterStorageReturns() throws {
+        let source = SessionToken()
+        let replacement = SessionToken()
+        try createClaimedHandoff(source: source, replacement: replacement)
+        let before = try recoveryBusinessBytes()
+        DarwinBridge.setContainerDirectoryForTesting(nil)
+        defer { DarwinBridge.setContainerDirectoryForTesting(ipcDirectory) }
+        XCTAssertFalse(DarwinBridge.cancelSession(replacement.rawValue))
+        XCTAssertNotEqual(KeyboardSessionRecoveryStore.recoveryDecision(snapshot: nil, contextMatches: false), .none,
+                          "Unavailable anchor discovery must not authorize a fresh launch")
+        DarwinBridge.setContainerDirectoryForTesting(ipcDirectory)
+        XCTAssertEqual(try recoveryBusinessBytes(), before)
+        let decision = KeyboardSessionRecoveryStore.recoveryDecision(snapshot: nil, contextMatches: false)
+        assertNoUnsafeClaimGapDecision(decision, source: source, replacement: replacement, snapshot: nil)
+        XCTAssertEqual(try recoveryBusinessBytes(), before)
+    }
+
+    func testConfirmedReplacementCancellationOrConsumedTerminalReleasesGlobalHandoffBarrier() throws {
+        for terminal in [false, true] {
+            let source = SessionToken()
+            let replacement = SessionToken()
+            try createClaimedHandoff(source: source, replacement: replacement)
+            let before = KeyboardSessionRecoveryStore.recoveryDecision(snapshot: nil, contextMatches: false)
+            assertNoUnsafeClaimGapDecision(before, source: source, replacement: replacement, snapshot: nil)
+            if terminal {
+                XCTAssertEqual(DarwinBridge.commit(.completed(recoveryPlan), token: replacement), .written)
+                XCTAssertNotNil(DarwinBridge.readAndConsumeResult(expectedSession: replacement.rawValue))
+            } else {
+                XCTAssertTrue(DarwinBridge.cancelSession(replacement.rawValue))
+            }
+            let evidenceURL = recoveryFile(terminal ? "terminal" : "cancel", token: replacement)
+            let evidence = try Data(contentsOf: evidenceURL)
+            XCTAssertEqual(KeyboardSessionRecoveryStore.recoveryDecision(snapshot: nil, contextMatches: false), .none,
+                           "A confirmed finished replacement must not permanently prevent a fresh request")
+            XCTAssertEqual(try Data(contentsOf: evidenceURL), evidence)
+            DarwinBridge.clearIPCFilesForTesting()
+        }
+    }
+
+    private func createClaimedHandoff(source: SessionToken, replacement: SessionToken) throws {
+        let settings = recoverySettings(source)
+        XCTAssertTrue(DarwinBridge.writeDictationSettings(settings))
+        guard case .moved = DarwinBridge.handoffDictationSettingsToManual(from: source, to: replacement, original: settings)
+        else { return XCTFail("Fixture must publish a real handoff before the host claims it") }
+        XCTAssertNotNil(DarwinBridge.readAndConsumeDictationSettings(expectedSession: replacement.rawValue))
+        XCTAssertNil(DarwinBridge.readLiveState(expectedSession: replacement.rawValue))
+        XCTAssertNil(DarwinBridge.peekResult(expectedSession: replacement.rawValue))
+    }
+
+    private func assertNoUnsafeClaimGapDecision(_ decision: KeyboardSessionRecoveryDecision,
+                                               source: SessionToken, replacement: SessionToken,
+                                               snapshot: KeyboardSessionRecoverySnapshot?,
+                                               file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertNotEqual(decision, .none, "The claimed replacement must remain discoverable", file: file, line: line)
+        XCTAssertNotEqual(decision, .retry(source), "Ordinary Retry can create another request without cancelling R", file: file, line: line)
+        XCTAssertNotEqual(decision, .retry(replacement), "R requires cancellation-before-retry, not ordinary Retry", file: file, line: line)
+        XCTAssertNotEqual(decision, .restore(replacement), "A claim gap needs explicit resolution, not an invented live/manual-ready state", file: file, line: line)
+        if let snapshot, let token = SessionToken(rawValue: snapshot.session) {
+            XCTAssertNotEqual(decision, .retry(token), file: file, line: line)
+            XCTAssertNotEqual(decision, .restore(token), "Context-only recovery cannot hide the claimed handoff", file: file, line: line)
+        }
+    }
+
+    private func recoveryBusinessBytes() throws -> [String: Data] {
+        let urls = try FileManager.default.contentsOfDirectory(at: ipcDirectory, includingPropertiesForKeys: nil)
+        return try Dictionary(uniqueKeysWithValues: urls.filter { $0.pathExtension == "json" }.map {
+            ($0.lastPathComponent, try Data(contentsOf: $0))
+        })
+    }
+
     private func recoverySnapshot(_ token: SessionToken) throws -> KeyboardSessionRecoverySnapshot {
         try XCTUnwrap(KeyboardSessionRecoveryStore.save(session: token.rawValue, launchMode: .inPlace,
             contextBefore: "same field", contextAfter: "after", selectedText: nil, defaults: defaults))

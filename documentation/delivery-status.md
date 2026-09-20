@@ -9,7 +9,7 @@
 - 规格：[商用 V1](../docs/superpowers/specs/2026-09-04-voice-first-commercial-v1-design.md)。
 - 实施计划：[Slice A 九任务](../docs/superpowers/plans/2026-09-04-slice-a-reliable-session-engine.md)。
 - 当前断点：Task 1–7 已取得真实 RED、GREEN 和独立审查 PASS，实施验收进度 **7/9**。前台迁移 `faedeb6` 已修复退出、重开时丢失后继请求的问题并通过准确提交验证；这不是整个 App 的真机验收。
-- 下一动作：Task 8 首轮修复 `20f9f7c` 的 #176 验证仍在运行；独立复审确认原问题已修，但发现发布状态不明时的重复请求、取消完成前过早待机及终态读取竞态三项 Important。原实施者正在补第二轮行为回归，生产修复尚未开始。保持 **7/9**，不以自动门禁替代审查验收。
+- 下一动作：Task 8 首轮修复 `20f9f7c` / #176 自动门禁通过，但独立复审发现发布状态不明时的重复请求、取消完成前过早待机及终态读取竞态三项 Important。原实施者正在补第二轮行为回归及 R33 持久迁移身份；生产修复尚未开始。保持 **7/9**，不以自动门禁替代审查验收。
 
 ## 自主执行约定（2026-09-20 生效）
 
@@ -61,6 +61,10 @@
 任务只有在实现、相应测试及审查证据齐全后才标为完成。后续 Slice 在前片出口有新证据且自己的实施计划完成审查后才能实施。
 
 ## 验证路径与本轮证据
+
+- [CI #176](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/35533829022) 在准确 `20f9f7cbf44dcbbc737ac8fcfcae7ceba74da232` 完成 **SUCCESS，14m19s**。实际日志：217 单元零失败（25.704s / 29.775s wall），4 个独立 UI 用例在两个 scheme 下通过（182.075s / 54.046s），source gate、unsigned BUILD（20:08:15 UTC）和 ARCHIVE（20:09:04 UTC）通过。unsigned artifact `10611934207` 为 5,165,010 bytes；所有 Apple 签名、上传与元数据步骤 skipped。前轮 20 项新增回归全通过，Timer/MainActor 警告已消失；旧 UIKit/兼容 API/Node action 警告仍存在。复审仍有三项 Important，故不验收 Task 8、不合并、不分发。
+
+- 第二轮取消时序测试 `b8080ba5e38a84451c7b47757ab422600d3318f6` 已提交并非强制推送，[CI #177](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/35534527381) 已排队。三条新增用例使用现有 runner 的 test-only cancel gate，覆盖停录前不可待机、旧取消不可覆盖活动或已终态后继；尚未取得其实际行为 RED。生产代码未改；父级 plist 2/2（0.030s）及 diff/staged 检查通过。#176 的 Unit/UI 步骤已显示通过，完整 build/archive 结果及日志计数尚待核对。
 
 - 首轮生产修复 `20f9f7cbf44dcbbc737ac8fcfcae7ceba74da232` 已提交并非强制推送，[CI #176](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/35533829022) 确认运行。同一独立 reviewer 正按 `372dfec..20f9f7c` 三提交完整修复差异复审；四个生产文件改动、20 项新回归原样保留。父级新鲜 plist 2/2（0.027s）、source gate/脚本语法/diff/staged 检查通过，但尚无修复后 macOS GREEN 或审查 PASS。未增加验收数、未合并或分发。
 
