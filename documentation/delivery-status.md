@@ -9,7 +9,7 @@
 - 规格：[商用 V1](../docs/superpowers/specs/2026-09-04-voice-first-commercial-v1-design.md)。
 - 实施计划：[Slice A 九任务](../docs/superpowers/plans/2026-09-04-slice-a-reliable-session-engine.md)。
 - 当前断点：Task 1–7 已取得真实 RED、GREEN 和独立审查 PASS，实施验收进度 **7/9**。前台迁移 `faedeb6` 已修复退出、重开时丢失后继请求的问题并通过准确提交验证；这不是整个 App 的真机验收。
-- 下一动作：Task 8 首轮修复已先取得 #174 行为 RED 和 #175 缺失恢复接口 RED；同一实施者正按 R30–R32 修复录音持久取消、staged 手动迁移、receipt-only 重试、快照遮挡及 Timer 隔离。保持 **7/9**，待准确提交 GREEN 与独立复审，不以此前自动门禁替代审查验收。
+- 下一动作：Task 8 首轮修复 `20f9f7c` 的 #176 验证仍在运行；独立复审确认原问题已修，但发现发布状态不明时的重复请求、取消完成前过早待机及终态读取竞态三项 Important。原实施者正在补第二轮行为回归，生产修复尚未开始。保持 **7/9**，不以自动门禁替代审查验收。
 
 ## 自主执行约定（2026-09-20 生效）
 
@@ -61,6 +61,8 @@
 任务只有在实现、相应测试及审查证据齐全后才标为完成。后续 Slice 在前片出口有新证据且自己的实施计划完成审查后才能实施。
 
 ## 验证路径与本轮证据
+
+- 首轮生产修复 `20f9f7cbf44dcbbc737ac8fcfcae7ceba74da232` 已提交并非强制推送，[CI #176](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/35533829022) 确认运行。同一独立 reviewer 正按 `372dfec..20f9f7c` 三提交完整修复差异复审；四个生产文件改动、20 项新回归原样保留。父级新鲜 plist 2/2（0.027s）、source gate/脚本语法/diff/staged 检查通过，但尚无修复后 macOS GREEN 或审查 PASS。未增加验收数、未合并或分发。
 
 - 首轮修复 Stage 2 测试提交 `efedb6e4d1f058f820dc6091535f896b368fa5e4` / [CI #175](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/35532924020) FAILURE，1m3s：19:38:52Z 准确诊断为 `KeyboardSessionRecoveryStore.recoveryDecision` 缺失及派生类型推断错误，环境/source gate 正常。新增 12 项真实 IPC 回归已在生产前固定；编译先在恢复接口停止，没有声称另一个 cancellationEvidence 接口也已单独报错或测试已运行。父级据 #174/#175 两阶段证据授权同一实施者做四个生产文件的修复，尚未得到修复 GREEN。当前无签名、上传或 main 合并动作。
 

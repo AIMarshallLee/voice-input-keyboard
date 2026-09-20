@@ -708,6 +708,7 @@ actor RecordingSessionRunner: DictationSessionRunning {
     private let events: [DictationSessionEvent]
     private let finishesStream: Bool
     nonisolated let startGates = OutputGateBank()
+    nonisolated let cancelGates = OutputGateBank()
     private var continuations: [SessionToken: AsyncStream<DictationSessionEventEnvelope>.Continuation] = [:]
     private var sequences: [SessionToken: UInt64] = [:]
     private var isClosed = false
@@ -754,12 +755,14 @@ actor RecordingSessionRunner: DictationSessionRunning {
     func finishAllStreams() {
         isClosed = true
         startGates.releaseAll()
+        cancelGates.releaseAll()
         continuations.values.forEach { $0.finish() }
         continuations.removeAll()
     }
     func stop(token: SessionToken) async { stoppedTokens.append(token) }
     func cancel(token: SessionToken) async {
         cancelledTokens.append(token)
+        await cancelGates.waitIfEnabled(.commit, token: token)
         if owner == token { owner = nil }
     }
     func handleAudioSystemEvent(_ event: DictationAudioSystemEvent) async { audioEvents.append(event) }

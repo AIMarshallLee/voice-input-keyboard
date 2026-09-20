@@ -284,6 +284,89 @@ final class BackgroundDictationManagerTests: XCTestCase {
         await runner.finishAllStreams()
     }
 
+    func testCancellationDoesNotPublishStandbyUntilCaptureReleaseCompletes() async throws {
+        let token = store()
+        let runner = runner([.listening(partial: "held capture")])
+        let pip = RecordingPiPStandbyPresenter(isActive: true)
+        let manager = BackgroundDictationManager(engine: runner, pip: pip)
+        try await start(manager)
+        try await waitUntil("capture presented before cancel") { pip.states == [.recording("held capture")] }
+        runner.cancelGates.enable(.commit, token: token)
+        let returned = LockedTestBox(false)
+        let task = Task { await manager.handleCancelNotification(session: token.rawValue); returned.set(true) }
+        defer { runner.cancelGates.releaseAll(); task.cancel() }
+        try await waitUntil("cancel reached capture release gate") { await runner.cancelledTokens == [token] }
+        let heldOwner = await runner.owner
+        XCTAssertEqual(heldOwner, token)
+        XCTAssertFalse(returned.value)
+        XCTAssertEqual(pip.states, [.recording("held capture")],
+                       "Standby must not claim capture release while cancellation is suspended")
+
+        runner.cancelGates.releaseAll()
+        try await waitUntil("cancel completes before standby") { returned.value && pip.states.last == .standby }
+        let releasedOwner = await runner.owner
+        XCTAssertNil(releasedOwner)
+        XCTAssertEqual(pip.states, [.recording("held capture"), .standby])
+        await runner.finishAllStreams()
+    }
+
+    func testHeldOldCancellationCannotPublishStandbyOverActiveSuccessor() async throws {
+        let old = store()
+        let runner = runner([.listening(partial: "initial")])
+        let pip = RecordingPiPStandbyPresenter(isActive: true)
+        let manager = BackgroundDictationManager(engine: runner, pip: pip)
+        try await start(manager)
+        try await waitUntil("old capture presented") { pip.states == [.recording("initial")] }
+        runner.cancelGates.enable(.commit, token: old)
+        let returned = LockedTestBox(false)
+        let task = Task { await manager.handleCancelNotification(session: old.rawValue); returned.set(true) }
+        defer { runner.cancelGates.releaseAll(); task.cancel() }
+        try await waitUntil("old cancel held") { await runner.cancelledTokens == [old] }
+        XCTAssertEqual(pip.states, [.recording("initial")], "Held cancellation cannot publish standby early")
+
+        let replacement = store()
+        try await start(manager)
+        await runner.send(.listening(partial: "replacement"), token: replacement)
+        try await waitUntil("successor presented before old release") { pip.states.last == .recording("replacement") }
+        let successorStates = pip.states
+        runner.cancelGates.releaseAll()
+        try await waitUntil("old cancellation returned") { returned.value }
+        let owner = await runner.owner
+        XCTAssertEqual(owner, replacement)
+        XCTAssertEqual(pip.states, successorStates, "Old cancellation cannot repaint a successor")
+        await runner.finishAllStreams()
+    }
+
+    func testHeldOldCancellationCannotPublishStandbyAfterSuccessorHasTerminated() async throws {
+        let old = store()
+        let runner = runner([.listening(partial: "initial")])
+        let pip = RecordingPiPStandbyPresenter(isActive: true)
+        let manager = BackgroundDictationManager(engine: runner, pip: pip)
+        try await start(manager)
+        try await waitUntil("old capture presented") { pip.states == [.recording("initial")] }
+        runner.cancelGates.enable(.commit, token: old)
+        let returned = LockedTestBox(false)
+        let task = Task { await manager.handleCancelNotification(session: old.rawValue); returned.set(true) }
+        defer { runner.cancelGates.releaseAll(); task.cancel() }
+        try await waitUntil("old cancel held") { await runner.cancelledTokens == [old] }
+        XCTAssertEqual(pip.states, [.recording("initial")], "Held cancellation cannot publish standby early")
+
+        let replacement = store()
+        try await start(manager)
+        await runner.send(.completed(plan), token: replacement)
+        try await waitUntil("successor terminal presented") {
+            pip.states.count >= 3 && pip.states.last == .standby
+        }
+        let terminalStates = pip.states
+        let terminalStateCount = pip.states.count
+        runner.cancelGates.releaseAll()
+        try await waitUntil("old cancellation returned after successor terminal") { returned.value }
+        XCTAssertEqual(pip.states.count, terminalStateCount,
+                       "A nil current token after successor terminal is not permission for old standby")
+        XCTAssertEqual(pip.states, terminalStates)
+        await runner.finishAllStreams()
+    }
+
     func testTerminalDetachesTokenBeforeLaterCommandsOrPiPStop() async throws {
         let runner = runner([.listening(partial: "done"), .completed(plan)], finishes: true)
         let pip = RecordingPiPStandbyPresenter(isActive: true)
