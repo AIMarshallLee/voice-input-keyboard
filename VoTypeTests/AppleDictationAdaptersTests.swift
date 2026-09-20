@@ -96,6 +96,41 @@ final class AppleDictationAdaptersTests: XCTestCase {
         )
     }
 
+    func testTerminalNotificationNamesOnlyMarkFailuresWhenWritten() {
+        let completed = DictationTerminal.completed(
+            EditPlan(
+                intent: .dictate,
+                operation: .insertAtCursor,
+                text: "final",
+                expectedContextFingerprint: nil,
+                requiresConfirmation: false
+            )
+        )
+        let cases: [(DictationTerminal, DictationOutputCommitStatus, [String])] = [
+            (
+                .failed(.recognition),
+                .written,
+                [DarwinNotificationName.dictationFailed, DarwinNotificationName.dictationStopped]
+            ),
+            (completed, .written, [DarwinNotificationName.dictationStopped]),
+            (completed, .cancelled, [DarwinNotificationName.dictationStopped]),
+            (.failed(.recognition), .cancelled, [DarwinNotificationName.dictationStopped]),
+            (.cancelled, .cancelled, [DarwinNotificationName.dictationStopped]),
+            (.failed(.recognition), .alreadyTerminal, []),
+            (.failed(.recognition), .ioFailure, [])
+        ]
+
+        for (terminal, status, expected) in cases {
+            XCTAssertEqual(
+                DarwinDictationSessionOutput.terminalNotificationNames(
+                    for: terminal,
+                    status: status
+                ),
+                expected
+            )
+        }
+    }
+
     func testTextAdapterMapsDictationAndSelectedEditsSafely() {
         let plain = makeSnapshot(selectedText: nil, voiceEditEnabled: true)
         XCTAssertEqual(

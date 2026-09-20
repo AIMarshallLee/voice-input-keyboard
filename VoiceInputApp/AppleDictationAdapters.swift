@@ -421,18 +421,24 @@ final class DarwinDictationSessionOutput: @unchecked Sendable, DictationSessionO
         publishers[token]?.cancelPending(for: token.rawValue)
         publishers[token] = nil
         let status = DarwinBridge.commit(terminal, token: token)
-        guard status == .written || status == .cancelled else { return status }
-        if case .failed = terminal {
-            DarwinBridge.postSessionNotification(
-                base: DarwinNotificationName.dictationFailed,
-                session: token.rawValue
-            )
+        for name in Self.terminalNotificationNames(for: terminal, status: status) {
+            DarwinBridge.postSessionNotification(base: name, session: token.rawValue)
         }
-        DarwinBridge.postSessionNotification(
-            base: DarwinNotificationName.dictationStopped,
-            session: token.rawValue
-        )
         return status
+    }
+
+    nonisolated static func terminalNotificationNames(
+        for terminal: DictationTerminal,
+        status: DictationOutputCommitStatus
+    ) -> [String] {
+        guard status == .written || status == .cancelled else { return [] }
+        if case .failed = terminal {
+            return [
+                DarwinNotificationName.dictationFailed,
+                DarwinNotificationName.dictationStopped
+            ]
+        }
+        return [DarwinNotificationName.dictationStopped]
     }
 
     private func publication(

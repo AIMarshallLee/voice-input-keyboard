@@ -17,6 +17,79 @@ private final class TranslationSpy: TranslationProviding {
     }
 }
 
+private final class BlockingTranslationProvider: TranslationProviding {
+    private let lock = NSLock()
+    private let firstEntered: XCTestExpectation
+    private var firstContinuation: CheckedContinuation<Void, Never>?
+    private var firstReleaseRequested = false
+
+    init(firstEntered: XCTestExpectation) {
+        self.firstEntered = firstEntered
+    }
+
+    func translate(_ text: String, from sourceLang: String, to targetLang: String) async -> String? {
+        if text == "first" {
+            await withCheckedContinuation { continuation in
+                lock.lock()
+                let shouldResumeImmediately = firstReleaseRequested
+                firstReleaseRequested = false
+                if !shouldResumeImmediately {
+                    firstContinuation = continuation
+                }
+                lock.unlock()
+                firstEntered.fulfill()
+                if shouldResumeImmediately {
+                    continuation.resume()
+                }
+            }
+        }
+        return nil
+    }
+
+    func releaseFirst() {
+        lock.lock()
+        let continuation = firstContinuation
+        firstContinuation = nil
+        if continuation == nil {
+            firstReleaseRequested = true
+        }
+        lock.unlock()
+        continuation?.resume()
+    }
+}
+
+private final class ThreadRecordingUsageTracker: UsageTracker, @unchecked Sendable {
+    private let lock = NSLock()
+    private var recordedOnMainThread: [Bool] = []
+
+    override func recordSession(
+        charCount: Int,
+        language: String,
+        featuresUsed: Set<String>
+    ) {
+        lock.lock()
+        recordedOnMainThread.append(Thread.isMainThread)
+        lock.unlock()
+        super.recordSession(
+            charCount: charCount,
+            language: language,
+            featuresUsed: featuresUsed
+        )
+    }
+
+    var recordingCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return recordedOnMainThread.count
+    }
+
+    var allRecordingsWereOnMainThread: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return recordedOnMainThread.allSatisfy { $0 }
+    }
+}
+
 final class TextProcessorTests: XCTestCase {
     private var suiteName = ""
     private var defaults: UserDefaults!
@@ -198,6 +271,78 @@ final class TextProcessorTests: XCTestCase {
             voiceEditEnabled: true
         )
         XCTAssertEqual(enabledForSession, .deleteSelection)
+    }
+
+    func testConcurrentAdapterProcessingRecordsUsageOnMainActor() async {
+        let overlapStarted = expectation(description: "first translation is suspended")
+        let firstFinished = expectation(description: "first processing finishes after release")
+        let secondFinished = expectation(description: "second processing finishes while first is suspended")
+        let overlapTranslator = BlockingTranslationProvider(firstEntered: overlapStarted)
+        let firstResult = LockedTestBox<Result<EditPlan, DictationFailure>?>(nil)
+        let secondResult = LockedTestBox<Result<EditPlan, DictationFailure>?>(nil)
+        let overlapSuiteName = "com.daseanle.votype.overlap.\(UUID().uuidString)"
+        let overlapDefaults = UserDefaults(suiteName: overlapSuiteName)!
+        overlapDefaults.removePersistentDomain(forName: overlapSuiteName)
+        overlapDefaults.set(false, forKey: "autoPunctuation")
+        overlapDefaults.set(false, forKey: "autoFormat")
+        let overlapUsageTracker = ThreadRecordingUsageTracker(defaults: overlapDefaults)
+        let overlapProcessor = TextProcessor(
+            defaults: overlapDefaults,
+            translationProvider: overlapTranslator,
+            smartFormatter: SmartFormatter(defaults: overlapDefaults),
+            usageTracker: overlapUsageTracker
+        )
+        let adapter = TextProcessorDictationAdapter(processor: overlapProcessor)
+        let snapshot = TextProcessingSnapshot(
+            selectedText: nil,
+            keyboardType: 0,
+            language: "en-US",
+            translateEnabled: true,
+            translateTarget: "ja-JP",
+            voiceEditEnabled: false,
+            livePreviewEnabled: true,
+            expectedContextFingerprint: "context"
+        )
+        let firstTask = Task.detached {
+            firstResult.set(await adapter.process(transcript: "first", snapshot: snapshot))
+            firstFinished.fulfill()
+        }
+        var secondTask: Task<Void, Never>?
+        defer {
+            secondTask?.cancel()
+            firstTask.cancel()
+            overlapTranslator.releaseFirst()
+            overlapDefaults.removePersistentDomain(forName: overlapSuiteName)
+        }
+
+        await fulfillment(of: [overlapStarted], timeout: 1)
+        secondTask = Task.detached {
+            secondResult.set(await adapter.process(transcript: "second", snapshot: snapshot))
+            secondFinished.fulfill()
+        }
+        await fulfillment(of: [secondFinished], timeout: 1)
+        overlapTranslator.releaseFirst()
+        await fulfillment(of: [firstFinished], timeout: 1)
+
+        let firstExpected = EditPlan(
+            intent: .translate(targetLanguage: "ja-JP"),
+            operation: .insertAtCursor,
+            text: "first",
+            expectedContextFingerprint: "context",
+            requiresConfirmation: false
+        )
+        let secondExpected = EditPlan(
+            intent: .translate(targetLanguage: "ja-JP"),
+            operation: .insertAtCursor,
+            text: "second",
+            expectedContextFingerprint: "context",
+            requiresConfirmation: false
+        )
+        XCTAssertEqual(firstResult.value, .success(firstExpected))
+        XCTAssertEqual(secondResult.value, .success(secondExpected))
+        XCTAssertEqual(overlapUsageTracker.recordingCount, 2)
+        XCTAssertEqual(overlapUsageTracker.stats.totalSessions, 2)
+        XCTAssertTrue(overlapUsageTracker.allRecordingsWereOnMainThread)
     }
 
     func testManagersShareInjectedDefaultsSuite() {
