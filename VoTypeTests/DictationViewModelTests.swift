@@ -511,6 +511,7 @@ final class DictationViewModelTests: XCTestCase {
             try await requireStableCondition("queued successor cannot cancel before its admission") {
                 await runner.cancelledTokens.isEmpty
             }
+            successor.cancel()
             runner.startGates.releaseAll()
             try await waitUntil("both claimed requests admitted and cancelled") {
                 let admissions = await runner.admittedTokens

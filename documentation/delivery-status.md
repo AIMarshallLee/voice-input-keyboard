@@ -96,6 +96,7 @@
 - Task 6 独立规格/代码/证据审查 **PASS**，无本项待修问题；本地 plist 2/2、源码所有权门禁和 diff 校验通过。本次源文件没有命名 warning/error，既有工具提示仍保留。画中画适配器为 197 行，不再持有重复录音、权限、Speech、心跳或终态写入；保留 PiP 渲染/watchdog。用户可见的新 UUID Retry 交互明确属于 Task 8，未用无消费者变量冒充完成。此验收不放行整个 Slice A、真机或分发。
 - [Task 7 RED #167](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/35525427012) **FAILURE**，准确源码 `dc66ac1483fe0fdfef791aab9d248a07d9a0ab5f`（UTC 2026-09-20 17:18:17–17:20:42，2m25s）。23 个模型与 2 个协调器测试先于生产改造提交。17:20:36Z 模型测试明确报缺少带引擎/时限注入的 initializer、`engineIdentity`；其他 nil/production 推断错误由缺失接口引起，环境/XcodeGen/plist 正常。已向同一实施者发生产 GO；本项尚无 GREEN。预提交补充了同 UUID 重新领取时旧计时回调隔离（UI claim 身份）以及取消绑定的 2.5 秒完成关闭约束，不新增录音所有者或通用调度框架。
 - [Task 7 初版 CI #168](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/35525931280) **SUCCESS**，准确源码 `b7f2c3dc97c3ac3d4f823cfc8bc0ad9548fbc8f8`，build job 12m42s。实际日志为 170 单元零失败（模型 23、协调器 2）、4 个独立 UI 在两个 scheme 均通过，unsigned BUILD 17:39:26Z / ARCHIVE 17:40:16Z 成功；artifact `10609597995`（4,965,979 bytes）为无签名 CI 产物。没有点名本项变更文件的诊断；现有弃用/工具提示保留。签名、上传和元数据步骤跳过。**此 GREEN 不表示 Task 7 验收**：独立审查发现 gated A 退出后 B 被全局启动标记丢弃，正在加入行为回归。修复仅串行未完成的准入，已领取但排队中取消的请求仍由引擎结束，不引入额外录音所有者。
+- [Task 7 行为 RED #169](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/35527213277) **FAILURE**，准确源码 `e3cf37d8be1ea78be897867ed11edd897bd30f88`，build job 8m46s。172 单元仅两处目标失败：17:56:32Z 排队 B 未领取请求、17:56:35Z 重开 B 未同步领取请求；其余单元及 4 个独立 UI 通过，编译/环境正常。已确认全局启动标记丢失后继请求，开始模型内准入顺序最小修复；不是环境缺失或新增接口编译错误。修复不改变引擎协议、终态所有者或录音架构。
 - 真机语音/跨 App/权限/PiP：**EXTERNAL / NOT_RUN（本轮）**。历史用户测试曾暴露缺陷，不抹去历史结果。
 
 ## 发布基线

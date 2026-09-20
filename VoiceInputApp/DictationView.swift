@@ -28,7 +28,8 @@ final class DictationViewModel: ObservableObject {
     private var stopObserver: DarwinNotificationObserver?
     private var cancelObserver: DarwinNotificationObserver?
     private var attempt: PresentationAttempt?
-    private var startInFlight = false
+    private var admissionTail: Task<AsyncStream<DictationSessionEventEnvelope>?, Never>?
+    private var admissionTailOwner: PresentationAttempt?
 
     // UI-only identity also distinguishes cleanup/reload of the same IPC UUID.
     private final class PresentationAttempt {
@@ -139,7 +140,7 @@ final class DictationViewModel: ObservableObject {
 
     func startRecording() async {
         guard let current = attempt, hasValidSettings, !current.expired,
-              !current.claimed, !startInFlight else { return }
+              !current.claimed else { return }
         guard let claimed = DarwinBridge.readAndConsumeDictationSettings(
             expectedSession: current.request.token.rawValue
         ), claimed == current.settings else {
@@ -151,10 +152,36 @@ final class DictationViewModel: ObservableObject {
         current.claimed = true
         foregroundClaimTask?.cancel()
         foregroundClaimTask = nil
-        startInFlight = true
-        let stream = await engine.start(current.request)
-        startInFlight = false
-        current.returned = true
+        let predecessor = admissionTail
+        let admission = Task<AsyncStream<DictationSessionEventEnvelope>?, Never> { @MainActor in
+            defer {
+                if self.admissionTailOwner === current {
+                    self.admissionTail = nil
+                    self.admissionTailOwner = nil
+                }
+            }
+            // Serialize admission and a detached predecessor's effective cancel,
+            // never its event stream. Cancellation must not skip a claimed request.
+            _ = await predecessor?.value
+            let stream = await self.engine.start(current.request)
+            current.returned = true
+            guard self.attempt === current, !Task.isCancelled else {
+                if self.attempt === current { self.detach() }
+                await self.cancelEngineOnce(current)
+                return nil
+            }
+            return stream
+        }
+        admissionTail = admission
+        admissionTailOwner = current
+        let admittedStream = await withTaskCancellationHandler {
+            await admission.value
+        } onCancel: {
+            // Unstructured admission must receive its caller's cancellation;
+            // predecessor admission remains responsible for its own teardown.
+            admission.cancel()
+        }
+        guard let stream = admittedStream else { return }
         guard attempt === current, !Task.isCancelled else {
             if attempt === current { detach() }
             await cancelEngineOnce(current)
