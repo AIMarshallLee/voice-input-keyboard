@@ -1700,7 +1700,8 @@ struct DarwinBridge {
         return marker
     }
 
-    /// A past valid terminal is proof even after its ordinary TTL; never clean it here.
+    /// Only valid cancellation or receipt proves settlement, even after its ordinary TTL.
+    /// Result-only output may survive failed publication; never settle or clean it here.
     private static func replacementIsConfirmedFinishedUncoordinated(_ token: SessionToken, in directory: URL) -> Bool {
         let session = token.rawValue
         let now = Date().timeIntervalSince1970
@@ -1712,11 +1713,6 @@ struct DarwinBridge {
            let receipt = try? JSONDecoder().decode(DictationTerminalReceipt.self, from: data),
            receipt.session == session, receipt.timestamp.isFinite,
            receipt.timestamp > 0, receipt.timestamp <= now + 5 { return true }
-        if let name = resultFileName(for: session),
-           let data = try? Data(contentsOf: directory.appendingPathComponent(name)),
-           let result = try? JSONDecoder().decode(DictationIPCResult.self, from: data),
-           result.session == session, result.timestamp.isFinite,
-           result.timestamp > 0, result.timestamp <= now + 5 { return true }
         return false
     }
 

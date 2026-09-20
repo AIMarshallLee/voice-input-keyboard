@@ -9,7 +9,7 @@
 - 规格：[商用 V1](../docs/superpowers/specs/2026-09-04-voice-first-commercial-v1-design.md)。
 - 实施计划：[Slice A 九任务](../docs/superpowers/plans/2026-09-04-slice-a-reliable-session-engine.md)。
 - 当前断点：Task 1–7 已取得真实 RED、GREEN 和独立审查 PASS，实施验收进度 **7/9**。前台迁移 `faedeb6` 已修复退出、重开时丢失后继请求的问题并通过准确提交验证；这不是整个 App 的真机验收。
-- 下一动作：Task 8 第二轮 `3fc8d00` / #181 仍在 macOS 验证。独立复审确认原三项 Important 已修复，但新发现 result-only 写入残留可能被误当成已确认终态并清掉迁移身份。父级核实后已补两条 R36 回归，先取得实际行为 RED，再最小修复结案判定。保持 **7/9**，不因旧问题修复或测试通过就提前验收。
+- 下一动作：Task 8 R36 已由 `20e33fc` / #182 真实复现：235 单元仅两条新回归产生 6 个预期失败，4 个独立 UI 通过。同一实施者获准只移除 result-only 结案分支，不改已有测试和文本 TTL；随后重新跑完整门禁及独立复审。保持 **7/9**，不因此前 #181 自动门禁通过就提前验收。
 
 ## 自主执行约定（2026-09-20 生效）
 
@@ -55,12 +55,16 @@
 | 5 | Apple、文本、Darwin 生产适配 | 完成：`d58ed40` / #164 GREEN，两项审查问题修正，独立复审 PASS |
 | 6 | PiP/原地输入迁移 | 完成：`829e3b8` / #166 GREEN，独立规格、代码与证据审查 PASS |
 | 7 | 前台呈现迁移 | 完成：`faedeb6` / #170 GREEN，后继准入修复及独立规格/质量/证据复审 PASS |
-| 8 | 移除不支持的拉起与手动结果保留 | 修复中：第二轮 `3fc8d00` 原三项 Important 已关闭，但新增一项 result-only 结案问题；R36 两条回归已准备，#181 自动门禁待结果 |
+| 8 | 移除不支持的拉起与手动结果保留 | 修复中：`3fc8d00` / #181 自动门禁 GREEN，复审新增 result-only 结案问题已由 `20e33fc` / #182 行为 RED 复现；最小生产修复进行中 |
 | 9 | 全量回归、Release/Archive 与文档 | 待做 |
 
 任务只有在实现、相应测试及审查证据齐全后才标为完成。后续 Slice 在前片出口有新证据且自己的实施计划完成审查后才能实施。
 
 ## 验证路径与本轮证据
+
+- [CI #182](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/35538077588) 在准确 `20e33fc37c010cb85acdafac53b2b824edf05364` 完成 **行为 RED，9m13s**。235 单元共 6 个失败、0 unexpected，仅两个新 R36 用例：expired result-only 场景错误结案、删除 source、payload 清理后丢失精确恢复身份（5）；fresh result-only 场景错误结案（1）。其他 held、真实消费建立 receipt、精确取消等正向断言未失败；4 个独立 UI 通过（129.026s）。没有编译/环境失败，build/archive/分发跳过。父级据此授权仅删除 payload-only 结案分支，待新 GREEN/复审。
+
+- [CI #181](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/35537452948) 在准确 `3fc8d00db938a92a64691add0245368f676dc45d` 完成 **SUCCESS，12m7s**：233 单元零失败（28.478s / 37.329s wall），R35 三条新回归通过；4 个独立 UI 在两个 scheme 通过（38.594s / 35.416s），unsigned BUILD（21:14:25 UTC）和 ARCHIVE（21:14:56 UTC）通过。unsigned artifact `10613398003` 为 5,241,990 bytes，GitHub 压缩包摘要 `sha256:4a26172c400df1395e0eeaef364a0d0aee3631587fd6123a5e1faf49bf3634fb`，不是签名 IPA/TestFlight。签名与 Apple 上传跳过；旧 UIKit、兼容测试 API、AppIntents/Node 警告仍在，不宣称零警告。新 R36 两条回归已提交 `20e33fc37c010cb85acdafac53b2b824edf05364` / [#182](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/35538077588) 运行中，尚无实际 RED 或本次修复验收。
 
 - 第二轮独立复审覆盖 `20f9f7c..3fc8d00` 五提交：原三项 Important 均 ADDRESSED，新增一项 Important。若 result 写成而 receipt 写入及 result 回滚删除都失败，API 返回 ioFailure，但残留 payload 被新 helper 当作终态，可能释放/清掉迁移链接。R36 明确仅有效取消标记或 receipt 能解除链接；fresh result-only 仍可保留恢复并由真实消费建立 receipt，过期文本仍按原 TTL 清理。已准备 2 条真实文件回归，尚未取得其 RED；不把 fixture 当作实际 I/O 双故障注入。
 
