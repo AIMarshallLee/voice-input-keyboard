@@ -529,6 +529,14 @@ final class DictationConstantsTests: XCTestCase {
             XCTAssertEqual(try? Data(contentsOf: businessURL("cancel", token: token)), bytes,
                            "Unreadable or invalid evidence is not proof that cancellation is absent")
         }
+        XCTAssertEqual(try? Data(contentsOf: businessURL("cancel", token: expired)), validExpired,
+                       "An unknown potential anchor may still reference this expired proof")
+
+        // Retire only this test's unknown fixtures before checking ordinary unreferenced TTL.
+        for (token, _) in evidence {
+            try FileManager.default.removeItem(at: businessURL("cancel", token: token))
+        }
+        XCTAssertTrue(DarwinBridge.writeDictationSettings(handoffSettings(SessionToken())))
         XCTAssertFalse(FileManager.default.fileExists(atPath: businessURL("cancel", token: expired).path),
                        "A valid identity and positive, confirmed-expired timestamp still permit cleanup")
     }

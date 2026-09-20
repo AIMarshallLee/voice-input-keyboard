@@ -1415,6 +1415,7 @@ struct DarwinBridge {
                 guard let current = cancellationMarkerUncoordinated(at: currentURL),
                       current.handoffReplacementSession == replacement.rawValue,
                       now - current.timestamp > cancellationMaxAge,
+                      !isReferencedHandoffProofUncoordinated(session: source.rawValue, in: directory),
                       replacementIsConfirmedFinishedUncoordinated(replacement, in: directory) else { return false }
                 return removeUncoordinated(currentURL)
             }
@@ -1463,7 +1464,8 @@ struct DarwinBridge {
             }
             _ = withSessionLock(session: receipt.session, defaultValue: false) { directory in
                 let receiptURL = directory.appendingPathComponent(url.lastPathComponent)
-                guard let currentData = try? Data(contentsOf: receiptURL),
+                guard !isReferencedHandoffProofUncoordinated(session: receipt.session, in: directory),
+                      let currentData = try? Data(contentsOf: receiptURL),
                       let current = try? JSONDecoder().decode(
                         DictationTerminalReceipt.self,
                         from: currentData
@@ -1561,13 +1563,12 @@ struct DarwinBridge {
 
             let resultURL = directory.appendingPathComponent(resultName)
             let receiptURL = directory.appendingPathComponent(receiptName)
-            if let receipt: DictationTerminalReceipt = readUncoordinated(
-                from: receiptURL,
-                now: Date().timeIntervalSince1970,
-                maxAge: terminalReceiptMaxAge
-            ), receipt.session == result.session {
+            switch readTerminalReceiptUncoordinated(session: result.session, in: directory) {
+            case .present:
                 removeUncoordinated(directory.appendingPathComponent(liveName))
                 return .alreadyTerminal
+            case .unavailable: return .ioFailure
+            case .absent: break
             }
             if let existing: DictationIPCResult = readUncoordinated(
                 from: resultURL,
@@ -1608,12 +1609,10 @@ struct DarwinBridge {
             return false
         }
         let receiptURL = directory.appendingPathComponent(receiptName)
-        if let receipt: DictationTerminalReceipt = readUncoordinated(
-            from: receiptURL,
-            now: now,
-            maxAge: terminalReceiptMaxAge
-        ) {
-            return receipt.session == result.session
+        switch readTerminalReceiptUncoordinated(session: result.session, in: directory, now: now) {
+        case .present: return true
+        case .unavailable: return false
+        case .absent: break
         }
         return writeUncoordinated(
             DictationTerminalReceipt(session: result.session, timestamp: now),
@@ -1643,9 +1642,51 @@ struct DarwinBridge {
             // Only a valid, identity-matched, positively dated expired marker is garbage.
             guard let marker = cancellationMarkerUncoordinated(at: url),
                   marker.handoffReplacementSession == nil,
-                  now - marker.timestamp > maxAge else { return true }
+                  now - marker.timestamp > maxAge,
+                  !isReferencedHandoffProofUncoordinated(session: session, in: directory) else { return true }
             return !removeUncoordinated(url)
         }
+    }
+
+    /// Caller already holds the protected token's session lock. Creating a reference
+    /// takes source + replacement locks; this scan must not acquire another public lock.
+    private static func isReferencedHandoffProofUncoordinated(session: String, in directory: URL) -> Bool {
+        guard let urls = try? FileManager.default.contentsOfDirectory(at: directory,
+            includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) else { return true }
+        for url in urls where url.lastPathComponent.hasPrefix(cancellationFilePrefix)
+            && url.lastPathComponent.hasSuffix(cancellationFileSuffix) {
+            guard let marker = cancellationMarkerUncoordinated(at: url) else { return true }
+            if marker.handoffReplacementSession == session { return true }
+        }
+        return false
+    }
+
+    private enum TerminalReceiptRead {
+        case absent, present, unavailable
+    }
+
+    /// Unlike payload reads, valid expired receipts remain authoritative while referenced.
+    /// Unknown referenced evidence is preserved and cannot authorize another publication.
+    private static func readTerminalReceiptUncoordinated(
+        session: String, in directory: URL, now: TimeInterval = Date().timeIntervalSince1970
+    ) -> TerminalReceiptRead {
+        guard let name = terminalReceiptFileName(for: session) else { return .unavailable }
+        let url = directory.appendingPathComponent(name)
+        switch fileEvidenceUncoordinated(url) {
+        case .absent: return .absent
+        case .unavailable: return .unavailable
+        case .present: break
+        }
+        let referenced = isReferencedHandoffProofUncoordinated(session: session, in: directory)
+        if let data = try? Data(contentsOf: url),
+           let receipt = try? JSONDecoder().decode(DictationTerminalReceipt.self, from: data),
+           receipt.session == session, receipt.timestamp.isFinite,
+           receipt.timestamp > 0, receipt.timestamp <= now + 5,
+           referenced || isFresh(receipt.timestamp, now: now, maxAge: terminalReceiptMaxAge) {
+            return .present
+        }
+        guard !referenced else { return .unavailable }
+        return removeUncoordinated(url) ? .absent : .unavailable
     }
 
     private static func cancellationMarkerUncoordinated(at url: URL) -> DictationCancellation? {
@@ -1702,13 +1743,9 @@ struct DarwinBridge {
         in directory: URL,
         now: TimeInterval = Date().timeIntervalSince1970
     ) -> Bool {
-        if let receiptName = terminalReceiptFileName(for: session),
-           let receipt: DictationTerminalReceipt = readUncoordinated(
-                from: directory.appendingPathComponent(receiptName),
-                now: now,
-                maxAge: terminalReceiptMaxAge
-           ), receipt.session == session {
-            return true
+        switch readTerminalReceiptUncoordinated(session: session, in: directory, now: now) {
+        case .present, .unavailable: return true
+        case .absent: break
         }
         guard let fileName = resultFileName(for: session),
               let result: DictationIPCResult = readUncoordinated(
