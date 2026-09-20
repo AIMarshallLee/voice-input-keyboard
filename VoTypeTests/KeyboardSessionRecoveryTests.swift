@@ -337,7 +337,12 @@ final class KeyboardSessionRecoveryTests: XCTestCase {
             XCTAssertEqual(KeyboardSessionRecoveryStore.recoveryDecision(snapshot: snapshot, contextMatches: true), .restore(token))
             let corruptBarrier = Data("corrupt-recovery-evidence".utf8)
             try corruptBarrier.write(to: recoveryFile(kind, token: token))
-            XCTAssertEqual(KeyboardSessionRecoveryStore.recoveryDecision(snapshot: snapshot, contextMatches: true), .retry(token))
+            XCTAssertEqual(KeyboardSessionRecoveryStore.recoveryDecision(snapshot: snapshot, contextMatches: true),
+                           kind == "cancel" ? .storageUnavailable : .retry(token))
+            if kind == "cancel" {
+                XCTAssertEqual(DarwinBridge.handoffRecovery(), .unavailable)
+                XCTAssertEqual(KeyboardSessionRecoveryStore.recoveryDecision(snapshot: nil, contextMatches: false), .storageUnavailable)
+            }
             XCTAssertEqual(try Data(contentsOf: recoveryFile(kind, token: token)), corruptBarrier)
             DarwinBridge.clearIPCFilesForTesting()
         }
@@ -360,7 +365,8 @@ final class KeyboardSessionRecoveryTests: XCTestCase {
         defer { DarwinBridge.setContainerDirectoryForTesting(ipcDirectory) }
         for unavailable in [nil, blockedContainer] as [URL?] {
             DarwinBridge.setContainerDirectoryForTesting(unavailable)
-            XCTAssertEqual(KeyboardSessionRecoveryStore.recoveryDecision(snapshot: snapshot, contextMatches: true), .retry(token),
+            XCTAssertEqual(DarwinBridge.handoffRecovery(), .unavailable)
+            XCTAssertEqual(KeyboardSessionRecoveryStore.recoveryDecision(snapshot: snapshot, contextMatches: true), .storageUnavailable,
                            "Unknown IPC state cannot justify restoring a context-only wait")
         }
         XCTAssertEqual(defaults.data(forKey: "keyboardSessionRecovery.v1"), storedSnapshot)
@@ -380,6 +386,7 @@ final class KeyboardSessionRecoveryTests: XCTestCase {
             }
             let before = try recoveryBusinessBytes()
             let storedSnapshot = defaults.data(forKey: "keyboardSessionRecovery.v1")
+            XCTAssertEqual(DarwinBridge.handoffRecovery(), .unresolved(replacement))
             let decision = KeyboardSessionRecoveryStore.recoveryDecision(
                 snapshot: snapshot, contextMatches: context == "unrelated-matching")
             assertNoUnsafeClaimGapDecision(decision, source: source, replacement: replacement, snapshot: snapshot)
@@ -397,10 +404,13 @@ final class KeyboardSessionRecoveryTests: XCTestCase {
         DarwinBridge.setContainerDirectoryForTesting(nil)
         defer { DarwinBridge.setContainerDirectoryForTesting(ipcDirectory) }
         XCTAssertFalse(DarwinBridge.cancelSession(replacement.rawValue))
+        XCTAssertEqual(DarwinBridge.handoffRecovery(), .unavailable)
+        XCTAssertEqual(KeyboardSessionRecoveryStore.recoveryDecision(snapshot: nil, contextMatches: false), .storageUnavailable)
         XCTAssertNotEqual(KeyboardSessionRecoveryStore.recoveryDecision(snapshot: nil, contextMatches: false), .none,
                           "Unavailable anchor discovery must not authorize a fresh launch")
         DarwinBridge.setContainerDirectoryForTesting(ipcDirectory)
         XCTAssertEqual(try recoveryBusinessBytes(), before)
+        XCTAssertEqual(DarwinBridge.handoffRecovery(), .unresolved(replacement))
         let decision = KeyboardSessionRecoveryStore.recoveryDecision(snapshot: nil, contextMatches: false)
         assertNoUnsafeClaimGapDecision(decision, source: source, replacement: replacement, snapshot: nil)
         XCTAssertEqual(try recoveryBusinessBytes(), before)
@@ -421,11 +431,54 @@ final class KeyboardSessionRecoveryTests: XCTestCase {
             }
             let evidenceURL = recoveryFile(terminal ? "terminal" : "cancel", token: replacement)
             let evidence = try Data(contentsOf: evidenceURL)
+            XCTAssertEqual(DarwinBridge.handoffRecovery(), .none)
             XCTAssertEqual(KeyboardSessionRecoveryStore.recoveryDecision(snapshot: nil, contextMatches: false), .none,
                            "A confirmed finished replacement must not permanently prevent a fresh request")
             XCTAssertEqual(try Data(contentsOf: evidenceURL), evidence)
             DarwinBridge.clearIPCFilesForTesting()
         }
+    }
+
+    func testLinkedReplacementWithRealPendingLiveOrResultRestoresExactTokenWithoutSnapshot() throws {
+        for phase in ["pending", "live", "result"] {
+            let source = SessionToken()
+            let replacement = SessionToken()
+            let settings = recoverySettings(source)
+            XCTAssertTrue(DarwinBridge.writeDictationSettings(settings))
+            guard case .moved = DarwinBridge.handoffDictationSettingsToManual(from: source, to: replacement, original: settings)
+            else { return XCTFail("Fixture handoff must succeed") }
+            if phase != "pending" {
+                XCTAssertNotNil(DarwinBridge.readAndConsumeDictationSettings(expectedSession: replacement.rawValue))
+                if phase == "live" { XCTAssertTrue(DarwinBridge.writeLiveState(phase: .listening, session: replacement.rawValue)) }
+                else { XCTAssertEqual(DarwinBridge.commit(.completed(recoveryPlan), token: replacement), .written) }
+            }
+            let bytes = try recoveryBusinessBytes()
+            XCTAssertEqual(DarwinBridge.handoffRecovery(), phase == "result" ? .none : .unresolved(replacement))
+            XCTAssertEqual(KeyboardSessionRecoveryStore.recoveryDecision(snapshot: nil, contextMatches: false), .restore(replacement))
+            XCTAssertNil(KeyboardSessionRecoveryStore.load(defaults: defaults), "Discovery must not manufacture editor context")
+            XCTAssertEqual(try recoveryBusinessBytes(), bytes)
+            DarwinBridge.clearIPCFilesForTesting()
+        }
+    }
+
+    func testMultipleClaimedHandoffAnchorsMustBeResolvedOneAtATime() throws {
+        let a = SessionToken()
+        let b = SessionToken()
+        try createClaimedHandoff(source: SessionToken(), replacement: a)
+        try createClaimedHandoff(source: SessionToken(), replacement: b)
+        let bytes = try recoveryBusinessBytes()
+        let firstDecision: DictationHandoffRecovery = DarwinBridge.handoffRecovery()
+        guard case .unresolved(let first) = firstDecision else { return XCTFail("Two unresolved links cannot be ignored") }
+        XCTAssertTrue(first == a || first == b)
+        XCTAssertEqual(KeyboardSessionRecoveryStore.recoveryDecision(snapshot: nil, contextMatches: false), .cancelBeforeRetry(first))
+        XCTAssertEqual(try recoveryBusinessBytes(), bytes)
+        XCTAssertTrue(DarwinBridge.cancelSession(first.rawValue))
+        let remaining = first == a ? b : a
+        XCTAssertEqual(DarwinBridge.handoffRecovery(), .unresolved(remaining))
+        XCTAssertEqual(KeyboardSessionRecoveryStore.recoveryDecision(snapshot: nil, contextMatches: false), .cancelBeforeRetry(remaining))
+        XCTAssertTrue(DarwinBridge.cancelSession(remaining.rawValue))
+        XCTAssertEqual(DarwinBridge.handoffRecovery(), .none)
+        XCTAssertEqual(KeyboardSessionRecoveryStore.recoveryDecision(snapshot: nil, contextMatches: false), .none)
     }
 
     private func createClaimedHandoff(source: SessionToken, replacement: SessionToken) throws {
@@ -442,6 +495,7 @@ final class KeyboardSessionRecoveryTests: XCTestCase {
                                                source: SessionToken, replacement: SessionToken,
                                                snapshot: KeyboardSessionRecoverySnapshot?,
                                                file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertEqual(decision, .cancelBeforeRetry(replacement), file: file, line: line)
         XCTAssertNotEqual(decision, .none, "The claimed replacement must remain discoverable", file: file, line: line)
         XCTAssertNotEqual(decision, .retry(source), "Ordinary Retry can create another request without cancelling R", file: file, line: line)
         XCTAssertNotEqual(decision, .retry(replacement), "R requires cancellation-before-retry, not ordinary Retry", file: file, line: line)

@@ -62,6 +62,12 @@
 
 ## 验证路径与本轮证据
 
+- [CI #178](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/35534896738) 在准确 `e7d0da3bd2e40caa7b9ed9d5439527ef9c9f9d6c` 完成 **行为 RED，7m51s**：227 单元共 20 个失败诊断，仅落在 3 条已知 PiP 用例及 7 条新 R33 用例，0 unexpected。新失败真实证明链接缺失/重复取消丢失、未解决链接被 TTL/GC 清掉、异常记录被覆盖、claim 空隙错误进入 none/无关恢复/普通 Retry、存储不可用被当作无请求。4 个独立 UI 通过（113.652s）；无编译/环境失败。下一阶段只补精确决策契约，再实现桥接/恢复；后台待机排序已有未提交候选，不计入 GREEN。
+
+- [CI #177](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/35534527381) 已在准确 `b8080ba5e38a84451c7b47757ab422600d3318f6` 完成预期 **行为 RED，8m10s**。实际 220 单元仅 3 个失败、无 unexpected：均为新用例中取消尚挂起却已经显示 standby 的断言（302/325/352 行）；其余所有权、释放和后继检查未报错。4 个独立 UI 用例通过（69.274s）；无编译/环境失败，build/archive/distribution 跳过。此前本地观察 TLS 超时不影响这一经完整日志核对的结论。
+
+- R33 七条真实 IPC 行为回归已提交 `e7d0da3bd2e40caa7b9ed9d5439527ef9c9f9d6c`，[CI #178](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/35534896738) 运行中；覆盖 source→replacement 身份落盘/保留、claim 后无 live 的恢复空隙、取消失败与终态后释放。仍无生产变更，尚未读取实际 RED。#177 的本地观察命令曾因 API TLS 超时退出，但远端仍在运行；未把观察失败当作测试失败，也未重启任何 CI。
+
 - [CI #176](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/35533829022) 在准确 `20f9f7cbf44dcbbc737ac8fcfcae7ceba74da232` 完成 **SUCCESS，14m19s**。实际日志：217 单元零失败（25.704s / 29.775s wall），4 个独立 UI 用例在两个 scheme 下通过（182.075s / 54.046s），source gate、unsigned BUILD（20:08:15 UTC）和 ARCHIVE（20:09:04 UTC）通过。unsigned artifact `10611934207` 为 5,165,010 bytes；所有 Apple 签名、上传与元数据步骤 skipped。前轮 20 项新增回归全通过，Timer/MainActor 警告已消失；旧 UIKit/兼容 API/Node action 警告仍存在。复审仍有三项 Important，故不验收 Task 8、不合并、不分发。
 
 - 第二轮取消时序测试 `b8080ba5e38a84451c7b47757ab422600d3318f6` 已提交并非强制推送，[CI #177](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/35534527381) 已排队。三条新增用例使用现有 runner 的 test-only cancel gate，覆盖停录前不可待机、旧取消不可覆盖活动或已终态后继；尚未取得其实际行为 RED。生产代码未改；父级 plist 2/2（0.030s）及 diff/staged 检查通过。#176 的 Unit/UI 步骤已显示通过，完整 build/archive 结果及日志计数尚待核对。

@@ -181,6 +181,33 @@ final class DictationConstantsTests: XCTestCase {
         }
     }
 
+    func testLinkedSourceGCUsesExpiredReplacementProofBeforeOrdinaryProofCleanup() throws {
+        for kind in ["cancel", "terminal"] {
+            let source = SessionToken()
+            let replacement = SessionToken()
+            let now = Date().timeIntervalSince1970
+            let expiredProof = try JSONSerialization.data(withJSONObject: ["session": replacement.rawValue,
+                "timestamp": now - DarwinBridge.cancellationMaxAge - 10])
+            let proofURL = businessURL(kind, token: replacement)
+            // Create the replacement proof first; GC must not depend on enumeration order.
+            try expiredProof.write(to: proofURL)
+            let anchor = try JSONSerialization.data(withJSONObject: ["session": source.rawValue,
+                "timestamp": now - DarwinBridge.cancellationMaxAge - 20,
+                "handoffReplacementSession": replacement.rawValue])
+            let anchorURL = businessURL("cancel", token: source)
+            try anchor.write(to: anchorURL)
+            let bytes = try businessBytes()
+            XCTAssertEqual(DarwinBridge.handoffRecovery(), .none,
+                           "A valid expired proof still confirms that its linked replacement finished")
+            XCTAssertEqual(try businessBytes(), bytes, "Discovery must not clean the proof before linked GC can use it")
+            XCTAssertTrue(DarwinBridge.writeDictationSettings(handoffSettings(SessionToken())))
+            XCTAssertFalse(FileManager.default.fileExists(atPath: anchorURL.path))
+            XCTAssertFalse(FileManager.default.fileExists(atPath: proofURL.path))
+            XCTAssertEqual(DarwinBridge.handoffRecovery(), .none)
+            DarwinBridge.clearIPCFilesForTesting()
+        }
+    }
+
     func testSourceRecancelCannotOverwriteUnreadablePotentialAnchor() throws {
         let source = SessionToken()
         let bytes = Data("unreadable-existing-handoff-anchor".utf8)
@@ -415,6 +442,7 @@ final class DictationConstantsTests: XCTestCase {
     }
 
     func testCancellationEvidenceDistinguishesAbsenceAndPresentMarkerWithoutBusinessWrites() throws {
+        XCTAssertEqual(DarwinBridge.handoffRecovery(), .none)
         let absent = SessionToken()
         let existing = SessionToken()
         XCTAssertTrue(DarwinBridge.cancelSession(existing.rawValue))
@@ -422,6 +450,7 @@ final class DictationConstantsTests: XCTestCase {
 
         XCTAssertEqual(DarwinBridge.cancellationEvidence(for: absent), .absent)
         XCTAssertEqual(DarwinBridge.cancellationEvidence(for: existing), .present)
+        XCTAssertEqual(DarwinBridge.handoffRecovery(), .none, "Legacy cancellation without a link is not a handoff anchor")
 
         XCTAssertEqual(try businessBytes(), before)
     }
