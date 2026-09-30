@@ -64,6 +64,8 @@
 
 ## 验证路径与本轮证据
 
+- [CI #185](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/36792907812) 在准确 `120798b697877e1382727f07d76578ebaf7a476b` 完成 **缺失接口 RED，1m37s**：五处 permission resolver 构造调用缺少参数接口、route source 缺少 `inputRouteIdentities`；其余为派生类型推断诊断。没有运行时用例，不能证明路由/真实 resolver 行为失败。主控授权同一修复工作包先补最小内部注入接口并保持原分类/权限行为，再取得适配器行为 RED；引擎/业务问题修复仍待后续 GO。九份 Task 9 文档已在 `1206769` 本地提交并经独立范围复审 PASS，尚未推送或取得最终候选 CI。
+
 - [CI #184](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/36790806370) 在准确 `df2f3dfc18bfdf6f32909e5408437eb495703813` 完成 **行为 RED，7m50s**（2026-09-30 23:23:19–23:31:09 UTC）。238 单元中仅三条新权限取消回归失败：退休授权任务未观察取消（0 而非 1），模型化的下一项麦克风请求仍计为 1（应为 0）；共 6 个明确断言和同一 supersession 稳态检查抛错，XCTest 汇总 7 failures / 1 unexpected。不是编译或环境错误；其他单元、修订后的并发文本处理测试（0.062s）与 4 个独立 UI 通过，source/plist 门禁通过，build/archive/签名/上传跳过。此轮只证明真实引擎没有取消任务，系统权限请求计数仍由 fake 建模；下一轮适配器测试将验证真实 resolver 边界，尚无生产修复或 GREEN。
 
 - [CI #183](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/35538673741) 在准确 `b3be44b88cba83a5768af199ed30f2eec85fdaa6` 完成 **SUCCESS，12m17s**：235 单元零失败（53.643s / 54.534s wall），4 个独立 UI 两 scheme 通过（46.077s / 48.910s），两个 R36 回归均通过。20 轮 IPC（1.470s）、50 次引擎重用（0.839s）、100 轮终态竞态（2.006s）实际用例均通过。source gate、unsigned BUILD（21:37:24 UTC）、ARCHIVE（21:38:06 UTC）及主 App/键盘扩展目录检查通过。unsigned artifact `10613729361` 为 5,241,187 bytes，GitHub ZIP 摘要 `sha256:db2d5cc8d0e82596928d2002a8392ea677aef8128ddc7a8b1125b5e5e6805355`；签名和 Apple 上传全部跳过，不是 TestFlight。结合原 reviewer 第三轮 PASS，Task 8 正式验收；真实双重 I/O 故障注入、隐藏 UIKit 回调及签名真机仍未覆盖。

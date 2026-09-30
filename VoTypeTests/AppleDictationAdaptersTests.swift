@@ -204,6 +204,13 @@ final class AppleDictationAdaptersTests: XCTestCase {
         let authorization = Task {
             await resolver.authorize(policy: .requestIfNeeded)
         }
+        var speechCallbackReleased = false
+        defer {
+            authorization.cancel()
+            if !speechCallbackReleased {
+                speechCallbackGate.resume(with: .failure(.interrupted))
+            }
+        }
 
         let speechRequestDidStart = (try? await waitUntil("Speech system request", timeout: 1) {
             requests.entries.contains("speech")
@@ -211,13 +218,27 @@ final class AppleDictationAdaptersTests: XCTestCase {
         if !speechRequestDidStart {
             authorization.cancel()
             speechCallbackGate.resume(with: .failure(.interrupted))
-            _ = await authorization.value
+            speechCallbackReleased = true
+            do {
+                try await runBoundedOperation("authorization task completion") {
+                    _ = await authorization.value
+                }
+            } catch {
+                XCTFail("Authorization did not finish after releasing the Speech callback: \(error)")
+            }
             XCTFail("Speech system request did not start")
             return
         }
         authorization.cancel()
         speechCallbackGate.resume(with: .success(()))
-        _ = await authorization.value
+        speechCallbackReleased = true
+        do {
+            try await runBoundedOperation("authorization task completion") {
+                _ = await authorization.value
+            }
+        } catch {
+            XCTFail("Authorization did not finish after releasing the Speech callback: \(error)")
+        }
 
         XCTAssertEqual(requests.entries, ["speech"])
     }
@@ -225,16 +246,16 @@ final class AppleDictationAdaptersTests: XCTestCase {
     func testOutputOnlyRemovalWithUnchangedInputDoesNotEmitInputRouteLoss() async {
         let event = await routeChangeEvent(
             inputRouteIdentities: (previous: ["built-in-mic"], current: ["built-in-mic"]),
-            expectInputRouteLoss: false
+            expectedFirstEvent: .interruptionBegan
         )
 
-        XCTAssertNil(event)
+        XCTAssertEqual(event, .interruptionBegan)
     }
 
     func testOldDeviceUnavailableAfterInputRemovalAndFallbackEmitsInputRouteLoss() async {
         let event = await routeChangeEvent(
             inputRouteIdentities: (previous: ["external-mic"], current: ["built-in-mic"]),
-            expectInputRouteLoss: true
+            expectedFirstEvent: .inputRouteLost
         )
 
         XCTAssertEqual(event, .inputRouteLost)
@@ -243,15 +264,15 @@ final class AppleDictationAdaptersTests: XCTestCase {
     func testOldDeviceUnavailableWithoutRouteEvidenceDoesNotInventInputLoss() async {
         let event = await routeChangeEvent(
             inputRouteIdentities: nil,
-            expectInputRouteLoss: false
+            expectedFirstEvent: .interruptionBegan
         )
 
-        XCTAssertNil(event)
+        XCTAssertEqual(event, .interruptionBegan)
     }
 
     private func routeChangeEvent(
         inputRouteIdentities: (previous: [String], current: [String])?,
-        expectInputRouteLoss: Bool
+        expectedFirstEvent: DictationAudioSystemEvent
     ) async -> DictationAudioSystemEvent? {
         let center = NotificationCenter()
         let eventSource = AppleDictationAudioSystemEventSource(
@@ -259,12 +280,15 @@ final class AppleDictationAdaptersTests: XCTestCase {
             inputRouteIdentities: { _ in inputRouteIdentities }
         )
         let observedEvent = LockedTestBox<DictationAudioSystemEvent?>(nil)
+        let eventReceived = LockedTestBox(false)
         let consumer = Task {
             var iterator = eventSource.events.makeAsyncIterator()
             if let event = await iterator.next() {
                 observedEvent.set(event)
+                eventReceived.set(true)
             }
         }
+        defer { consumer.cancel() }
         center.post(
             name: AVAudioSession.routeChangeNotification,
             object: nil,
@@ -273,19 +297,30 @@ final class AppleDictationAdaptersTests: XCTestCase {
                     AVAudioSession.RouteChangeReason.oldDeviceUnavailable.rawValue
             ]
         )
+        center.post(
+            name: AVAudioSession.interruptionNotification,
+            object: nil,
+            userInfo: [
+                AVAudioSessionInterruptionTypeKey:
+                    AVAudioSession.InterruptionType.began.rawValue
+            ]
+        )
 
-        if expectInputRouteLoss {
-            let eventDidArrive = (try? await waitUntil("input route-loss event", timeout: 1) {
-                observedEvent.value != nil
-            }) != nil
-            if !eventDidArrive {
-                XCTFail("Expected the route notification to emit inputRouteLost")
-            }
+        let eventDidArrive = (try? await waitUntil("first audio system event", timeout: 1) {
+            eventReceived.value
+        }) != nil
+        if !eventDidArrive {
+            XCTFail("Expected the route or interruption notification to emit an event")
         } else {
-            try? await Task.sleep(nanoseconds: 50_000_000)
+            XCTAssertEqual(observedEvent.value, expectedFirstEvent)
         }
-        consumer.cancel()
-        await consumer.value
+        do {
+            try await runBoundedOperation("audio event consumer completion") {
+                await consumer.value
+            }
+        } catch {
+            XCTFail("Audio event consumer did not finish: \(error)")
+        }
         return observedEvent.value
     }
 

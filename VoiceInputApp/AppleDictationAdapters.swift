@@ -36,13 +36,38 @@ enum DictationPermissionDecision: Equatable {
 }
 
 final class AppleDictationPermissionResolver: @unchecked Sendable, DictationPermissionResolving {
+    private let speechAuthorizationStateProvider: () -> DictationAuthorizationState
+    private let microphoneAuthorizationStateProvider: () -> DictationAuthorizationState
+    private let requestSpeechAuthorizationOperation: () async -> Void
+    private let requestMicrophoneAuthorizationOperation: () async -> Void
+
+    init(
+        speechAuthorizationState: (() -> DictationAuthorizationState)? = nil,
+        microphoneAuthorizationState: (() -> DictationAuthorizationState)? = nil,
+        requestSpeechAuthorization: (() async -> Void)? = nil,
+        requestMicrophoneAuthorization: (() async -> Void)? = nil
+    ) {
+        speechAuthorizationStateProvider = speechAuthorizationState ?? {
+            Self.appleSpeechAuthorizationState()
+        }
+        microphoneAuthorizationStateProvider = microphoneAuthorizationState ?? {
+            Self.appleMicrophoneAuthorizationState()
+        }
+        requestSpeechAuthorizationOperation = requestSpeechAuthorization ?? {
+            await Self.requestAppleSpeechAuthorization()
+        }
+        requestMicrophoneAuthorizationOperation = requestMicrophoneAuthorization ?? {
+            await Self.requestAppleMicrophoneAuthorization()
+        }
+    }
+
     func authorize(
         policy: DictationAuthorizationPolicy
     ) async -> Result<Void, DictationFailure> {
         while true {
             switch DictationPermissionDecision.next(
-                speech: speechAuthorizationState(),
-                microphone: microphoneAuthorizationState(),
+                speech: speechAuthorizationStateProvider(),
+                microphone: microphoneAuthorizationStateProvider(),
                 policy: policy
             ) {
             case .proceed:
@@ -50,14 +75,14 @@ final class AppleDictationPermissionResolver: @unchecked Sendable, DictationPerm
             case .fail(let failure):
                 return .failure(failure)
             case .requestSpeech:
-                await requestSpeechAuthorization()
+                await requestSpeechAuthorizationOperation()
             case .requestMicrophone:
-                await requestMicrophoneAuthorization()
+                await requestMicrophoneAuthorizationOperation()
             }
         }
     }
 
-    private func speechAuthorizationState() -> DictationAuthorizationState {
+    private static func appleSpeechAuthorizationState() -> DictationAuthorizationState {
         switch SFSpeechRecognizer.authorizationStatus() {
         case .authorized:
             return .authorized
@@ -70,7 +95,7 @@ final class AppleDictationPermissionResolver: @unchecked Sendable, DictationPerm
         }
     }
 
-    private func microphoneAuthorizationState() -> DictationAuthorizationState {
+    private static func appleMicrophoneAuthorizationState() -> DictationAuthorizationState {
         switch AVAudioSession.sharedInstance().recordPermission {
         case .granted:
             return .authorized
@@ -83,7 +108,7 @@ final class AppleDictationPermissionResolver: @unchecked Sendable, DictationPerm
         }
     }
 
-    private func requestSpeechAuthorization() async {
+    private static func requestAppleSpeechAuthorization() async {
         await withCheckedContinuation { continuation in
             SFSpeechRecognizer.requestAuthorization { _ in
                 continuation.resume()
@@ -91,7 +116,7 @@ final class AppleDictationPermissionResolver: @unchecked Sendable, DictationPerm
         }
     }
 
-    private func requestMicrophoneAuthorization() async {
+    private static func requestAppleMicrophoneAuthorization() async {
         await withCheckedContinuation { continuation in
             AVAudioSession.sharedInstance().requestRecordPermission { _ in
                 continuation.resume()
@@ -120,6 +145,7 @@ final class AppleDictationAudioSessionController: @unchecked Sendable, Dictation
 }
 
 final class AppleDictationAudioSystemEventSource: @unchecked Sendable {
+    private let inputRouteIdentities: (Notification) -> (previous: [String], current: [String])?
     private let notificationCenter: NotificationCenter
     private let stream: AsyncStream<DictationAudioSystemEvent>
     private var streamContinuation: AsyncStream<DictationAudioSystemEvent>.Continuation?
@@ -127,8 +153,21 @@ final class AppleDictationAudioSystemEventSource: @unchecked Sendable {
 
     var events: AsyncStream<DictationAudioSystemEvent> { stream }
 
-    init(notificationCenter: NotificationCenter = .default) {
+    init(
+        notificationCenter: NotificationCenter = .default,
+        inputRouteIdentities: ((Notification) -> (previous: [String], current: [String])?)? = nil
+    ) {
         self.notificationCenter = notificationCenter
+        self.inputRouteIdentities = inputRouteIdentities ?? { notification in
+            guard let previousRoute = notification.userInfo?[
+                AVAudioSessionRouteChangePreviousRouteKey
+            ] as? AVAudioSessionRouteDescription else { return nil }
+            let currentRoute = AVAudioSession.sharedInstance().currentRoute
+            return (
+                previous: previousRoute.inputs.map(\.uid),
+                current: currentRoute.inputs.map(\.uid)
+            )
+        }
         var continuation: AsyncStream<DictationAudioSystemEvent>.Continuation!
         stream = AsyncStream { continuation = $0 }
         streamContinuation = continuation
