@@ -4616,6 +4616,10 @@ git status --short --branch
 
 Expected: a clean worktree on the Slice A branch. Record the exact commit SHA and the four fresh command outcomes in `documentation/tests.md`. Stop before any signing, TestFlight, metadata, screenshot, or App Review action.
 
+## Final integration refinement (2026-10-01)
+
+**R37 — route evidence and retired authorization:** Final whole-branch review found that `.oldDeviceUnavailable` describes the previous output path, not proof of microphone loss. Classify actual previous/current input identity: unchanged input with output-only removal continues; removed active input, including fallback to another microphone, fails closed without automatic resume. Add adapter notification regressions. Retain the session-owned permission task and cancel it during synchronous terminal reservation, with resolver cancellation checks before each new prompt and after suspended callbacks. R25's nonzero cancellation-race caveat still permits an already-started OS dialog and its eventual callback; it does not justify starting the next permission prompt after retirement. Cover cancel, timeout and supersession before implementation. Also release and join the overlap test's detached tasks before deleting its unique defaults domain, preserving finite failure reporting. One test-first final fix wave, then scoped re-review and exact final CI; no new IPC schema, engine protocol, queue, dependencies or release authority. Cost if wrong: an input-route switch or cancelled permission attempt changes progress; physical Apple callback and hardware behavior remain external gates.
+
 ## Final Review Checklist
 
 - [ ] Every changed production line traces to one Slice A exit criterion.
@@ -4624,11 +4628,12 @@ Expected: a clean worktree on the Slice A branch. Record the exact commit SHA an
 - [ ] Audio append is synchronous and barrier-protected; buffer callbacks create no task.
 - [ ] Old token/generation callbacks, deadlines, and Apple events cannot mutate a new session.
 - [ ] Foreground may request permissions; in-place mode never does.
+- [ ] Retired authorization work is cancelled before persistence awaits; an already-shown OS prompt may finish, but no subsequent permission prompt or stale audio/Speech work begins. Output-only device removal with unchanged microphone is not input-route loss.
 - [ ] Ordinary app activation presents an exact pending request without a deep link; settings remain unconsumed until the synchronous exact claim before `engine.start`, and a 3-second claim miss leaves them recoverable with visible failure. The first engine event must be matching `.authorizing`.
 - [ ] Cold and timed-out hot routes instruct manual open within the required bound and never call unsupported launch APIs.
 - [ ] The 1.2-second hot acknowledgement timer is tested through its injected scheduler and cancels on only the matching acknowledgement.
 - [ ] A hot timeout cannot expose two eligible sessions: replacement settings are staged, the old token is durably cancelled before promotion, and interrupted/failed handoff offers discoverable manual work or explicit Retry. Late old acknowledgements/results are ignored or rejected.
-- [ ] Manual/recreated/empty/destructive results stay held; token/context/selection/fingerprint are prevalidated, the consumed payload must equal the preview, and rejection leaves the pending payload and publication-time receipt unchanged.
+- [ ] Manual/recreated/empty/destructive results stay held. Explicit plain insertion needs the held token, no live selection and non-empty text; confirmed replace/delete additionally need original context/selection/fingerprint. Insert/copy compare the consumed payload with the frozen preview; discard validates the preview before consuming the exact held token. Rejected edits leave the pending payload and publication-time receipt unchanged.
 - [ ] New result encoding writes `EditPlan`; legacy destructive decoding is non-destructive.
 - [ ] Full unit/UI, source gate, unsigned Release, archive contents, and `git diff --check` have fresh evidence.
 - [ ] Physical-device and Apple distribution gates remain explicitly `EXTERNAL / NOT_RUN`.

@@ -104,6 +104,48 @@ final class DictationSessionEngineTests: XCTestCase {
         }
     }
 
+    func testCancelWhileSpeechPermissionIsGatedSkipsMicrophonePermissionRequest() async throws {
+        let harness = EngineHarness(
+            permissionSuspended: true,
+            tracksMicrophoneRequestAfterSpeech: true
+        )
+        defer { harness.releaseAllTestWaiters() }
+        let request = harness.makeRequest()
+        harness.outputGates.enable(.commit, token: request.token)
+        let events = try await harness.start(request)
+        defer { events.cancel() }
+
+        try await waitUntil("gated Speech permission request") {
+            harness.permissions.policies.count == 1
+        }
+        let cancellation = Task {
+            await harness.engine.cancel(token: request.token)
+        }
+        defer { cancellation.cancel() }
+        try await waitUntil("cancel terminal persistence entry") {
+            await harness.output.commitCount(for: request.token) == 1
+        }
+
+        harness.permissions.resume(with: .success(()))
+        try await waitUntil("gated Speech callback returns") {
+            harness.permissions.speechCallbackCount == 1
+        }
+        XCTAssertEqual(harness.permissions.cancelledSpeechCallbackCount, 1)
+        XCTAssertEqual(harness.permissions.microphonePermissionRequestCount, 0)
+        XCTAssertEqual(harness.speech.sessionCount, 0)
+        XCTAssertEqual(harness.audio.sessionCount, 0)
+
+        harness.outputGates.release(.commit, token: request.token)
+        try await runBoundedOperation("cancel terminal completes") {
+            await cancellation.value
+        }
+        await cancellation.value
+        try await harness.waitForFinished(events)
+        XCTAssertEqual(events.events.last?.event, .cancelled)
+        let terminalCount = await harness.output.commitCount(for: request.token)
+        XCTAssertEqual(terminalCount, 1)
+    }
+
     func testRepeatedStopWhileProcessingIsNoOp() async throws {
         let harness = EngineHarness()
         defer { harness.releaseAllTestWaiters() }
@@ -413,6 +455,55 @@ final class DictationSessionEngineTests: XCTestCase {
         XCTAssertEqual(secondCommitCount, 1)
     }
 
+    func testSupersessionWhileSpeechPermissionIsGatedSkipsMicrophonePermissionRequest() async throws {
+        let harness = EngineHarness(
+            permissionSuspended: true,
+            permissionSuspendsOnlyFirstRequest: true,
+            tracksMicrophoneRequestAfterSpeech: true
+        )
+        defer { harness.releaseAllTestWaiters() }
+        let first = harness.makeRequest()
+        let second = harness.makeRequest()
+        harness.outputGates.enable(.commit, token: first.token)
+
+        let firstEvents = try await harness.start(first)
+        defer { firstEvents.cancel() }
+        try await waitUntil("first gated Speech permission request") {
+            harness.permissions.policies.count == 1
+        }
+
+        let secondEvents = try await harness.start(second)
+        defer { secondEvents.cancel() }
+        try await harness.waitForEvent(.listening(partial: ""), in: secondEvents)
+        try await waitUntil("superseded terminal persistence entry") {
+            await harness.output.commitCount(for: first.token) == 1
+        }
+        XCTAssertEqual(harness.permissions.policies.count, 2)
+
+        harness.permissions.resume(with: .success(()))
+        try await waitUntil("superseded Speech callback returns") {
+            harness.permissions.speechCallbackCount == 1
+        }
+        XCTAssertEqual(harness.permissions.cancelledSpeechCallbackCount, 1)
+        XCTAssertEqual(harness.permissions.microphonePermissionRequestCount, 0)
+        XCTAssertEqual(harness.speech.sessionCount, 1)
+        XCTAssertEqual(harness.audio.sessionCount, 1)
+
+        harness.outputGates.release(.commit, token: first.token)
+        try await harness.waitForFinished(firstEvents)
+        try await requireStableCondition("superseded authorization stays retired") {
+            harness.permissions.microphonePermissionRequestCount == 0
+                && harness.speech.sessionCount == 1
+                && harness.audio.sessionCount == 1
+        }
+        harness.speech.send(
+            .success(.init(transcript: "新会话完成", isFinal: true)),
+            index: 0
+        )
+        try await harness.waitForFinished(secondEvents)
+        XCTAssertEqual(secondEvents.events.last?.event, .completed(harness.completedPlan))
+    }
+
     func testSupersessionClosesOldResourcesBeforeNewCaptureStarts() async throws {
         let harness = EngineHarness()
         defer { harness.releaseAllTestWaiters() }
@@ -527,6 +618,40 @@ final class DictationSessionEngineTests: XCTestCase {
         XCTAssertEqual(events.events.suffix(1).map(\.event), [.failed(.startTimeout)])
         XCTAssertEqual(terminalCount, 1)
         XCTAssertEqual(harness.speech.sessionCount, 0)
+    }
+
+    func testStartTimeoutWhileSpeechPermissionIsGatedSkipsMicrophonePermissionRequest() async throws {
+        let harness = EngineHarness(
+            permissionSuspended: true,
+            tracksMicrophoneRequestAfterSpeech: true
+        )
+        defer { harness.releaseAllTestWaiters() }
+        let request = harness.makeRequest()
+        harness.outputGates.enable(.commit, token: request.token)
+        let events = try await harness.start(request)
+        defer { events.cancel() }
+        try await waitUntil("gated Speech permission request") {
+            harness.permissions.policies.count == 1
+        }
+
+        harness.scheduler.fire(interval: harness.deadlines.start)
+        try await waitUntil("start-timeout terminal persistence entry") {
+            await harness.output.commitCount(for: request.token) == 1
+        }
+        harness.permissions.resume(with: .success(()))
+        try await waitUntil("timed-out Speech callback returns") {
+            harness.permissions.speechCallbackCount == 1
+        }
+        XCTAssertEqual(harness.permissions.cancelledSpeechCallbackCount, 1)
+        XCTAssertEqual(harness.permissions.microphonePermissionRequestCount, 0)
+        XCTAssertEqual(harness.speech.sessionCount, 0)
+        XCTAssertEqual(harness.audio.sessionCount, 0)
+
+        harness.outputGates.release(.commit, token: request.token)
+        try await harness.waitForFinished(events)
+        XCTAssertEqual(events.events.last?.event, .failed(.startTimeout))
+        let terminalCount = await harness.output.commitCount(for: request.token)
+        XCTAssertEqual(terminalCount, 1)
     }
 
     func testSilenceDeadlineProcessesNonemptyPartial() async throws {

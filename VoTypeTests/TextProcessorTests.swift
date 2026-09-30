@@ -315,7 +315,6 @@ final class TextProcessorTests: XCTestCase {
             secondTask?.cancel()
             firstTask.cancel()
             overlapTranslator.releaseFirst()
-            overlapDefaults.removePersistentDomain(forName: overlapSuiteName)
         }
 
         await fulfillment(of: [overlapStarted], timeout: 1)
@@ -346,6 +345,20 @@ final class TextProcessorTests: XCTestCase {
         XCTAssertEqual(overlapUsageTracker.recordingCount, 2)
         XCTAssertEqual(overlapUsageTracker.stats.totalSessions, 2)
         XCTAssertTrue(overlapUsageTracker.allRecordingsWereOnMainThread)
+
+        let bothProcessingTasksReturned = try? await waitUntil(
+            "both overlap processing tasks return",
+            timeout: 1
+        ) {
+            firstResult.value != nil && secondResult.value != nil
+        }
+        if bothProcessingTasksReturned != nil, let secondTask {
+            await firstTask.value
+            await secondTask.value
+            overlapDefaults.removePersistentDomain(forName: overlapSuiteName)
+        } else {
+            XCTFail("Overlap tasks did not return; their defaults domain was retained")
+        }
     }
 
     func testManagersShareInjectedDefaultsSuite() {

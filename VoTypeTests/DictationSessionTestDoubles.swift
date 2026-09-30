@@ -524,17 +524,46 @@ final class PermissionResultGate: @unchecked Sendable {
 final class ManualPermissionResolver: @unchecked Sendable, DictationPermissionResolving {
     private let lock = NSLock()
     private let gate: PermissionResultGate?
+    private let suspendsOnlyFirstRequest: Bool
+    private let tracksMicrophoneRequestAfterSpeech: Bool
     private var storedPolicies: [DictationAuthorizationPolicy] = []
     private var storedResult: Result<Void, DictationFailure> = .success(())
+    private var storedSpeechCallbackCount = 0
+    private var storedCancelledSpeechCallbackCount = 0
+    private var storedMicrophonePermissionRequestCount = 0
 
-    init(suspends: Bool = false) {
+    init(
+        suspends: Bool = false,
+        suspendsOnlyFirstRequest: Bool = false,
+        tracksMicrophoneRequestAfterSpeech: Bool = false
+    ) {
         gate = suspends ? PermissionResultGate() : nil
+        self.suspendsOnlyFirstRequest = suspendsOnlyFirstRequest
+        self.tracksMicrophoneRequestAfterSpeech = tracksMicrophoneRequestAfterSpeech
     }
 
     var policies: [DictationAuthorizationPolicy] {
         lock.lock()
         defer { lock.unlock() }
         return storedPolicies
+    }
+
+    var speechCallbackCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedSpeechCallbackCount
+    }
+
+    var cancelledSpeechCallbackCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedCancelledSpeechCallbackCount
+    }
+
+    var microphonePermissionRequestCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedMicrophonePermissionRequestCount
     }
 
     func setResult(_ result: Result<Void, DictationFailure>) {
@@ -546,12 +575,24 @@ final class ManualPermissionResolver: @unchecked Sendable, DictationPermissionRe
     func authorize(
         policy: DictationAuthorizationPolicy
     ) async -> Result<Void, DictationFailure> {
-        let result: Result<Void, DictationFailure> = locked {
+        let (result, shouldSuspend): (Result<Void, DictationFailure>, Bool) = locked {
             storedPolicies.append(policy)
-            return storedResult
+            let isFirstRequest = storedPolicies.count == 1
+            let shouldSuspend = gate != nil && (!suspendsOnlyFirstRequest || isFirstRequest)
+            return (storedResult, shouldSuspend)
         }
-        guard let gate else { return result }
-        return await gate.wait()
+        guard shouldSuspend, let gate else { return result }
+        let resumedResult = await gate.wait()
+        let wasCancelled = Task.isCancelled
+        locked {
+            storedSpeechCallbackCount += 1
+            if wasCancelled {
+                storedCancelledSpeechCallbackCount += 1
+            } else if tracksMicrophoneRequestAfterSpeech, case .success = resumedResult {
+                storedMicrophonePermissionRequestCount += 1
+            }
+        }
+        return resumedResult
     }
 
     func resume(with result: Result<Void, DictationFailure>) {
@@ -807,6 +848,8 @@ final class EngineHarness: @unchecked Sendable {
 
     init(
         permissionSuspended: Bool = false,
+        permissionSuspendsOnlyFirstRequest: Bool = false,
+        tracksMicrophoneRequestAfterSpeech: Bool = false,
         processingSuspended: Bool = false
     ) {
         let deadlines = DictationSessionDeadlines(
@@ -825,7 +868,11 @@ final class EngineHarness: @unchecked Sendable {
             requiresConfirmation: false
         )
         let journal = TestOperationJournal()
-        let permissions = ManualPermissionResolver(suspends: permissionSuspended)
+        let permissions = ManualPermissionResolver(
+            suspends: permissionSuspended,
+            suspendsOnlyFirstRequest: permissionSuspendsOnlyFirstRequest,
+            tracksMicrophoneRequestAfterSpeech: tracksMicrophoneRequestAfterSpeech
+        )
         let audioSession = StubAudioSessionController(journal: journal)
         let speech = ManualSpeechFactory(journal: journal)
         let audio = ManualAudioCaptureFactory(journal: journal)

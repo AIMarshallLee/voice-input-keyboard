@@ -1,6 +1,6 @@
 # VoType 持续交付台账
 
-更新：2026-09-21。仅记录经过核对的事实；未提交工作不计入已合并实现。
+更新：2026-10-01。仅记录经过核对的事实；未提交工作不计入已合并实现。
 
 ## 当前目标与断点
 
@@ -8,8 +8,10 @@
 - 职责机制：[窗口 Agent 规划书](../docs/superpowers/specs/2026-09-05-votype-continuous-delivery-agent-charter.md)，用户已回复“同意”。
 - 规格：[商用 V1](../docs/superpowers/specs/2026-09-04-voice-first-commercial-v1-design.md)。
 - 实施计划：[Slice A 九任务](../docs/superpowers/plans/2026-09-04-slice-a-reliable-session-engine.md)。
-- 当前断点：Task 1–7 已取得真实 RED、GREEN 和独立审查 PASS，实施验收进度 **7/9**。前台迁移 `faedeb6` 已修复退出、重开时丢失后继请求的问题并通过准确提交验证；这不是整个 App 的真机验收。
-- 下一动作：Task 8 R36 已由 `20e33fc` / #182 真实复现：235 单元仅两条新回归产生 6 个预期失败，4 个独立 UI 通过。同一实施者获准只移除 result-only 结案分支，不改已有测试和文本 TTL；随后重新跑完整门禁及独立复审。保持 **7/9**，不因此前 #181 自动门禁通过就提前验收。
+- 当前断点：Task 1–8 已取得真实 RED、GREEN 和独立审查 PASS，Slice A 实施验收进度 **8/9**。Task 8 在 `b3be44b` / #183 完成准确提交验证与第三轮独立复审；这不是整个 App 的完成度或真机验收。
+- 下一动作：九份 Task 9 文档候选已完成本地修正，正在独立审查。全分支复核已发现输出设备移除误报输入丢失，须先完成单轮测试先行修复与准确提交的 macOS RED/GREEN，再进行最终复审和 main 合并门禁。App Store、TestFlight 与真实设备仍是单独门槛，不因 Slice A 单项通过而自动发布。
+- 2026-10-01 续接：重新核对 PR #13 为 Draft/Open、远端 `b3be44b`、#183 成功，main 仍为 `ba3ca0e`。本轮由 Luna 修正九份交付文档并独立检查生产集成，主控负责风险判断、Git/CI 和最终验收；后续委派采用当前 Adaptive 规则。尚未合并或生成新的 TestFlight 构建。
+- 2026-10-01 集成复核：`.oldDeviceUnavailable` 仅证明旧输出路径不可用，现适配器无条件转换为 `.inputRouteLost`，可能误终止仍有麦克风的听写（Important）。另有测试结束前未等待 detached tasks 的 Minor。主控裁定同步取消本会话权限任务，阻止已退休请求在 Speech 回调后继续发起麦克风提示；已经显示的系统提示不可由此撤回。一个 Luna 工作包负责三项测试/最小修复，另一个只读核对文档；目前仅测试准备，尚无新 RED/GREEN 或修复验收。
 
 ## 自主执行约定（2026-09-20 生效）
 
@@ -29,7 +31,7 @@
 - 原有规格、实施计划、职责稿与台账已在授权后提交为 `a5045f2`；没有丢弃原差异。
 - 草稿 [PR #13](https://github.com/AIMarshallLee/voice-input-keyboard/pull/13) 已创建，未合并。
 - `project.yml` 是生成工程的唯一来源；现有测试 target 包含整个 `VoTypeTests` 目录。
-- Task 1–7 已验收；新测试通过 `xcodegen generate` 编入。Task 8 基线为 `faedeb6`，Task 7 全范围基线为 `829e3b8`。
+- Task 1–8 已验收；新测试通过 `xcodegen generate` 编入。Task 8 范围为 `faedeb6..b3be44b`，Task 9 基线为 `b3be44b`。
 
 ## 授权状态
 
@@ -55,12 +57,16 @@
 | 5 | Apple、文本、Darwin 生产适配 | 完成：`d58ed40` / #164 GREEN，两项审查问题修正，独立复审 PASS |
 | 6 | PiP/原地输入迁移 | 完成：`829e3b8` / #166 GREEN，独立规格、代码与证据审查 PASS |
 | 7 | 前台呈现迁移 | 完成：`faedeb6` / #170 GREEN，后继准入修复及独立规格/质量/证据复审 PASS |
-| 8 | 移除不支持的拉起与手动结果保留 | 修复中：`3fc8d00` / #181 自动门禁 GREEN，复审新增 result-only 结案问题已由 `20e33fc` / #182 行为 RED 复现；最小生产修复进行中 |
-| 9 | 全量回归、Release/Archive 与文档 | 待做 |
+| 8 | 移除不支持的拉起与手动结果保留 | 完成：`b3be44b` / #183 的 235 单元、4 个独立 UI、source gate、unsigned Release/Archive GREEN；第三轮独立规格/质量复审 PASS |
+| 9 | 全量回归、Release/Archive 与文档 | 进行中：同步九项现有文档，保留准确代码提交与外部验收边界 |
 
 任务只有在实现、相应测试及审查证据齐全后才标为完成。后续 Slice 在前片出口有新证据且自己的实施计划完成审查后才能实施。
 
 ## 验证路径与本轮证据
+
+- [CI #183](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/35538673741) 在准确 `b3be44b88cba83a5768af199ed30f2eec85fdaa6` 完成 **SUCCESS，12m17s**：235 单元零失败（53.643s / 54.534s wall），4 个独立 UI 两 scheme 通过（46.077s / 48.910s），两个 R36 回归均通过。20 轮 IPC（1.470s）、50 次引擎重用（0.839s）、100 轮终态竞态（2.006s）实际用例均通过。source gate、unsigned BUILD（21:37:24 UTC）、ARCHIVE（21:38:06 UTC）及主 App/键盘扩展目录检查通过。unsigned artifact `10613729361` 为 5,241,187 bytes，GitHub ZIP 摘要 `sha256:db2d5cc8d0e82596928d2002a8392ea677aef8128ddc7a8b1125b5e5e6805355`；签名和 Apple 上传全部跳过，不是 TestFlight。结合原 reviewer 第三轮 PASS，Task 8 正式验收；真实双重 I/O 故障注入、隐藏 UIKit 回调及签名真机仍未覆盖。
+
+- R36 最小修复已提交 `b3be44b88cba83a5768af199ed30f2eec85fdaa6`，仅删除 helper 的 5 行 payload-only 结案分支并更正注释，未修改测试。父级 plist 2/2（0.029s）、source gate、diff/staged 检查通过；同一独立 reviewer 按 `3fc8d00..b3be44b` 两提交复审确认唯一 Important ADDRESSED，无新增 Critical/Important 或范围外问题，静态规格/质量 PASS。[CI #183](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/35538673741) 运行中，仍无本次运行 GREEN。双重 I/O 故障实际注入、隐藏 UIKit 回调及真实设备未覆盖。
 
 - [CI #182](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/35538077588) 在准确 `20e33fc37c010cb85acdafac53b2b824edf05364` 完成 **行为 RED，9m13s**。235 单元共 6 个失败、0 unexpected，仅两个新 R36 用例：expired result-only 场景错误结案、删除 source、payload 清理后丢失精确恢复身份（5）；fresh result-only 场景错误结案（1）。其他 held、真实消费建立 receipt、精确取消等正向断言未失败；4 个独立 UI 通过（129.026s）。没有编译/环境失败，build/archive/分发跳过。父级据此授权仅删除 payload-only 结案分支，待新 GREEN/复审。
 
