@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 import XCTest
 @testable import VoiceInputApp
@@ -94,6 +95,198 @@ final class AppleDictationAdaptersTests: XCTestCase {
             ),
             .proceed
         )
+    }
+
+    func testPermissionResolverUsesAuthorizedStatesWithoutRequestingPermission() async {
+        let speechState = LockedTestBox(DictationAuthorizationState.authorized)
+        let microphoneState = LockedTestBox(DictationAuthorizationState.authorized)
+        let requests = TestOperationJournal()
+        let resolver = AppleDictationPermissionResolver(
+            speechAuthorizationState: { speechState.value },
+            microphoneAuthorizationState: { microphoneState.value },
+            requestSpeechAuthorization: { requests.record("speech") },
+            requestMicrophoneAuthorization: { requests.record("microphone") }
+        )
+
+        let result = await resolver.authorize(policy: .requestIfNeeded)
+
+        guard case .success = result else {
+            XCTFail("Authorized permissions should proceed")
+            return
+        }
+        XCTAssertTrue(requests.entries.isEmpty)
+    }
+
+    func testPermissionResolverRequestsOnlyTheMissingForegroundPermission() async {
+        let speechState = LockedTestBox(DictationAuthorizationState.authorized)
+        let microphoneState = LockedTestBox(DictationAuthorizationState.notDetermined)
+        let requests = TestOperationJournal()
+        let resolver = AppleDictationPermissionResolver(
+            speechAuthorizationState: { speechState.value },
+            microphoneAuthorizationState: { microphoneState.value },
+            requestSpeechAuthorization: { requests.record("speech") },
+            requestMicrophoneAuthorization: {
+                requests.record("microphone")
+                microphoneState.set(.authorized)
+            }
+        )
+
+        let result = await resolver.authorize(policy: .requestIfNeeded)
+
+        guard case .success = result else {
+            XCTFail("The requested microphone permission should proceed")
+            return
+        }
+        XCTAssertEqual(requests.entries, ["microphone"])
+    }
+
+    func testPermissionResolverReadOnlyPolicyDoesNotRequestMissingPermission() async {
+        let speechState = LockedTestBox(DictationAuthorizationState.notDetermined)
+        let microphoneState = LockedTestBox(DictationAuthorizationState.authorized)
+        let requests = TestOperationJournal()
+        let resolver = AppleDictationPermissionResolver(
+            speechAuthorizationState: { speechState.value },
+            microphoneAuthorizationState: { microphoneState.value },
+            requestSpeechAuthorization: { requests.record("speech") },
+            requestMicrophoneAuthorization: { requests.record("microphone") }
+        )
+
+        let result = await resolver.authorize(policy: .readOnly)
+
+        guard case .failure(let failure) = result else {
+            XCTFail("Read-only authorization should report the missing permission")
+            return
+        }
+        XCTAssertEqual(failure, .permissionRequiresForeground(.speech))
+        XCTAssertTrue(requests.entries.isEmpty)
+    }
+
+    func testPermissionResolverCancellationBeforeSpeechRequestSkipsSystemPrompt() async {
+        let speechState = LockedTestBox(DictationAuthorizationState.notDetermined)
+        let microphoneState = LockedTestBox(DictationAuthorizationState.authorized)
+        let requests = TestOperationJournal()
+        let resolver = AppleDictationPermissionResolver(
+            speechAuthorizationState: {
+                withUnsafeCurrentTask { $0?.cancel() }
+                return speechState.value
+            },
+            microphoneAuthorizationState: { microphoneState.value },
+            requestSpeechAuthorization: {
+                requests.record("speech")
+                speechState.set(.authorized)
+            },
+            requestMicrophoneAuthorization: { requests.record("microphone") }
+        )
+
+        _ = await resolver.authorize(policy: .requestIfNeeded)
+
+        XCTAssertTrue(requests.entries.isEmpty)
+    }
+
+    func testPermissionResolverCancellationAfterSpeechCallbackSkipsMicrophonePrompt() async {
+        let speechState = LockedTestBox(DictationAuthorizationState.notDetermined)
+        let microphoneState = LockedTestBox(DictationAuthorizationState.notDetermined)
+        let requests = TestOperationJournal()
+        let speechCallbackGate = PermissionResultGate()
+        let resolver = AppleDictationPermissionResolver(
+            speechAuthorizationState: { speechState.value },
+            microphoneAuthorizationState: { microphoneState.value },
+            requestSpeechAuthorization: {
+                requests.record("speech")
+                _ = await speechCallbackGate.wait()
+                speechState.set(.authorized)
+            },
+            requestMicrophoneAuthorization: {
+                requests.record("microphone")
+                microphoneState.set(.authorized)
+            }
+        )
+        let authorization = Task {
+            await resolver.authorize(policy: .requestIfNeeded)
+        }
+
+        let speechRequestDidStart = (try? await waitUntil("Speech system request", timeout: 1) {
+            requests.entries.contains("speech")
+        }) != nil
+        if !speechRequestDidStart {
+            authorization.cancel()
+            speechCallbackGate.resume(with: .failure(.interrupted))
+            _ = await authorization.value
+            XCTFail("Speech system request did not start")
+            return
+        }
+        authorization.cancel()
+        speechCallbackGate.resume(with: .success(()))
+        _ = await authorization.value
+
+        XCTAssertEqual(requests.entries, ["speech"])
+    }
+
+    func testOutputOnlyRemovalWithUnchangedInputDoesNotEmitInputRouteLoss() async {
+        let event = await routeChangeEvent(
+            inputRouteIdentities: (previous: ["built-in-mic"], current: ["built-in-mic"]),
+            expectInputRouteLoss: false
+        )
+
+        XCTAssertNil(event)
+    }
+
+    func testOldDeviceUnavailableAfterInputRemovalAndFallbackEmitsInputRouteLoss() async {
+        let event = await routeChangeEvent(
+            inputRouteIdentities: (previous: ["external-mic"], current: ["built-in-mic"]),
+            expectInputRouteLoss: true
+        )
+
+        XCTAssertEqual(event, .inputRouteLost)
+    }
+
+    func testOldDeviceUnavailableWithoutRouteEvidenceDoesNotInventInputLoss() async {
+        let event = await routeChangeEvent(
+            inputRouteIdentities: nil,
+            expectInputRouteLoss: false
+        )
+
+        XCTAssertNil(event)
+    }
+
+    private func routeChangeEvent(
+        inputRouteIdentities: (previous: [String], current: [String])?,
+        expectInputRouteLoss: Bool
+    ) async -> DictationAudioSystemEvent? {
+        let center = NotificationCenter()
+        let eventSource = AppleDictationAudioSystemEventSource(
+            notificationCenter: center,
+            inputRouteIdentities: { _ in inputRouteIdentities }
+        )
+        let observedEvent = LockedTestBox<DictationAudioSystemEvent?>(nil)
+        let consumer = Task {
+            var iterator = eventSource.events.makeAsyncIterator()
+            if let event = await iterator.next() {
+                observedEvent.set(event)
+            }
+        }
+        center.post(
+            name: AVAudioSession.routeChangeNotification,
+            object: nil,
+            userInfo: [
+                AVAudioSessionRouteChangeReasonKey:
+                    AVAudioSession.RouteChangeReason.oldDeviceUnavailable.rawValue
+            ]
+        )
+
+        if expectInputRouteLoss {
+            let eventDidArrive = (try? await waitUntil("input route-loss event", timeout: 1) {
+                observedEvent.value != nil
+            }) != nil
+            if !eventDidArrive {
+                XCTFail("Expected the route notification to emit inputRouteLost")
+            }
+        } else {
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+        consumer.cancel()
+        await consumer.value
+        return observedEvent.value
     }
 
     func testTerminalNotificationNamesOnlyMarkFailuresWhenWritten() {
