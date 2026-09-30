@@ -3,6 +3,29 @@
 All notable user-facing changes are recorded here. VoType remains a 1.0
 commercial candidate until final device testing and App Review are complete.
 
+## Unreleased — Slice A
+
+### Improvements
+
+- Voice permission, recording, Speech recognition, timeout and terminal state now
+  have one session owner; foreground and PiP use the same session engine.
+- Foreground recovery discovers pending work without a deep link, claims it before
+  calling `engine.start`; the returned stream must begin with the matching
+  `.authorizing` event. Cold recovery saves the request and shows a manual-open
+  action rather than trying to launch the app from the keyboard.
+- Timed-out hot requests stage an undiscoverable fresh manual UUID, durably cancel
+  the old UUID with its replacement identity, then promote the new request.
+- Auto-insertion is limited to a matching in-place session in the same extension
+  instance, with no selection, non-empty matching context and an unconfirmed
+  cursor insertion. Manual/recreated sessions, empty text and destructive or
+  confirmation-required operations stay held; explicit plain-text insertion can
+  target the user's current field, while confirmed replace/delete requires
+  matching context, fingerprint and selection. Copy compares the consumed result
+  with the frozen preview; discard validates the held token's preview before
+  consuming its result. Neither requires editor-context matching.
+
+Signed physical-device microphone, Apple Speech, PiP lifecycle, extension eviction, and third-party insertion remain EXTERNAL / NOT_RUN for Slice A.
+
 ## 1.0 candidate — 2026-08-26
 
 ### New features

@@ -28,7 +28,11 @@ iOS 不允许自定义键盘扩展直接访问麦克风，因此录音必须由�
 3. 宿主 App 使用 `SFSpeechRecognizer` 和 `AVAudioEngine` 录音、识别并处理文本。
 4. 宿主持续发布 starting / listening / processing 快照，最终结果以 first-writer-wins 原子写回。
 5. 取消墓碑与会话事务阻止迟到回调复活；键盘只消费 session 匹配且未过期的结果。
-6. 键盘扩展被系统重建或切换输入框时，只有上下文哈希仍匹配才自动插入，否则要求用户确认。
+6. 自动插入仅适用于仍在同一扩展实例中的原地会话，并要求无选区、非空上下文匹配且操作无需确认；扩展重建或手动恢复的结果保持待处理，需用户明确处理。
+
+Slice A 将权限、音频、Speech、截止时间和终态收敛到一个会话 actor；同步缓冲门是唯一的 PCM 追加路径。前台和 PiP 只是同一引擎的适配器：前台可在没有 deep link 时发现待处理请求，先查看再在 3 秒内原子认领，然后调用 `engine.start`；返回的事件流必须以匹配请求的 `.authorizing` 握手事件开始。热路径的 1.2 秒可取消确认计时器超时后，先暂存一个尚不可发现的新手动恢复 UUID，再持久取消旧 UUID 并记录替换身份，最后才提升新请求；不完整交接只显示真实待处理工作或 Retry，绝不显示虚假的 ready。手动恢复取代键盘侧不受支持的拉起方式。
+
+Signed physical-device microphone, Apple Speech, PiP lifecycle, extension eviction, and third-party insertion remain EXTERNAL / NOT_RUN for Slice A.
 
 共享容器标识为：
 
@@ -44,7 +48,7 @@ group.com.daseanle.votype.container
 - 从键盘扩展启动宿主 App 的 responder-chain 兼容路径不属于 Apple 支持的扩展 API，不能作为 App Store 版的可靠前提。
 - 用户可在 VoType 前台明确开启一个显示真实待命/录音/整理状态的画中画待命；待命阶段不启用麦克风，有效待命时键盘实心麦克风可原地开始。
 - 画中画被用户或系统关闭后会立即撤销 readiness；iOS 结束宿主进程后，下一次会话仍可能需要手动打开 VoType，公共 API 无法保证每次都零切换。
-- 空心麦克风会先保存会话再尝试打开 VoType；若系统拒绝，3 秒内显示明确的主屏幕手动恢复操作，不无限等待。
+- 空心麦克风会先保存会话并显示明确的主屏幕手动恢复操作；键盘扩展不使用不受支持的宿主 App 拉起 API，也不无限等待。
 - 发布版不播放近静音音频，也不在待命阶段录音。
 - Apple Speech 的可用性、时长和离线能力由设备、语言与系统状态决定；本项目不承诺无限时长或所有语言离线。
 

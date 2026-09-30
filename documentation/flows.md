@@ -32,14 +32,29 @@ permission state and, after an explicit action, an active PiP window.
 1. The keyboard verifies readiness is fresh and exactly `standby`.
 2. It writes language, feature flags, optional selected text, UUID and timestamp
    into the App Group and posts a Darwin notification.
-3. The app consumes only the newest fresh request, switches readiness to
-   recording, activates `AVAudioSession`, and starts `AVAudioEngine`.
-4. Apple Speech receives audio. Partial transcript state is throttled to about
+3. The foreground path may discover the request without a deep link, peeks before
+   ownership and atomically claims the exact request within three seconds. Only
+   after that claim does it call `engine.start`; the returned event stream must
+   start with the matching `.authorizing` event. A claim miss leaves the request
+   recoverable with visible failure, and a mismatched first event fails the stream.
+4. The one session actor owns permission, audio, Speech, deadlines and the sole
+   synchronous PCM buffer gate; the adapter does not own a second recorder.
+5. Apple Speech receives audio. Partial transcript state is throttled to about
    five protected App Group writes per second.
-5. Text processing uses local rules and, when explicitly enabled and available,
+6. Text processing uses local rules and, when explicitly enabled and available,
    the on-device Foundation Model. The first terminal state wins.
-6. The keyboard checks UUID and freshness, inserts the result, records a
-   terminal receipt and removes consumable text files.
+7. Auto-insertion is allowed only for an unconfirmed cursor insertion from the
+   in-place session in the same extension instance, with no selection and
+   non-empty matching context evidence. Manual/recreated sessions, empty text and
+   destructive or confirmation-required operations stay held. Explicit plain
+   insert/preview checks the held token, absence of a live selection, non-empty
+   text and that the consumed payload matches the preview; it may insert into the
+   user's chosen current field without matching the original context. Confirmed
+   replace/delete also require matching context and fingerprint plus a live
+   selection. Copy checks the consumed payload against the frozen preview;
+   discard validates that the held token still peeks the frozen preview before
+   consuming that token's result. Neither requires editor-context matching.
+   Legacy destructive payloads show preview instead of mutating text.
 
 Trust crossings: keyboard to App Group, app to Apple Speech, optional app to
 the on-device model. Side effects: temporary protected files, local aggregate
@@ -51,15 +66,19 @@ counts, and text insertion into the active document.
 | --- | --- |
 | Actor | User tapping an outline microphone |
 | Precondition | No fresh standby |
-| Success | Containing app starts the pending session, or the user receives an explicit manual-open action |
-| Deny case | No supported opening route responds within three seconds |
+| Success | The request is saved and the user immediately receives a manual-open action (within three seconds); opening VoType from the Home Screen discovers it |
+| Deny case | If the prompt is not visible within three seconds, keep the request recoverable and expose visible failure/Retry; no keyboard-side app-launch route is supported |
 
-1. The keyboard persists the request before attempting the `votype://` URL.
-2. A hot request without response falls back after 1.2 seconds.
-3. The extension tries `NSExtensionContext.open` and a responder-chain
-   compatibility path. Neither is assumed to succeed.
-4. At three seconds, the keyboard tells the user to open VoType from the Home
-   Screen. The request stays bounded by its 60-second expiry.
+1. The keyboard persists the request, then exposes a manual-open recovery action;
+   it does not call an unsupported keyboard-to-containing-app launch API.
+2. A hot request without a matching acknowledgement falls back after the injected,
+   cancellable 1.2-second timer. It stages a fresh manual UUID where it is not yet
+   discoverable, durably cancels the old UUID while recording the replacement
+   identity, then promotes the new request. A failed handoff exposes pending work
+   or Retry, never false readiness.
+3. The keyboard immediately presents the manual-open prompt, within the three-
+   second recovery bound. The user opens VoType from the Home Screen; the request
+   stays bounded by its 60-second expiry.
 
 No route is allowed to remain indefinitely in a misleading “opening” state.
 
@@ -67,15 +86,31 @@ No route is allowed to remain indefinitely in a misleading “opening” state.
 
 1. Before a session the keyboard stores only hashes of before/after/selected
    editor context, plus the session and time.
-2. On recreation it requires a fresh snapshot, matching session and matching
-   non-empty context evidence before automatic insertion.
-3. A mismatch never auto-inserts. The user may explicitly accept or discard a
-   recovered result.
+2. Automatic insertion requires a fresh snapshot, matching session and non-empty
+   matching context evidence, and is limited to the same in-place extension
+   instance.
+3. A mismatch or recreated/manual session never auto-inserts. Explicit plain-text
+   insertion requires no live selection, non-empty output text, the held session
+   token and matching preview payload. It may target the current field chosen by
+   the user. Confirmed replace/delete also require the original context,
+   fingerprint and selection. Copy checks the consumed payload against its frozen
+   preview. Discard validates the held token's peek against that preview before
+   consuming its result. Neither requires editor-context matching.
 4. Cancellation tombstones and terminal receipts reject late partials or a
-   second terminal callback.
+   second terminal callback. A running hot adapter reconciles persisted
+   cancellation, including during admission; its 0.5-second poll is best-effort
+   while the process runs, not a suspension guarantee.
 
 Side effects are limited to removing or consuming local session artifacts and,
 only after the checks above, inserting text.
+
+Unreadable cancellation evidence is not erased. An unresolved source-to-
+replacement UUID anchor remains past ordinary eligibility until valid replacement
+cancellation or terminal receipt; result-only payloads do not settle it. Orphan
+stages are cleaned on ordinary lookup only after their retention boundary—there
+is no background purge promise while the app is not running.
+
+Signed physical-device microphone, Apple Speech, PiP lifecycle, extension eviction, and third-party insertion remain EXTERNAL / NOT_RUN for Slice A.
 
 ## Local Pinyin learning and deletion
 
