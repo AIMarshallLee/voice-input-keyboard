@@ -1,4 +1,5 @@
 import XCTest
+import CryptoKit
 @testable import VoiceInputApp
 
 final class DictationConstantsTests: XCTestCase {
@@ -23,6 +24,650 @@ final class DictationConstantsTests: XCTestCase {
             try? FileManager.default.removeItem(at: ipcDirectory)
         }
         try super.tearDownWithError()
+    }
+
+    // MARK: - Manual recovery and held-result contracts
+
+    private func handoffSettings(_ token: SessionToken, timestamp: TimeInterval = Date().timeIntervalSince1970) -> DictationSettings {
+        DictationSettings(language: "ja-JP", whisper: true, translateEnabled: true,
+            translateTarget: "en-US", selectedText: "original selection", keyboardType: 7,
+            session: token.rawValue, expectedContextFingerprint: "fingerprint", timestamp: timestamp)
+    }
+
+    private var heldPlan: EditPlan {
+        EditPlan(intent: .dictate, operation: .insertAtCursor, text: "result",
+                 expectedContextFingerprint: "fingerprint", requiresConfirmation: false)
+    }
+
+    private func businessBytes() throws -> [String: Data] {
+        let urls = try FileManager.default.contentsOfDirectory(at: ipcDirectory, includingPropertiesForKeys: nil)
+        return try Dictionary(uniqueKeysWithValues: urls.filter { $0.pathExtension == "json" }.map {
+            ($0.lastPathComponent, try Data(contentsOf: $0))
+        })
+    }
+
+    private func businessURL(_ kind: String, token: SessionToken) -> URL {
+        let digest = SHA256.hash(data: Data(token.rawValue.utf8)).map { String(format: "%02x", $0) }.joined()
+        return ipcDirectory.appendingPathComponent("dictation-\(kind)-\(digest).json")
+    }
+
+    func testTypedPreviewConsumeRaceReturnsPayloadOnlyOnceAndPreservesReceipt() throws {
+        let token = SessionToken()
+        let other = SessionToken()
+        XCTAssertEqual(DarwinBridge.commit(.completed(heldPlan), token: token), .written)
+        XCTAssertEqual(DarwinBridge.commit(.completed(heldPlan), token: other), .written)
+        let preview = try XCTUnwrap(DarwinBridge.peekResult(expectedSession: token.rawValue))
+        let receipt = try Data(contentsOf: businessURL("terminal", token: token))
+        let otherBytes = try Data(contentsOf: businessURL("result", token: other))
+        let winner = try XCTUnwrap(DarwinBridge.readAndConsumeResult(expectedSession: token.rawValue))
+        XCTAssertEqual(winner, preview)
+        XCTAssertTrue(KeyboardHeldEditValidator.consumedResultMatchesPreview(previewed: preview, consumed: winner))
+        // A second action holding the same preview loses the consume race.
+        XCTAssertNil(DarwinBridge.readAndConsumeResult(expectedSession: token.rawValue))
+        XCTAssertEqual(try Data(contentsOf: businessURL("terminal", token: token)), receipt)
+        XCTAssertEqual(try Data(contentsOf: businessURL("result", token: other)), otherBytes)
+        XCTAssertEqual(DarwinBridge.commit(.failed(.recognition), token: token), .alreadyTerminal)
+    }
+
+    func testSelectionRejectionLeavesPublishedPayloadAndReceiptBytesUntouched() throws {
+        for operation in [EditOperation.insertAtCursor, .previewOnly] {
+            let token = SessionToken()
+            let plan = EditPlan(intent: .rewrite, operation: operation, text: "result",
+                                expectedContextFingerprint: nil, requiresConfirmation: true)
+            XCTAssertEqual(DarwinBridge.commit(.completed(plan), token: token), .written)
+            let preview = try XCTUnwrap(DarwinBridge.peekResult(expectedSession: token.rawValue))
+            let bytes = try businessBytes()
+            // Pure validator + real IPC retention contract, not a keyboard controller test.
+            XCTAssertEqual(KeyboardHeldEditValidator.decide(
+                plan: try XCTUnwrap(preview.editPlan), previewedToken: token, heldToken: token,
+                snapshotToken: nil, snapshotFingerprint: nil, hasContextEvidence: false,
+                contextMatches: false, currentSelectedText: "original selection"), .reject)
+            XCTAssertEqual(try businessBytes(), bytes)
+            XCTAssertEqual(DarwinBridge.peekResult(expectedSession: token.rawValue), preview)
+            // Copy/Discard can still consume that exact payload after rejection.
+            XCTAssertEqual(DarwinBridge.readAndConsumeResult(expectedSession: token.rawValue), preview)
+        }
+    }
+
+    func testHotTimeoutHandoffCopiesImmutableSettingsAfterBackgroundClaimAndBlocksOldWrites() throws {
+        let old = SessionToken()
+        let manual = SessionToken()
+        let now = Date().timeIntervalSince1970
+        let original = handoffSettings(old, timestamp: now)
+        XCTAssertTrue(DarwinBridge.writeDictationSettings(original))
+        XCTAssertEqual(DarwinBridge.readAndConsumeDictationSettings(expectedSession: old.rawValue), original)
+        XCTAssertTrue(DarwinBridge.writeLiveState(phase: .processing, session: old.rawValue))
+        guard case .moved(let replacement) = DarwinBridge.handoffDictationSettingsToManual(
+            from: old, to: manual, original: original, timestamp: now - 1) else {
+            return XCTFail("Expected a fresh pending manual request")
+        }
+        XCTAssertEqual(replacement, DictationSettings(language: "ja-JP", whisper: true,
+            translateEnabled: true, translateTarget: "en-US", selectedText: "original selection",
+            keyboardType: 7, session: manual.rawValue, expectedContextFingerprint: "fingerprint",
+            timestamp: now.nextUp))
+        XCTAssertEqual(DarwinBridge.peekPendingDictationSettings(), replacement)
+        XCTAssertNil(DarwinBridge.peekDictationSettings(expectedSession: old.rawValue))
+        XCTAssertNil(DarwinBridge.readLiveState(expectedSession: old.rawValue))
+        XCTAssertTrue(DarwinBridge.isSessionCancelled(session: old.rawValue))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: businessURL("terminal", token: old).path))
+        XCTAssertEqual(DarwinBridge.commit(.completed(heldPlan), token: old), .cancelled)
+        XCTAssertEqual(DarwinBridge.commit(.failed(.recognition), token: old), .cancelled)
+        XCTAssertFalse(DarwinBridge.writeLiveState(phase: .listening, session: old.rawValue))
+        XCTAssertFalse(DarwinBridge.writeDictationSettings(original))
+        XCTAssertFalse(DarwinBridge.requeueDictationSettingsIfNotSuperseded(original))
+        XCTAssertEqual(DarwinBridge.peekDictationSettings(expectedSession: manual.rawValue), replacement)
+    }
+
+    func testHandoffPersistsReplacementAnchorAndSourceRecancelPreservesIt() throws {
+        let source = SessionToken()
+        let replacement = SessionToken()
+        let settings = handoffSettings(source)
+        XCTAssertTrue(DarwinBridge.writeDictationSettings(settings))
+        guard case .moved = DarwinBridge.handoffDictationSettingsToManual(from: source, to: replacement, original: settings)
+        else { return XCTFail("Fixture handoff must publish its replacement") }
+        let url = businessURL("cancel", token: source)
+        let original = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        XCTAssertEqual(original["handoffReplacementSession"] as? String, replacement.rawValue)
+        XCTAssertTrue(DarwinBridge.cancelSession(source.rawValue))
+        let recancelled = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        XCTAssertEqual(recancelled["handoffReplacementSession"] as? String, replacement.rawValue,
+                       "Recancelling the source must not erase a potentially claimed replacement's identity")
+        XCTAssertNotNil(DarwinBridge.peekDictationSettings(expectedSession: replacement.rawValue))
+    }
+
+    func testExpiredUnresolvedHandoffAnchorSurvivesOrdinaryReadAndSettingsGC() throws {
+        let source = SessionToken()
+        let replacement = SessionToken()
+        let now = Date().timeIntervalSince1970
+        let bytes = try JSONSerialization.data(withJSONObject: ["session": source.rawValue,
+            "timestamp": now - DarwinBridge.cancellationMaxAge - 1,
+            "handoffReplacementSession": replacement.rawValue])
+        let url = businessURL("cancel", token: source)
+        try bytes.write(to: url)
+        XCTAssertTrue(DarwinBridge.isSessionCancelled(session: source.rawValue, now: now),
+                      "An unresolved identity link is not an ordinary expired tombstone")
+        XCTAssertEqual(try? Data(contentsOf: url), bytes)
+        // Independently exercise GC even when the baseline reader already erased the fixture.
+        try bytes.write(to: url)
+        XCTAssertTrue(DarwinBridge.writeDictationSettings(handoffSettings(SessionToken())))
+        XCTAssertEqual(try? Data(contentsOf: url), bytes)
+    }
+
+    func testExpiredLinkedSourceCanBeCollectedOnlyAfterReplacementIsConfirmedTerminal() throws {
+        for terminal in [false, true] {
+            let source = SessionToken()
+            let replacement = SessionToken()
+            let bytes = try JSONSerialization.data(withJSONObject: ["session": source.rawValue,
+                "timestamp": Date().timeIntervalSince1970 - DarwinBridge.cancellationMaxAge - 1,
+                "handoffReplacementSession": replacement.rawValue])
+            let url = businessURL("cancel", token: source)
+            try bytes.write(to: url)
+            let evidenceURL = businessURL(terminal ? "terminal" : "cancel", token: replacement)
+            let corrupt = Data("unconfirmed-replacement-evidence".utf8)
+            try corrupt.write(to: evidenceURL)
+            XCTAssertTrue(DarwinBridge.writeDictationSettings(handoffSettings(SessionToken())))
+            XCTAssertEqual(try? Data(contentsOf: url), bytes, "Physical but invalid evidence cannot retire an anchor")
+            XCTAssertEqual(try Data(contentsOf: evidenceURL), corrupt)
+            // Replace the deliberately corrupt fixture with a genuine confirmed terminal.
+            try FileManager.default.removeItem(at: evidenceURL)
+            try bytes.write(to: url)
+            if terminal { XCTAssertEqual(DarwinBridge.commit(.completed(heldPlan), token: replacement), .written) }
+            else { XCTAssertTrue(DarwinBridge.cancelSession(replacement.rawValue)) }
+            let confirmed = try Data(contentsOf: evidenceURL)
+            XCTAssertTrue(DarwinBridge.writeDictationSettings(handoffSettings(SessionToken())))
+            XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
+            XCTAssertEqual(try Data(contentsOf: evidenceURL), confirmed)
+            DarwinBridge.clearIPCFilesForTesting()
+        }
+    }
+
+    func testLinkedSourceGCUsesExpiredReplacementProofBeforeOrdinaryProofCleanup() throws {
+        for kind in ["cancel", "terminal"] {
+            let source = SessionToken()
+            let replacement = SessionToken()
+            let now = Date().timeIntervalSince1970
+            let expiredProof = try JSONSerialization.data(withJSONObject: ["session": replacement.rawValue,
+                "timestamp": now - DarwinBridge.cancellationMaxAge - 10])
+            let proofURL = businessURL(kind, token: replacement)
+            // Create the replacement proof first; GC must not depend on enumeration order.
+            try expiredProof.write(to: proofURL)
+            let anchor = try JSONSerialization.data(withJSONObject: ["session": source.rawValue,
+                "timestamp": now - DarwinBridge.cancellationMaxAge - 20,
+                "handoffReplacementSession": replacement.rawValue])
+            let anchorURL = businessURL("cancel", token: source)
+            try anchor.write(to: anchorURL)
+            let bytes = try businessBytes()
+            XCTAssertEqual(DarwinBridge.handoffRecovery(), .none,
+                           "A valid expired proof still confirms that its linked replacement finished")
+            XCTAssertEqual(try businessBytes(), bytes, "Discovery must not clean the proof before linked GC can use it")
+            XCTAssertTrue(DarwinBridge.writeDictationSettings(handoffSettings(SessionToken())))
+            XCTAssertFalse(FileManager.default.fileExists(atPath: anchorURL.path))
+            XCTAssertFalse(FileManager.default.fileExists(atPath: proofURL.path))
+            XCTAssertEqual(DarwinBridge.handoffRecovery(), .none)
+            DarwinBridge.clearIPCFilesForTesting()
+        }
+    }
+
+    func testRefreshedSourceKeepsExpiredReplacementProofThroughSettingsGC() throws {
+        for kind in ["cancel", "terminal"] {
+            let now = Date().timeIntervalSince1970
+            let (source, replacement) = try makeReferencedExpiredProof(kind: kind, now: now)
+            let sourceURL = businessURL("cancel", token: source)
+            let proofURL = businessURL(kind, token: replacement)
+            let sourceBytes = try Data(contentsOf: sourceURL)
+            let proofBytes = try Data(contentsOf: proofURL)
+            XCTAssertEqual(DarwinBridge.handoffRecovery(), .none)
+
+            XCTAssertTrue(DarwinBridge.writeDictationSettings(handoffSettings(SessionToken())))
+
+            XCTAssertEqual(try? Data(contentsOf: sourceURL), sourceBytes)
+            XCTAssertEqual(try? Data(contentsOf: proofURL), proofBytes,
+                           "A refreshed source outlives this proof's ordinary TTL but still needs its settlement evidence")
+            XCTAssertEqual(DarwinBridge.handoffRecovery(), .none, "GC must not resurrect an unresolved replacement")
+            DarwinBridge.clearIPCFilesForTesting()
+        }
+    }
+
+    func testReferencedExpiredProofRemainsAuthoritativeForOrdinaryReadsAndLateWrites() throws {
+        for kind in ["cancel", "terminal"] {
+            let now = Date().timeIntervalSince1970
+            let (_, replacement) = try makeReferencedExpiredProof(kind: kind, now: now)
+            let bytes = try businessBytes()
+            if kind == "cancel" {
+                XCTAssertTrue(DarwinBridge.isSessionCancelled(session: replacement.rawValue, now: now))
+            } else {
+                XCTAssertNil(DarwinBridge.readLiveState(expectedSession: replacement.rawValue, now: now))
+            }
+            XCTAssertEqual(try businessBytes(), bytes, "Ordinary readers must not erase referenced proof")
+            XCTAssertFalse(DarwinBridge.writeLiveState(phase: .listening, partialTranscript: "late",
+                                                      session: replacement.rawValue))
+            XCTAssertEqual(DarwinBridge.commit(.completed(heldPlan), token: replacement),
+                           kind == "cancel" ? .cancelled : .alreadyTerminal,
+                           "Retaining proof bytes without honoring the terminal is not sufficient")
+            XCTAssertEqual(try businessBytes(), bytes, "No late payload/live state or replacement receipt may be published")
+            DarwinBridge.clearIPCFilesForTesting()
+        }
+    }
+
+    func testLinkedChainRetainsIntermediateProofUntilReferringSourceCanRetire() throws {
+        let source = SessionToken()
+        let intermediate = SessionToken()
+        let last = SessionToken()
+        let now = Date().timeIntervalSince1970
+        let settings = handoffSettings(source)
+        XCTAssertTrue(DarwinBridge.writeDictationSettings(settings))
+        guard case .moved = DarwinBridge.handoffDictationSettingsToManual(from: source, to: intermediate, original: settings)
+        else { return XCTFail("First handoff must succeed") }
+        let intermediateSettings = try XCTUnwrap(DarwinBridge.readAndConsumeDictationSettings(expectedSession: intermediate.rawValue))
+        guard case .moved = DarwinBridge.handoffDictationSettingsToManual(from: intermediate, to: last, original: intermediateSettings)
+        else { return XCTFail("Second handoff must succeed") }
+        XCTAssertNotNil(DarwinBridge.readAndConsumeDictationSettings(expectedSession: last.rawValue))
+        XCTAssertEqual(DarwinBridge.commit(.completed(heldPlan), token: last), .written)
+        XCTAssertNotNil(DarwinBridge.readAndConsumeResult(expectedSession: last.rawValue))
+        let sourceURL = businessURL("cancel", token: source)
+        let intermediateURL = businessURL("cancel", token: intermediate)
+        let lastURL = businessURL("terminal", token: last)
+        try setBusinessTimestamp(at: intermediateURL, to: now - DarwinBridge.cancellationMaxAge - 20)
+        try setBusinessTimestamp(at: lastURL, to: now - DarwinBridge.terminalReceiptMaxAge - 10)
+        let sourceBytes = try Data(contentsOf: sourceURL)
+        let intermediateBytes = try Data(contentsOf: intermediateURL)
+        let lastBytes = try Data(contentsOf: lastURL)
+        let gcTrigger = SessionToken()
+        XCTAssertTrue(DarwinBridge.writeDictationSettings(handoffSettings(gcTrigger)))
+        XCTAssertEqual(try? Data(contentsOf: sourceURL), sourceBytes)
+        XCTAssertEqual(try? Data(contentsOf: intermediateURL), intermediateBytes,
+                       "A young source still refers to the expired intermediate cancellation")
+        XCTAssertEqual(try? Data(contentsOf: lastURL), lastBytes)
+        XCTAssertEqual(DarwinBridge.handoffRecovery(), .none)
+
+        try setBusinessTimestamp(at: sourceURL, to: now - DarwinBridge.cancellationMaxAge - 30)
+        // At most one dependency layer may retire per pass; this finite chain needs no clock/wait framework.
+        for _ in 0..<3 { XCTAssertTrue(DarwinBridge.writeDictationSettings(handoffSettings(gcTrigger))) }
+        for url in [sourceURL, intermediateURL, lastURL] {
+            XCTAssertFalse(FileManager.default.fileExists(atPath: url.path), "Unreferenced expired proof must eventually be collected")
+        }
+        XCTAssertEqual(DarwinBridge.handoffRecovery(), .none)
+    }
+
+    func testExpiredResultOnlyCannotRetireHandoffIdentityBeforeExactCancellation() throws {
+        let now = Date().timeIntervalSince1970
+        let source = SessionToken()
+        let replacement = SessionToken()
+        let settings = handoffSettings(source)
+        XCTAssertTrue(DarwinBridge.writeDictationSettings(settings))
+        guard case .moved = DarwinBridge.handoffDictationSettingsToManual(from: source, to: replacement, original: settings)
+        else { return XCTFail("Fixture handoff must succeed") }
+        XCTAssertNotNil(DarwinBridge.readAndConsumeDictationSettings(expectedSession: replacement.rawValue))
+        XCTAssertEqual(DarwinBridge.commit(.completed(heldPlan), token: replacement), .written)
+        // Remove only this fixture's receipt to represent failed receipt publication/rollback.
+        try FileManager.default.removeItem(at: businessURL("terminal", token: replacement))
+        let sourceURL = businessURL("cancel", token: source)
+        let resultURL = businessURL("result", token: replacement)
+        try setBusinessTimestamp(at: sourceURL, to: now - DarwinBridge.cancellationMaxAge - 10)
+        try setBusinessTimestamp(at: resultURL, to: now - DarwinBridge.resultMaxAge - 10)
+        let sourceBytes = try Data(contentsOf: sourceURL)
+        let resultBytes = try Data(contentsOf: resultURL)
+
+        XCTAssertEqual(DarwinBridge.handoffRecovery(), .unresolved(replacement))
+        let gcTrigger = SessionToken()
+        XCTAssertTrue(DarwinBridge.writeDictationSettings(handoffSettings(gcTrigger)))
+        XCTAssertNotNil(DarwinBridge.readAndConsumeDictationSettings(expectedSession: gcTrigger.rawValue))
+        XCTAssertEqual(try? Data(contentsOf: sourceURL), sourceBytes, "Result-only cannot retire an expired source anchor")
+        XCTAssertEqual(try? Data(contentsOf: resultURL), resultBytes, "Anchor GC does not extend or consume result payloads")
+
+        XCTAssertNil(DarwinBridge.peekResult(expectedSession: replacement.rawValue))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: resultURL.path), "Ordinary five-minute payload expiry remains intact")
+        XCTAssertEqual(try? Data(contentsOf: sourceURL), sourceBytes)
+        XCTAssertEqual(DarwinBridge.handoffRecovery(), .unresolved(replacement))
+        XCTAssertEqual(KeyboardSessionRecoveryStore.recoveryDecision(snapshot: nil, contextMatches: false), .cancelBeforeRetry(replacement))
+
+        XCTAssertTrue(DarwinBridge.cancelSession(replacement.rawValue))
+        let cancellationURL = businessURL("cancel", token: replacement)
+        let cancellation = try Data(contentsOf: cancellationURL)
+        XCTAssertEqual(DarwinBridge.handoffRecovery(), .none)
+        XCTAssertTrue(DarwinBridge.writeDictationSettings(handoffSettings(gcTrigger)))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: sourceURL.path))
+        XCTAssertEqual(try Data(contentsOf: cancellationURL), cancellation)
+    }
+
+    private func makeReferencedExpiredProof(kind: String, now: TimeInterval) throws -> (SessionToken, SessionToken) {
+        let source = SessionToken()
+        let replacement = SessionToken()
+        let settings = handoffSettings(source)
+        XCTAssertTrue(DarwinBridge.writeDictationSettings(settings))
+        guard case .moved = DarwinBridge.handoffDictationSettingsToManual(from: source, to: replacement, original: settings)
+        else { throw NSError(domain: "HandoffFixture", code: 1) }
+        XCTAssertNotNil(DarwinBridge.readAndConsumeDictationSettings(expectedSession: replacement.rawValue))
+        if kind == "cancel" { XCTAssertTrue(DarwinBridge.cancelSession(replacement.rawValue)) }
+        else {
+            XCTAssertEqual(DarwinBridge.commit(.completed(heldPlan), token: replacement), .written)
+            XCTAssertNotNil(DarwinBridge.readAndConsumeResult(expectedSession: replacement.rawValue))
+        }
+        try setBusinessTimestamp(at: businessURL(kind, token: replacement),
+                                 to: now - max(DarwinBridge.cancellationMaxAge, DarwinBridge.terminalReceiptMaxAge) - 10)
+        try setBusinessTimestamp(at: businessURL("cancel", token: source), to: now - DarwinBridge.cancellationMaxAge - 20)
+        XCTAssertTrue(DarwinBridge.cancelSession(source.rawValue, timestamp: now))
+        return (source, replacement)
+    }
+
+    private func setBusinessTimestamp(at url: URL, to timestamp: TimeInterval) throws {
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        object["timestamp"] = timestamp
+        try JSONSerialization.data(withJSONObject: object).write(to: url, options: [.atomic, .completeFileProtection])
+    }
+
+    func testSourceRecancelCannotOverwriteUnreadablePotentialAnchor() throws {
+        let source = SessionToken()
+        let bytes = Data("unreadable-existing-handoff-anchor".utf8)
+        let url = businessURL("cancel", token: source)
+        try bytes.write(to: url)
+        XCTAssertFalse(DarwinBridge.cancelSession(source.rawValue))
+        XCTAssertEqual(try Data(contentsOf: url), bytes)
+    }
+
+    func testHandoffTerminalPayloadAndConsumedReceiptRemainUnchanged() throws {
+        for mode in ["published", "consumed", "result-only"] {
+            let old = SessionToken()
+            let original = handoffSettings(old)
+            XCTAssertTrue(DarwinBridge.writeDictationSettings(original))
+            XCTAssertEqual(DarwinBridge.commit(.completed(heldPlan), token: old), .written)
+            if mode == "consumed" {
+                XCTAssertNotNil(DarwinBridge.readAndConsumeResult(expectedSession: old.rawValue))
+            } else if mode == "result-only" {
+                try FileManager.default.removeItem(at: businessURL("terminal", token: old))
+            }
+            let bytes = try businessBytes()
+            XCTAssertEqual(DarwinBridge.handoffDictationSettingsToManual(
+                from: old, to: SessionToken(), original: original), .alreadyTerminal, mode)
+            XCTAssertEqual(try businessBytes(), bytes, mode)
+        }
+    }
+
+    func testHandoffMalformedAndExpiredSourceTerminalFilesAreReadOnlyBarriers() throws {
+        for kind in ["terminal", "result"] {
+            for malformed in [false, true] {
+                let old = SessionToken()
+                let original = handoffSettings(old)
+                XCTAssertTrue(DarwinBridge.writeDictationSettings(original))
+                let expired = kind == "terminal"
+                    ? "{\"session\":\"\(old.rawValue)\",\"timestamp\":1}"
+                    : "{\"session\":\"\(old.rawValue)\",\"status\":\"completed\",\"text\":\"expired\",\"timestamp\":1}"
+                try Data((malformed ? "broken-json" : expired).utf8).write(to: businessURL(kind, token: old))
+                let bytes = try businessBytes()
+                XCTAssertEqual(DarwinBridge.handoffDictationSettingsToManual(
+                    from: old, to: SessionToken(), original: original), .alreadyTerminal)
+                XCTAssertEqual(try businessBytes(), bytes)
+                // Isolate deliberately stale/corrupt fixtures from later public-API GC.
+                DarwinBridge.clearIPCFilesForTesting()
+            }
+        }
+    }
+
+    func testHandoffCancelledSourceAndOccupiedReplacementNeverChangeBusinessFiles() throws {
+        for kind in ["settings", "result", "terminal", "cancel"] {
+            let old = SessionToken()
+            let replacement = SessionToken()
+            let original = handoffSettings(old)
+            XCTAssertTrue(DarwinBridge.writeDictationSettings(original))
+            switch kind {
+            case "settings": XCTAssertTrue(DarwinBridge.writeDictationSettings(handoffSettings(replacement)))
+            case "cancel": XCTAssertTrue(DarwinBridge.cancelSession(replacement.rawValue))
+            default:
+                XCTAssertEqual(DarwinBridge.commit(.completed(heldPlan), token: replacement), .written)
+                if kind == "terminal" {
+                    XCTAssertNotNil(DarwinBridge.readAndConsumeResult(expectedSession: replacement.rawValue))
+                } else {
+                    try FileManager.default.removeItem(at: businessURL("terminal", token: replacement))
+                }
+            }
+            let bytes = try businessBytes()
+            XCTAssertEqual(DarwinBridge.handoffDictationSettingsToManual(
+                from: old, to: replacement, original: original), .failed, kind)
+            XCTAssertEqual(try businessBytes(), bytes, kind)
+        }
+        let old = SessionToken()
+        let original = handoffSettings(old)
+        XCTAssertTrue(DarwinBridge.writeDictationSettings(original))
+        XCTAssertTrue(DarwinBridge.cancelSession(old.rawValue))
+        let bytes = try businessBytes()
+        XCTAssertEqual(DarwinBridge.handoffDictationSettingsToManual(
+            from: old, to: SessionToken(), original: original), .failed)
+        XCTAssertEqual(try businessBytes(), bytes)
+    }
+
+    func testHandoffCorruptAndExpiredOccupancyCannotBeCleanedOrReused() throws {
+        for kind in ["settings", "result", "terminal", "cancel"] {
+            for malformed in [false, true] {
+                let old = SessionToken()
+                let replacement = SessionToken()
+                let original = handoffSettings(old)
+                XCTAssertTrue(DarwinBridge.writeDictationSettings(original))
+                let expired: Data
+                switch kind {
+                case "settings": expired = try JSONEncoder().encode(handoffSettings(replacement, timestamp: 1))
+                case "result": expired = try JSONEncoder().encode(DictationIPCResult(status: .completed,
+                    text: "expired", token: replacement, editPlan: heldPlan, timestamp: 1))
+                default: expired = Data("{\"session\":\"\(replacement.rawValue)\",\"timestamp\":1}".utf8)
+                }
+                try (malformed ? Data("broken-json".utf8) : expired).write(to: businessURL(kind, token: replacement))
+                let bytes = try businessBytes()
+                XCTAssertEqual(DarwinBridge.handoffDictationSettingsToManual(
+                    from: old, to: replacement, original: original), .failed)
+                XCTAssertEqual(try businessBytes(), bytes)
+                DarwinBridge.clearIPCFilesForTesting()
+            }
+        }
+        for malformed in [false, true] {
+            let old = SessionToken()
+            let original = handoffSettings(old)
+            XCTAssertTrue(DarwinBridge.writeDictationSettings(original))
+            let expired = "{\"session\":\"\(old.rawValue)\",\"timestamp\":1}"
+            try Data((malformed ? "broken-json" : expired).utf8).write(to: businessURL("cancel", token: old))
+            let bytes = try businessBytes()
+            XCTAssertEqual(DarwinBridge.handoffDictationSettingsToManual(
+                from: old, to: SessionToken(), original: original), .failed)
+            XCTAssertEqual(try businessBytes(), bytes)
+            DarwinBridge.clearIPCFilesForTesting()
+        }
+    }
+
+    func testHandoffInvalidIdentityOrTimestampIsReadOnly() throws {
+        let old = SessionToken()
+        let replacement = SessionToken()
+        let original = handoffSettings(old)
+        XCTAssertTrue(DarwinBridge.writeDictationSettings(original))
+        let bytes = try businessBytes()
+        XCTAssertEqual(DarwinBridge.handoffDictationSettingsToManual(from: old, to: old, original: original), .failed)
+        XCTAssertEqual(DarwinBridge.handoffDictationSettingsToManual(
+            from: old, to: replacement, original: handoffSettings(SessionToken())), .failed)
+        for timestamp in [0.0, -1.0, Double.nan, Double.infinity] {
+            XCTAssertEqual(DarwinBridge.handoffDictationSettingsToManual(
+                from: old, to: replacement, original: original, timestamp: timestamp), .failed)
+            XCTAssertEqual(try businessBytes(), bytes)
+        }
+    }
+
+    func testHandoffMissingContainerFailsWithoutChangingExistingFiles() throws {
+        let old = SessionToken()
+        let original = handoffSettings(old)
+        XCTAssertTrue(DarwinBridge.writeDictationSettings(original))
+        let bytes = try businessBytes()
+        DarwinBridge.setContainerDirectoryForTesting(nil)
+        defer { DarwinBridge.setContainerDirectoryForTesting(ipcDirectory) }
+        XCTAssertEqual(DarwinBridge.handoffDictationSettingsToManual(
+            from: old, to: SessionToken(), original: original), .failed)
+        XCTAssertEqual(try businessBytes(), bytes)
+    }
+
+    func testOrphanHandoffStagesAreNeverPendingAndExpireOnlyBeyondSettingsLifetime() throws {
+        let now: TimeInterval = 1_000
+        let officialToken = SessionToken()
+        let official = handoffSettings(officialToken, timestamp: now)
+        XCTAssertTrue(DarwinBridge.writeDictationSettings(official))
+        let officialBytes = try Data(contentsOf: businessURL("settings", token: officialToken))
+        let fresh = SessionToken()
+        let boundary = SessionToken()
+        let expired = SessionToken()
+        let corruptExpired = SessionToken()
+        let stageCases: [(SessionToken, TimeInterval, Bool)] = [
+            (fresh, now, false),
+            (boundary, now - 60, false),
+            (expired, now - 61, false),
+            (corruptExpired, now - 61, true)
+        ]
+        for (token, modified, corrupt) in stageCases {
+            let data: Data
+            if corrupt { data = Data("interrupted-stage-json".utf8) }
+            else { data = try JSONEncoder().encode(handoffSettings(token, timestamp: modified)) }
+            let url = businessURL("handoff-stage", token: token)
+            try data.write(to: url, options: [.atomic, .completeFileProtection])
+            try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: modified)],
+                                                 ofItemAtPath: url.path)
+        }
+        let unrelated = ipcDirectory.appendingPathComponent("unrelated-stage.json")
+        try Data("unrelated".utf8).write(to: unrelated)
+        try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: 1)],
+                                             ofItemAtPath: unrelated.path)
+
+        XCTAssertEqual(DarwinBridge.peekPendingDictationSettings(now: now), official)
+        XCTAssertEqual(try Data(contentsOf: businessURL("settings", token: officialToken)), officialBytes)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: businessURL("handoff-stage", token: fresh).path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: businessURL("handoff-stage", token: boundary).path),
+                      "Exactly 60 seconds is still within the existing settings lifetime")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: businessURL("handoff-stage", token: expired).path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: businessURL("handoff-stage", token: corruptExpired).path),
+                       "Corrupt orphan data must not evade bounded retention")
+        XCTAssertEqual(try Data(contentsOf: unrelated), Data("unrelated".utf8))
+        XCTAssertEqual(DarwinBridge.readAndConsumeDictationSettings(expectedSession: officialToken.rawValue, now: now), official)
+        XCTAssertNil(DarwinBridge.peekPendingDictationSettings(now: now))
+        for (token, _, _) in stageCases {
+            XCTAssertFalse(FileManager.default.fileExists(atPath: businessURL("settings", token: token).path),
+                           "An orphan stage must never auto-promote into a discoverable request")
+        }
+    }
+
+    func testNewSettingsGCPreservesMalformedOrInvalidCancellationEvidenceButExpiresValidMarkers() throws {
+        let now = Date().timeIntervalSince1970
+        let corrupt = SessionToken()
+        let invalidTime = SessionToken()
+        let mismatchedIdentity = SessionToken()
+        let expired = SessionToken()
+        let evidence: [(SessionToken, Data)] = [
+            (corrupt, Data("broken-cancellation-json".utf8)),
+            (invalidTime, Data("{\"session\":\"\(invalidTime.rawValue)\",\"timestamp\":-1}".utf8)),
+            (mismatchedIdentity, Data("{\"session\":\"\(SessionToken().rawValue)\",\"timestamp\":1}".utf8))
+        ]
+        for (token, bytes) in evidence {
+            try bytes.write(to: businessURL("cancel", token: token), options: [.atomic, .completeFileProtection])
+        }
+        let validExpired = Data("{\"session\":\"\(expired.rawValue)\",\"timestamp\":\(now - 86_401)}".utf8)
+        try validExpired.write(to: businessURL("cancel", token: expired), options: [.atomic, .completeFileProtection])
+
+        // This public API invokes cancellation GC before an admitted owner's next poll.
+        XCTAssertTrue(DarwinBridge.writeDictationSettings(handoffSettings(SessionToken())))
+
+        for (token, bytes) in evidence {
+            XCTAssertEqual(try? Data(contentsOf: businessURL("cancel", token: token)), bytes,
+                           "Unreadable or invalid evidence is not proof that cancellation is absent")
+        }
+        XCTAssertEqual(try? Data(contentsOf: businessURL("cancel", token: expired)), validExpired,
+                       "An unknown potential anchor may still reference this expired proof")
+
+        // Retire only this test's unknown fixtures before checking ordinary unreferenced TTL.
+        for (token, _) in evidence {
+            try FileManager.default.removeItem(at: businessURL("cancel", token: token))
+        }
+        XCTAssertTrue(DarwinBridge.writeDictationSettings(handoffSettings(SessionToken())))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: businessURL("cancel", token: expired).path),
+                       "A valid identity and positive, confirmed-expired timestamp still permit cleanup")
+    }
+
+    func testCorruptCancellationEvidenceRejectsLateLiveAndTerminalWritesWithoutErasingMarker() throws {
+        let token = SessionToken()
+        let marker = Data("unreadable-cancellation-evidence".utf8)
+        let markerURL = businessURL("cancel", token: token)
+        try marker.write(to: markerURL, options: [.atomic, .completeFileProtection])
+
+        XCTAssertFalse(DarwinBridge.writeLiveState(phase: .listening, partialTranscript: "late", session: token.rawValue))
+        XCTAssertEqual(try? Data(contentsOf: markerURL), marker)
+        XCTAssertEqual(DarwinBridge.commit(.completed(heldPlan), token: token), .cancelled)
+        XCTAssertEqual(try? Data(contentsOf: markerURL), marker)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: businessURL("live", token: token).path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: businessURL("result", token: token).path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: businessURL("terminal", token: token).path))
+    }
+
+    func testCancellationEvidenceDistinguishesAbsenceAndPresentMarkerWithoutBusinessWrites() throws {
+        XCTAssertEqual(DarwinBridge.handoffRecovery(), .none)
+        let absent = SessionToken()
+        let existing = SessionToken()
+        XCTAssertTrue(DarwinBridge.cancelSession(existing.rawValue))
+        let before = try businessBytes()
+
+        XCTAssertEqual(DarwinBridge.cancellationEvidence(for: absent), .absent)
+        XCTAssertEqual(DarwinBridge.cancellationEvidence(for: existing), .present)
+        XCTAssertEqual(DarwinBridge.handoffRecovery(), .none, "Legacy cancellation without a link is not a handoff anchor")
+
+        XCTAssertEqual(try businessBytes(), before)
+    }
+
+    func testCancellationEvidenceNeverCleansCorruptOrExpiredPhysicalMarker() throws {
+        for corrupt in [false, true] {
+            let token = SessionToken()
+            let bytes = Data((corrupt ? "corrupt-cancellation-marker"
+                : "{\"session\":\"\(token.rawValue)\",\"timestamp\":1}").utf8)
+            try bytes.write(to: businessURL("cancel", token: token))
+            let before = try businessBytes()
+
+            XCTAssertEqual(DarwinBridge.cancellationEvidence(for: token), .present,
+                           "Physical evidence blocks reconciliation even when its contents cannot justify cleanup")
+
+            XCTAssertEqual(try businessBytes(), before)
+        }
+    }
+
+    func testCancellationEvidenceReportsUnavailableContainerInsteadOfAbsence() throws {
+        let token = SessionToken()
+        let blockedContainer = ipcDirectory.appendingPathComponent("not-a-directory")
+        let bytes = Data("unavailable-container-fixture".utf8)
+        try bytes.write(to: blockedContainer)
+        defer { DarwinBridge.setContainerDirectoryForTesting(ipcDirectory) }
+        for unavailable in [nil, blockedContainer] as [URL?] {
+            DarwinBridge.setContainerDirectoryForTesting(unavailable)
+            XCTAssertEqual(DarwinBridge.cancellationEvidence(for: token), .unavailable)
+        }
+        XCTAssertEqual(try Data(contentsOf: blockedContainer), bytes)
+    }
+
+    func testExplicitRetryUsesFreshManualUUIDAndCannotReplayOldTerminal() throws {
+        let old = SessionToken()
+        let retry = SessionToken()
+        XCTAssertEqual(DarwinBridge.commit(.failed(.recognition), token: old), .written)
+        XCTAssertNotNil(DarwinBridge.readAndConsumeResult(expectedSession: old.rawValue))
+        let oldReceipt = try Data(contentsOf: businessURL("terminal", token: old))
+        let suite = "ManualRetry-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let snapshot = try XCTUnwrap(KeyboardSessionRecoveryStore.save(
+            session: retry.rawValue, launchMode: .manualOpen, contextBefore: "new field",
+            contextAfter: nil, selectedText: nil, defaults: defaults))
+        XCTAssertNotEqual(retry, old)
+        let settings = DictationSettings(language: "zh-CN", whisper: false,
+            translateEnabled: false, translateTarget: "en-US", selectedText: nil,
+            keyboardType: 0, session: retry.rawValue, expectedContextFingerprint: snapshot.contextFingerprint)
+        XCTAssertTrue(DarwinBridge.writeDictationSettings(settings))
+        XCTAssertEqual(DarwinBridge.peekPendingDictationSettings(), settings)
+        XCTAssertEqual(snapshot.session, retry.rawValue)
+        XCTAssertNil(DarwinBridge.peekResult(expectedSession: retry.rawValue))
+        XCTAssertEqual(DarwinBridge.commit(.completed(heldPlan), token: old), .alreadyTerminal)
+        XCTAssertNil(DarwinBridge.peekResult(expectedSession: old.rawValue))
+        XCTAssertEqual(try Data(contentsOf: businessURL("terminal", token: old)), oldReceipt)
+        XCTAssertEqual(DarwinBridge.commit(.completed(heldPlan), token: retry), .written)
+        XCTAssertEqual(KeyboardResultDispositionPolicy.decide(
+            launchMode: snapshot.launchMode, belongsToCurrentExtensionInstance: true,
+            currentSelectedText: nil, hasContextEvidence: snapshot.hasContextEvidence,
+            contextMatches: true, operation: .insertAtCursor, requiresConfirmation: false), .hold)
+        XCTAssertNotNil(DarwinBridge.peekResult(expectedSession: retry.rawValue))
     }
 
     // MARK: - URL 构建 (Path B 降级路径)
@@ -87,8 +732,8 @@ final class DictationConstantsTests: XCTestCase {
     }
 
     func testDarwinBridgeSessionMismatch() {
-        let session1 = "session-aaa"
-        let session2 = "session-bbb"
+        let session1 = UUID().uuidString
+        let session2 = UUID().uuidString
 
         // 写入 session1 的结果
         DarwinBridge.writeTranscription("结果1", session: session1)
@@ -182,10 +827,11 @@ final class DictationConstantsTests: XCTestCase {
 
     func testExpiredResultIsRemoved() {
         let now = Date().timeIntervalSince1970
-        DarwinBridge.writeTranscription("过期", session: "old", timestamp: now - 301)
+        let session = UUID().uuidString
+        DarwinBridge.writeTranscription("过期", session: session, timestamp: now - 301)
 
         XCTAssertNil(DarwinBridge.peekResult(now: now, maxAge: 300))
-        XCTAssertNil(DarwinBridge.readAndConsumeResult(expectedSession: "old", now: now))
+        XCTAssertNil(DarwinBridge.readAndConsumeResult(expectedSession: session, now: now))
     }
 
     // MARK: - 实时原地反馈
@@ -567,6 +1213,7 @@ final class DictationConstantsTests: XCTestCase {
     }
 
     func testDarwinBridgeDictationSettings() {
+        let session = UUID().uuidString
         let settings = DictationSettings(
             language: "zh-CN",
             whisper: true,
@@ -574,16 +1221,16 @@ final class DictationConstantsTests: XCTestCase {
             translateTarget: "en",
             selectedText: "选中文本",
             keyboardType: 1,
-            session: "test-settings-session"
+            session: session
         )
 
         DarwinBridge.writeDictationSettings(settings)
 
         let pending = DarwinBridge.peekPendingDictationSettings()
-        XCTAssertEqual(pending?.session, "test-settings-session")
+        XCTAssertEqual(pending?.session, session)
 
         let read = DarwinBridge.readAndConsumeDictationSettings(
-            expectedSession: "test-settings-session"
+            expectedSession: session
         )
         XCTAssertNotNil(read)
         XCTAssertEqual(read?.language, "zh-CN")
@@ -592,7 +1239,7 @@ final class DictationConstantsTests: XCTestCase {
         XCTAssertEqual(read?.translateTarget, "en")
         XCTAssertEqual(read?.selectedText, "选中文本")
         XCTAssertEqual(read?.keyboardType, 1)
-        XCTAssertEqual(read?.session, "test-settings-session")
+        XCTAssertEqual(read?.session, session)
         XCTAssertNil(DarwinBridge.peekPendingDictationSettings())
     }
 
@@ -646,6 +1293,7 @@ final class DictationConstantsTests: XCTestCase {
 
     func testExpiredSettingsAreRemoved() {
         let now = Date().timeIntervalSince1970
+        let session = UUID().uuidString
         let settings = DictationSettings(
             language: "zh-CN",
             whisper: false,
@@ -653,7 +1301,7 @@ final class DictationConstantsTests: XCTestCase {
             translateTarget: "en-US",
             selectedText: nil,
             keyboardType: 0,
-            session: "expired-settings",
+            session: session,
             timestamp: now - 61
         )
         DarwinBridge.writeDictationSettings(settings)
@@ -661,7 +1309,7 @@ final class DictationConstantsTests: XCTestCase {
         XCTAssertNil(DarwinBridge.peekPendingDictationSettings(now: now, maxAge: 60))
         XCTAssertNil(
             DarwinBridge.readAndConsumeDictationSettings(
-                expectedSession: "expired-settings",
+                expectedSession: session,
                 now: now
             )
         )
@@ -730,5 +1378,141 @@ final class DictationConstantsTests: XCTestCase {
             latest
         )
         XCTAssertNil(DarwinBridge.peekPendingDictationSettings(now: now + 1))
+    }
+
+    func testTypedCompletedCommitIsFirstWriterWins() throws {
+        let token = SessionToken()
+        let plan = EditPlan(
+            intent: .dictate,
+            operation: .insertAtCursor,
+            text: "第一次",
+            expectedContextFingerprint: nil,
+            requiresConfirmation: false
+        )
+        XCTAssertEqual(DarwinBridge.commit(.completed(plan), token: token), .written)
+        XCTAssertEqual(DarwinBridge.commit(.failed(.recognition), token: token), .alreadyTerminal)
+        XCTAssertEqual(
+            DarwinBridge.peekResult(expectedSession: token.rawValue)?.editPlan,
+            plan
+        )
+    }
+
+    func testTypedCancelledCommitCreatesNoResult() {
+        let token = SessionToken()
+        XCTAssertEqual(DarwinBridge.commit(.cancelled, token: token), .cancelled)
+        XCTAssertNil(DarwinBridge.peekResult(expectedSession: token.rawValue))
+        XCTAssertEqual(
+            DarwinBridge.commit(
+                .completed(
+                    EditPlan(
+                        intent: .dictate,
+                        operation: .insertAtCursor,
+                        text: "迟到",
+                        expectedContextFingerprint: nil,
+                        requiresConfirmation: false
+                    )
+                ),
+                token: token
+            ),
+            .cancelled
+        )
+    }
+
+    func testInvalidSessionCannotCreateOrConsumeIPC() {
+        let invalid = "not-a-uuid"
+        XCTAssertFalse(
+            DarwinBridge.writeDictationSettings(
+                DictationSettings(
+                    language: "zh-CN",
+                    whisper: false,
+                    translateEnabled: false,
+                    translateTarget: "en-US",
+                    selectedText: nil,
+                    keyboardType: 0,
+                    session: invalid
+                )
+            )
+        )
+        XCTAssertNil(DarwinBridge.peekDictationSettings(expectedSession: invalid))
+        XCTAssertNil(DarwinBridge.readAndConsumeDictationSettings(expectedSession: invalid))
+        XCTAssertNil(DarwinBridge.readAndConsumeResult(expectedSession: invalid))
+        XCTAssertFalse(DarwinBridge.cancelSession(invalid))
+    }
+
+    func testPeekDictationSettingsReturnsExactSessionWithoutConsumingIt() {
+        let session = UUID().uuidString
+        let settings = DictationSettings(
+            language: "zh-CN",
+            whisper: false,
+            translateEnabled: false,
+            translateTarget: "en-US",
+            selectedText: "选区",
+            keyboardType: 0,
+            session: session
+        )
+        XCTAssertTrue(DarwinBridge.writeDictationSettings(settings))
+
+        XCTAssertEqual(
+            DarwinBridge.peekDictationSettings(expectedSession: session),
+            settings
+        )
+        XCTAssertEqual(
+            DarwinBridge.readAndConsumeDictationSettings(expectedSession: session),
+            settings
+        )
+    }
+
+    func testCancelNotificationNameRequiresValidSessionToken() {
+        let token = SessionToken()
+        XCTAssertNotNil(
+            DarwinBridge.sessionNotificationName(
+                base: DarwinNotificationName.requestCancelDictation,
+                session: token.rawValue
+            )
+        )
+        XCTAssertNil(
+            DarwinBridge.sessionNotificationName(
+                base: DarwinNotificationName.requestCancelDictation,
+                session: "not-a-uuid"
+            )
+        )
+    }
+
+    func testDictationSettingsRoundTripsExpectedContextFingerprint() throws {
+        let settings = DictationSettings(
+            language: "zh-CN",
+            whisper: false,
+            translateEnabled: false,
+            translateTarget: "en-US",
+            selectedText: nil,
+            keyboardType: 0,
+            session: UUID().uuidString,
+            expectedContextFingerprint: "context-digest"
+        )
+
+        let data = try JSONEncoder().encode(settings)
+        let decoded = try JSONDecoder().decode(DictationSettings.self, from: data)
+        XCTAssertEqual(decoded, settings)
+        XCTAssertEqual(decoded.expectedContextFingerprint, "context-digest")
+    }
+
+    func testLegacyDictationSettingsDecodeWithoutContextFingerprint() throws {
+        let session = UUID().uuidString
+        let json = """
+        {"language":"zh-CN","whisper":true,"translateEnabled":false,"translateTarget":"en-US","selectedText":"旧选区","keyboardType":3,"session":"\(session)","timestamp":100}
+        """
+
+        let decoded = try JSONDecoder().decode(
+            DictationSettings.self,
+            from: Data(json.utf8)
+        )
+        XCTAssertEqual(decoded.session, session)
+        XCTAssertEqual(decoded.language, "zh-CN")
+        XCTAssertTrue(decoded.whisper)
+        XCTAssertFalse(decoded.translateEnabled)
+        XCTAssertEqual(decoded.translateTarget, "en-US")
+        XCTAssertEqual(decoded.selectedText, "旧选区")
+        XCTAssertEqual(decoded.keyboardType, 3)
+        XCTAssertEqual(decoded.expectedContextFingerprint, nil)
     }
 }

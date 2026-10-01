@@ -9,14 +9,14 @@ final class DictationLaunchPolicyTests: XCTestCase {
         )
     }
 
-    func testColdStateOpensContainingAppImmediately() {
+    func testColdStateShowsManualRecoveryImmediately() {
         XCTAssertEqual(
             DictationLaunchPolicy.initialAction(canStartInPlace: false),
-            .openContainingApp
+            .showManualRecovery
         )
     }
 
-    func testHotPathFallsBackToColdLaunchAtDeadline() {
+    func testHotPathShowsManualRecoveryAtOnePointTwoSeconds() {
         XCTAssertEqual(
             DictationLaunchPolicy.actionAfterNoResponse(
                 elapsed: DictationLaunchPolicy.inPlaceResponseDeadline - 0.01,
@@ -29,22 +29,14 @@ final class DictationLaunchPolicyTests: XCTestCase {
                 elapsed: DictationLaunchPolicy.inPlaceResponseDeadline,
                 initialAction: .requestInPlace
             ),
-            .openContainingApp
+            .showManualRecovery
         )
     }
 
-    func testEveryUnresponsiveRouteEndsWithManualRecovery() {
-        for initial in [
-            DictationLaunchAction.requestInPlace,
-            DictationLaunchAction.openContainingApp
-        ] {
-            XCTAssertEqual(
-                DictationLaunchPolicy.actionAfterNoResponse(
-                    elapsed: DictationLaunchPolicy.manualRecoveryDeadline,
-                    initialAction: initial
-                ),
-                .showManualRecovery
-            )
-        }
+    func testUnansweredHotRequestStaysManualAfterDeadline() {
+        XCTAssertEqual(
+            DictationLaunchPolicy.actionAfterNoResponse(elapsed: 10, initialAction: .requestInPlace),
+            .showManualRecovery
+        )
     }
 }

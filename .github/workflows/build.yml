@@ -48,6 +48,9 @@ jobs:
           python3 -m unittest scripts.tests.test_validate_distribution_info
           python3 scripts/validate_distribution_info.py VoiceInputApp/Info.plist
 
+      - name: Verify Keyboard Distribution Launch Sources
+        run: bash scripts/verify_distribution_keyboard_launch.sh
+
       - name: Run Unit and UI Smoke Tests
         run: |
           set -o pipefail
@@ -395,6 +398,7 @@ jobs:
           (github.event_name != 'workflow_dispatch' || inputs.publish != true) &&
           steps.check_signing.outputs.has_signing != 'true'
         run: |
+          bash scripts/verify_distribution_keyboard_launch.sh
           xcodebuild \
             -project VoType.xcodeproj \
             -scheme VoiceInputApp \

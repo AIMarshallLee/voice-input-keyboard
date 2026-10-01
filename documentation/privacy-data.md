@@ -24,17 +24,29 @@ tracking domain or developer-operated collection endpoint.
 | Live state | 2 minutes | Phase and partial text |
 | Terminal result | 5 minutes or until matching consumption | Completed text or error |
 | Readiness | 3.5 seconds without refresh | Standby/recording/processing only |
-| Cancellation marker | 24 hours | Session and timestamp; no transcript |
-| Terminal receipt | 24 hours | Session and timestamp; no transcript |
+| Cancellation marker | Safely validated, unlinked markers become eligible for ordinary cleanup after 24 hours; invalid or unreadable proof is preserved and may persist beyond TTL, potentially indefinitely | Session/timestamp and, when needed, replacement UUID; no transcript or audio |
+| Terminal receipt | Safely validated receipts become eligible for ordinary cleanup after 24 hours; linked handoff identity can remain until valid settlement | Session/timestamp; no transcript or audio |
 | Recovery snapshot | 10 minutes | Session and context hashes; no editor plaintext |
 | Preferences/personal dictionary | Until user changes/deletes or uninstalls | User-entered configuration |
 | Pinyin learning | Until reset/uninstall; bounded to 2,000 spellings × 16 candidates | Candidate selection counts |
 | Aggregate statistics | Until reset/uninstall; daily detail limited to seven days | Counts, locale distribution, streak dates |
 | Raw audio file | Not retained | VoType does not create one |
 
-Session files use atomic writes with complete file protection and delete stale
-values on read/cleanup. Expiry is a safety bound, not a promise that iOS runs a
-background cleanup exactly at that second.
+Session files use atomic writes with complete file protection. Ordinary
+read/cleanup removes only stale records that can be safely validated; invalid or
+unreadable cancellation proof is preserved. Expiry is a safety bound, not a
+promise that iOS runs a background cleanup exactly at that second.
+
+The ordinary 24-hour value is an eligibility boundary, not an unconditional
+deletion promise. Read-only inspection preserves unreadable cancellation evidence
+instead of erasing it. A cancellation source may retain a random replacement UUID
+and timestamp to prevent an unresolved handoff from being mistaken for safe
+completion; it contains neither audio nor transcript. Result-only payloads do
+not settle that link. Safely validated, eligible records may be removed during
+ordinary access or later settings writes. Invalid or unreadable cancellation
+proof may outlive the ordinary 24-hour TTL, potentially indefinitely; VoType has
+no independent purge timer while the app is not running, and no user-visible
+control deletes session-proof records separately.
 
 ## User deletion controls
 
@@ -50,3 +62,5 @@ background cleanup exactly at that second.
 The public policy is `docs/privacy-policy.html`. App Store Privacy Details must
 be answered from the final binary and this map; CI cannot submit those account
 answers on behalf of the owner.
+
+Signed physical-device microphone, Apple Speech, PiP lifecycle, extension eviction, and third-party insertion remain EXTERNAL / NOT_RUN for Slice A.

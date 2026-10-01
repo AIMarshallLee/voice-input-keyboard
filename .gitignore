@@ -22,6 +22,12 @@ ipa-output/
 __pycache__/
 *.pyc
 
+# Isolated development worktrees
+.worktrees/
+
+# Local Adaptive delegation state
+.codex-adaptive-agents/
+
 # Info.plist 由 XcodeGen 从 project.yml 自动生成,不纳入版本控制
 VoiceInputApp/Info.plist
 KeyboardExtension/Info.plist
