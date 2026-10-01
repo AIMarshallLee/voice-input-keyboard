@@ -65,6 +65,7 @@ final class AppleDictationPermissionResolver: @unchecked Sendable, DictationPerm
         policy: DictationAuthorizationPolicy
     ) async -> Result<Void, DictationFailure> {
         while true {
+            guard !Task.isCancelled else { return .failure(.interrupted) }
             switch DictationPermissionDecision.next(
                 speech: speechAuthorizationStateProvider(),
                 microphone: microphoneAuthorizationStateProvider(),
@@ -75,9 +76,13 @@ final class AppleDictationPermissionResolver: @unchecked Sendable, DictationPerm
             case .fail(let failure):
                 return .failure(failure)
             case .requestSpeech:
+                guard !Task.isCancelled else { return .failure(.interrupted) }
                 await requestSpeechAuthorizationOperation()
+                guard !Task.isCancelled else { return .failure(.interrupted) }
             case .requestMicrophone:
+                guard !Task.isCancelled else { return .failure(.interrupted) }
                 await requestMicrophoneAuthorizationOperation()
+                guard !Task.isCancelled else { return .failure(.interrupted) }
             }
         }
     }
@@ -191,7 +196,18 @@ final class AppleDictationAudioSystemEventSource: @unchecked Sendable {
             ) { [weak self] notification in
                 guard let reasonValue = notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
                       AVAudioSession.RouteChangeReason(rawValue: reasonValue) == .oldDeviceUnavailable else { return }
-                self?.yield(.inputRouteLost)
+                guard let self,
+                      let identities = self.inputRouteIdentities(notification) else { return }
+                let previousInputUIDs = Set(identities.previous.filter {
+                    !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                })
+                let currentInputUIDs = Set(identities.current.filter {
+                    !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                })
+                guard !previousInputUIDs.isEmpty,
+                      identities.current.isEmpty || !currentInputUIDs.isEmpty,
+                      !previousInputUIDs.isSubset(of: currentInputUIDs) else { return }
+                self.yield(.inputRouteLost)
             },
             notificationCenter.addObserver(
                 forName: AVAudioSession.mediaServicesWereResetNotification,

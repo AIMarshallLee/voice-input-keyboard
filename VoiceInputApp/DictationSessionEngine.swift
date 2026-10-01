@@ -27,6 +27,7 @@ actor DictationSessionEngine: DictationSessionRunning {
         var processingDeadline: (any DictationScheduledTask)?
         var partialDeadline: (any DictationScheduledTask)?
         var hasStartedTextProcessing: Bool
+        var authorizationTask: Task<Void, Never>?
         var finishStarted: Bool
     }
 
@@ -108,6 +109,7 @@ actor DictationSessionEngine: DictationSessionRunning {
             processingDeadline: nil,
             partialDeadline: nil,
             hasStartedTextProcessing: false,
+            authorizationTask: nil,
             finishStarted: false
         )
         if var authorizing = matching(token: request.token, generation: generation) {
@@ -122,7 +124,10 @@ actor DictationSessionEngine: DictationSessionRunning {
         }
         await emit(.authorizing, token: request.token, generation: generation)
 
-        Task { [permissions] in
+        guard var authorizing = matching(token: request.token, generation: generation),
+              authorizing.phase == .authorizing,
+              !authorizing.finishStarted else { return stream }
+        let authorizationTask = Task { [permissions] in
             guard let current = self.matching(token: request.token, generation: generation),
                   current.phase == .authorizing,
                   !current.finishStarted else { return }
@@ -133,6 +138,8 @@ actor DictationSessionEngine: DictationSessionRunning {
                 generation: generation
             )
         }
+        authorizing.authorizationTask = authorizationTask
+        active = authorizing
         return stream
     }
 
@@ -204,6 +211,8 @@ actor DictationSessionEngine: DictationSessionRunning {
     ) async {
         guard var current = matching(token: token, generation: generation),
               current.phase == .authorizing else { return }
+        current.authorizationTask = nil
+        active = current
         guard case .success = result else {
             if case .failure(let failure) = result {
                 await finish(.failed(failure), token: token, generation: generation)
@@ -367,6 +376,8 @@ actor DictationSessionEngine: DictationSessionRunning {
         guard var current = matching(token: token, generation: generation),
               !current.finishStarted else { return nil }
         current.finishStarted = true
+        current.authorizationTask?.cancel()
+        current.authorizationTask = nil
         cancelDeadlines(in: &current)
         current.audioCapture?.stop()
         if let gate = current.bufferGate {

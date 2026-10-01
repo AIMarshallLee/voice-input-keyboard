@@ -9,9 +9,9 @@
 - 规格：[商用 V1](../docs/superpowers/specs/2026-09-04-voice-first-commercial-v1-design.md)。
 - 实施计划：[Slice A 九任务](../docs/superpowers/plans/2026-09-04-slice-a-reliable-session-engine.md)。
 - 当前断点：Task 1–8 已取得真实 RED、GREEN 和独立审查 PASS，Slice A 实施验收进度 **8/9**。Task 8 在 `b3be44b` / #183 完成准确提交验证与第三轮独立复审；这不是整个 App 的完成度或真机验收。
-- 下一动作：九份 Task 9 文档候选已完成本地修正，正在独立审查。全分支复核已发现输出设备移除误报输入丢失，须先完成单轮测试先行修复与准确提交的 macOS RED/GREEN，再进行最终复审和 main 合并门禁。App Store、TestFlight 与真实设备仍是单独门槛，不因 Slice A 单项通过而自动发布。
+- 下一动作：九份 Task 9 文档已提交、推送并完成独立范围复审。全分支发现的输出设备移除误报输入丢失和取消后权限请求，已在准确 macOS 提交取得行为 RED；两个生产文件的最小修复已完成本地静态检查，等待准确 GREEN、最终复审和 main 合并门禁。App Store、TestFlight 与真实设备仍是单独门槛，不因 Slice A 单项通过而自动发布。
 - 2026-10-01 续接：重新核对 PR #13 为 Draft/Open、远端 `b3be44b`、#183 成功，main 仍为 `ba3ca0e`。本轮由 Luna 修正九份交付文档并独立检查生产集成，主控负责风险判断、Git/CI 和最终验收；后续委派采用当前 Adaptive 规则。尚未合并或生成新的 TestFlight 构建。
-- 2026-10-01 集成复核：`.oldDeviceUnavailable` 仅证明旧输出路径不可用，现适配器无条件转换为 `.inputRouteLost`，可能误终止仍有麦克风的听写（Important）。另有测试结束前未等待 detached tasks 的 Minor。主控裁定同步取消本会话权限任务，阻止已退休请求在 Speech 回调后继续发起麦克风提示；已经显示的系统提示不可由此撤回。一个 Luna 工作包负责三项测试/最小修复，另一个只读核对文档；目前仅测试准备，尚无新 RED/GREEN 或修复验收。
+- 2026-10-01 集成复核：`.oldDeviceUnavailable` 仅证明旧输出路径不可用，原适配器无条件转换为 `.inputRouteLost`，可能误终止仍有麦克风的听写（Important）。另有测试结束前未等待 detached tasks 的 Minor。主控裁定同步取消本会话权限任务，阻止已退休请求在 Speech 回调后继续发起麦克风提示；已经显示的系统提示不可由此撤回。同一 Luna 工作包已取得 CI186 行为 RED 后完成两个生产文件的最小修复，测试保持不变；父级 plist 2/2（0.042s）、source gate 和 diff 检查通过，尚无此轮 macOS GREEN 或修复验收。九份文档的独立范围复审已通过。
 
 ## 自主执行约定（2026-09-20 生效）
 
@@ -58,11 +58,13 @@
 | 6 | PiP/原地输入迁移 | 完成：`829e3b8` / #166 GREEN，独立规格、代码与证据审查 PASS |
 | 7 | 前台呈现迁移 | 完成：`faedeb6` / #170 GREEN，后继准入修复及独立规格/质量/证据复审 PASS |
 | 8 | 移除不支持的拉起与手动结果保留 | 完成：`b3be44b` / #183 的 235 单元、4 个独立 UI、source gate、unsigned Release/Archive GREEN；第三轮独立规格/质量复审 PASS |
-| 9 | 全量回归、Release/Archive 与文档 | 进行中：同步九项现有文档，保留准确代码提交与外部验收边界 |
+| 9 | 全量回归、Release/Archive 与文档 | 进行中：九份文档 `1206769` 已推送并独立范围复审 PASS；集成问题已取得真实 RED，业务修复和最终 GREEN/复审尚未完成 |
 
 任务只有在实现、相应测试及审查证据齐全后才标为完成。后续 Slice 在前片出口有新证据且自己的实施计划完成审查后才能实施。
 
 ## 验证路径与本轮证据
+
+- [CI #186](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/36793722717) 在准确 `c06edbd47f1596a819564e4d595102117f92c423` 完成 **适配器行为 RED，8m39s**：246 单元汇总 13 failures / 1 unexpected，仅已知三条引擎取消用例（7）与四条适配器负例（6）。真实 Apple resolver 代码在取消后仍调用注入的下一项系统请求，日志为 `[speech,microphone]`；取消发生在首个请求前也仍请求 Speech。真实 notification-to-event 路径在输入 UID 不变及证据缺失时错误发出 `.inputRouteLost`；external microphone → built-in fallback、已授权/缺少权限/readOnly 正例通过。无编译/环境失败；并发文本处理清理通过（0.049s）。该证据使用注入的 Apple 系统边界，不是实机弹窗或物理耳机拔插。主控据此授权同一工作包修复两个生产文件；尚无此轮 GREEN 或合并。
 
 - [CI #185](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/36792907812) 在准确 `120798b697877e1382727f07d76578ebaf7a476b` 完成 **缺失接口 RED，1m37s**：五处 permission resolver 构造调用缺少参数接口、route source 缺少 `inputRouteIdentities`；其余为派生类型推断诊断。没有运行时用例，不能证明路由/真实 resolver 行为失败。主控授权同一修复工作包先补最小内部注入接口并保持原分类/权限行为，再取得适配器行为 RED；引擎/业务问题修复仍待后续 GO。九份 Task 9 文档已在 `1206769` 本地提交并经独立范围复审 PASS，尚未推送或取得最终候选 CI。
 
