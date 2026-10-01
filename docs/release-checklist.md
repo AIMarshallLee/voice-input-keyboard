@@ -4,20 +4,33 @@
 
 ## 1. 源码与 CI
 
-### Slice A 已验证源码候选（自动化证据）
+### Recorded Slice A automated source evidence — Build IPA #187
 
-下列仅适用于源码 `b3be44b88cba83a5768af199ed30f2eec85fdaa6` 的 [Build IPA #183](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/35538673741)，成功于 2026-09-20 UTC；它不是签名候选、TestFlight 或真机验收。历史 1.0 (146) 的签名/TestFlight 记录仍是历史事实，不能替代本节 Slice A 结论。
+下列证据仅适用于源码 `e02308bf65b4bf96991c0537400ed3601b42ffd2` 的 [Build IPA #187](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/36795409018)，该 run 于 2026-10-01 UTC 成功（14m07s）；不是签名候选、TestFlight 或真机验收。
+
+- [x] 246 个单元测试通过（0 failures / 0 unexpected；40.832 秒 test time、60.644 秒 wall time）；4 个唯一的 containing-app 模拟器 UI 用例在两套 scheme 下通过（54.635 秒、54.467 秒），不代表键盘扩展或真机 UI。
+- [x] 20 轮 IPC（1.764 秒）、50-session（0.756 秒）及 100-iteration terminal-race（1.811 秒）通过；15 个 Apple adapter 测试、3 个 engine cancellation/timeout/supersession 回归测试及 TextProcessor cleanup（0.104 秒）通过。
+- [x] 生成 plist 校验与 keyboard distribution source gate 通过；无签名 generic iOS device Release build 于 00:30:12 UTC 完成，无签名 archive 于 00:31:21 UTC 完成，CI 检查主 App 与 Keyboard Extension bundle directories 均存在。
+- [x] artifact `11133738244`（5,265,680 bytes）已生成；外层 ZIP SHA-256 为 `8cfbfd01eccb151d450a398a7335bf4ea3476aaec80e6a1956dbfae0081f6568`，其中 IPA SHA-256 为 `83d94c2f7507a021d63688851a302507f06d73a61dd0df3c415c0cbc43b270c1`，两者对应不同对象。
+- [x] IPA/archive plists 显示 bundle IDs `com.daseanle.votype` 与 `com.daseanle.votype.keyboard`、version 1.0、build 187、minimum iOS 16.0。IPA 无 `_CodeSignature` 或 `embedded.mobileprovision`；未运行 `codesign`，因此没有签名验证或可安装性结论。
+
+R37 behavioral RED 见 Build #184 与 #186；#185 仅为 compile-seam failure，不算 behavioral RED；#187 是上述精确源码 SHA 的 green run。所有 Apple certificate/profile/signing/upload/metadata 步骤均跳过。
+
+### Historical Slice A automated evidence — Build IPA #183
+
+历史证据适用于源码 `b3be44b88cba83a5768af199ed30f2eec85fdaa6` 的 [Build IPA #183](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/35538673741)，成功于 2026-09-20 UTC，不是签名候选、TestFlight 或真机验收。
 
 - [x] 235 个单元测试通过（0 failures / 0 unexpected），包含 20 轮、50 session 和 100 iteration 终态竞态压力用例。
 - [x] 4 个唯一的 containing-app 模拟器 UI 用例在两套 scheme 下通过；不代表键盘扩展或真机 UI。
 - [x] 生成 plist 校验与 keyboard source gate 通过。
-- [x] 无签名 generic iOS device Release build 通过。
-- [x] 无签名 archive 通过，且 CI 检查主 App 与 Keyboard Extension 均存在。
+- [x] 无签名 generic iOS device Release build 通过；无签名 archive 通过，且 CI 检查主 App 与 Keyboard Extension 均存在。
 - [x] 归档 artifact `10613729361` 已生成；GitHub 外层 ZIP SHA-256 为 `db2d5cc8d0e82596928d2002a8392ea677aef8128ddc7a8b1125b5e5e6805355`，包含 IPA 的 SHA-256 为 `59c882880c4875fa8d37f0090d53da893c23bc4390b8bf52271d2d97bff57a82`，两者不是同一对象。
 
-所有 Apple certificate/profile/signing/upload/metadata 步骤均跳过；不得把此无签名产物当作可安装性、签名、TestFlight 或 App Review 证据。
+该次运行跳过所有 Apple certificate/profile/signing/upload/metadata 步骤；无签名产物不构成可安装性、签名、TestFlight 或 App Review 证据。
 
 Signed physical-device microphone, Apple Speech, PiP lifecycle, extension eviction, and third-party insertion remain EXTERNAL / NOT_RUN for Slice A.
+
+以下既有 workflow/source checks 与 Build IPA #134 的结论均为历史记录，不替代当前 Slice A 候选证据。
 
 - [x] `xcodegen generate` 成功，`project.yml` 是唯一项目配置源。
 - [x] `VoTypeTests` 在可用 iPhone 模拟器全部通过；找不到模拟器时 CI 必须失败。
@@ -30,7 +43,7 @@ Signed physical-device microphone, Apple Speech, PiP lifecycle, extension evicti
 - [x] 手动发布只有在 `publish=true` 时才会访问 App Store Connect。
 - [x] 生成后的主 App `Info.plist` 在测试/上传前拒绝 Apple 不支持的 `UIBackgroundModes` 值。
 
-验证证据：2026-08-26 的 [Build IPA #134](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/32884927580) 在 `main` 提交 `4aee78b880bc69d63f00272f74e9d7ae0c8989de` 上通过 73 个单元测试、3 个 UI 冒烟用例、20 轮顺序会话压力、无签名 iphoneos Release 构建与 `.xcarchive`；归档同时包含主 App 和 Keyboard Extension。IPA 与归档保存在 artifact `9577650532`，artifact ZIP SHA-256 为 `c5bdcdddf4a6c3bfab6e73d1e49f5e7240691466c5679ac4dd0dc9e9887accad`。
+历史验证证据：2026-08-26 的 [Build IPA #134](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/32884927580) 在 `main` 提交 `4aee78b880bc69d63f00272f74e9d7ae0c8989de` 上通过 73 个单元测试、3 个 UI 冒烟用例、20 轮顺序会话压力、无签名 iphoneos Release 构建与 `.xcarchive`；归档同时包含主 App 和 Keyboard Extension。IPA 与归档保存在 artifact `9577650532`，artifact ZIP SHA-256 为 `c5bdcdddf4a6c3bfab6e73d1e49f5e7240691466c5679ac4dd0dc9e9887accad`。
 
 ## 2. Apple Developer 与签名
 
@@ -48,7 +61,7 @@ Signed physical-device microphone, Apple Speech, PiP lifecycle, extension evicti
 
 ### CURRENT Slice A 候选签名状态
 
-截至 2026-10-01，本轮确认的 Slice A 源码证据是无签名 Build IPA #183；下列当前候选签名门禁均未完成：
+截至 2026-10-01，本轮确认的 Slice A 源码证据是无签名 Build IPA #187；下列当前候选签名门禁均未完成：
 
 - [ ] 为当前 Slice A 候选生成签名包并重新验证证书、profile、entitlements 和嵌套签名。
 - [ ] 验证当前候选的开发描述文件（如真机测试所需）。
@@ -124,7 +137,7 @@ Signed physical-device microphone, Apple Speech, PiP lifecycle, extension evicti
 
 ### CURRENT Slice A TestFlight 状态
 
-当前无签名 Slice A 自动化产物不是 TestFlight 构建；以下当前候选分发门禁未完成：
+当前无签名 Slice A Build IPA #187 不是 TestFlight 构建；以下当前候选分发门禁未完成：
 
 - [ ] 当前 Slice A 候选经授权签名后上传到 App Store Connect / TestFlight。
 - [ ] 当前 Slice A 候选在 App Store Connect 完成 processing。

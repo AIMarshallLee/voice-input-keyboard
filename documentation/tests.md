@@ -2,9 +2,38 @@
 
 ## Existing coverage
 
-### Slice A source evidence
+### Recorded Slice A automated source evidence — Build IPA #187
 
-The latest successful automated code evidence is [Build IPA #183](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/35538673741), successful on 2026-09-20 UTC for source
+The recorded code/test evidence applies to source `e02308bf65b4bf96991c0537400ed3601b42ffd2` in [Build IPA #187](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/36795409018), which succeeded on 2026-10-01 UTC in 14m07s. The run passed 246 unit tests with 0 failures / 0 unexpected failures (40.832 seconds test time, 60.644 seconds wall time) and four unique containing-app simulator UI cases under two schemes (54.635 and 54.467 seconds).
+
+The same run passed the 20-round IPC test (1.764 seconds), 50-session test
+(0.756 seconds), and 100-iteration terminal-race test (1.811 seconds). All 15
+Apple adapter tests, all three new engine cancellation/timeout/supersession
+tests, and the TextProcessor cleanup test (0.104 seconds) passed. Generated plist
+validation and the keyboard distribution source gate passed. The unsigned
+generic-device Release build completed at 00:30:12 UTC; the unsigned archive
+completed at 00:31:21 UTC, and checks confirmed both the main app and keyboard
+extension bundle directories.
+
+Artifact `11133738244` is 5,265,680 bytes. Its outer artifact ZIP SHA-256 is
+`8cfbfd01eccb151d450a398a7335bf4ea3476aaec80e6a1956dbfae0081f6568`; the
+contained IPA SHA-256 is `83d94c2f7507a021d63688851a302507f06d73a61dd0df3c415c0cbc43b270c1`.
+These hashes refer to different objects. The IPA and archive plists identify
+main bundle `com.daseanle.votype` and extension bundle
+`com.daseanle.votype.keyboard`, version 1.0, build 187 and minimum iOS 16.0. The
+IPA contains no `_CodeSignature` or `embedded.mobileprovision`; Windows did not
+run `codesign`, so this evidence does not establish installability or signature
+verification. Apple signing, upload and metadata steps were skipped.
+
+R37 behavioral RED was observed in Builds #184 and #186. Build #185 only exposed
+a compile-seam failure and is not behavioral RED evidence; Build #187 is the
+green run for the exact source SHA above.
+
+Signed physical-device microphone, Apple Speech, PiP lifecycle, extension eviction, and third-party insertion remain EXTERNAL / NOT_RUN for Slice A.
+
+### Historical Slice A source evidence — Build IPA #183
+
+Historical automated code evidence is [Build IPA #183](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/35538673741), successful on 2026-09-20 UTC for source
 `b3be44b88cba83a5768af199ed30f2eec85fdaa6`. It ran 235 unit tests with 0
 failures / 0 unexpected failures (53.643 seconds test time, 54.534 seconds
 wall time) and four unique containing-app simulator UI cases under two schemes
@@ -54,7 +83,7 @@ for commit `acea1f46a8dd4e1952ae80cb60b5464412139f37` reran all 73
 unit and 3 UI tests, built the unsigned Release device app, and produced an
 unsigned `.xcarchive` containing both the main app and Keyboard Extension.
 
-The authoritative merged-code evidence is [main Build IPA #134](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/32884927580)
+Historical merged-main evidence is [Build IPA #134](https://github.com/AIMarshallLee/voice-input-keyboard/actions/runs/32884927580)
 for commit `4aee78b880bc69d63f00272f74e9d7ae0c8989de`: all 73 unit
 and 3 UI tests passed, as did the 20-round pressure case, unsigned Release
 device build, archive bundle checks and artifact upload.
@@ -70,19 +99,19 @@ feedback and is not the current candidate.
 | Use case | Rule and negative case | Evidence | Status |
 | --- | --- | --- | --- |
 | Session IPC | Only matching, fresh sessions can read/write; cancellation and first terminal state reject late callbacks | `DictationConstantsTests.swift` | Existing automated unit |
-| Unified engine ownership | One actor owns permission/audio/Speech/deadline/terminal state; only the synchronous gate appends PCM and adapters cannot create competing sessions | Engine and adapter contract tests in CI #183 | Existing automated unit |
-| Foreground admission | Discovery works without deep link; peek precedes exact atomic claim; a claim miss within three seconds denies engine start and preserves recovery; the returned event stream begins with the matching `.authorizing` event | Foreground claim / `.authorizing` tests in CI #183 | Existing automated unit |
-| Hot handoff | Matching injected acknowledgement cancels its 1.2-second timer; timeout stages an undiscoverable replacement, durably cancels the old UUID with replacement identity, then promotes; no false readiness is exposed | Hot fallback and handoff tests in CI #183 | Existing automated unit |
-| Held result safety | Manual/recreated/empty/destructive results remain held; auto-insert requires matching in-place context in the same extension instance; explicit plain insert requires token, no selection, non-empty text and matching consumed preview; confirmed replace/delete also require context, fingerprint and selection; copy compares consumed payload with its frozen preview, while discard validates the held token's peek before consuming; neither requires editor-context matching | Recovery, legacy decode and losing-consumer tests in CI #183 | Existing automated unit |
-| 20-round pressure | Twenty sequential settings/live/result/consume cycles leave no stale state | `testTwentySequentialSessionRoundTripsLeaveNoStaleState` | Existing automated unit |
-| Editor recovery | Auto-insert requires an in-place same-instance insert, no selected text, and fresh matching non-empty context evidence; mismatch/empty editor denies | `KeyboardSessionRecoveryTests.swift` | Existing automated unit |
-| Voice launch state | Fresh standby is hot; unresponsive hot path goes cold and every route ends with manual recovery | `DictationLaunchPolicyTests.swift` | Existing automated unit |
+| Unified engine ownership | One actor owns permission/audio/Speech/deadline/terminal state; only the synchronous gate appends PCM and adapters cannot create competing sessions | Engine/adapter contracts and R37 regressions in CI #187 | Existing automated unit |
+| Foreground admission | Discovery works without deep link; peek precedes exact atomic claim; a claim miss within three seconds denies engine start and preserves recovery; the returned event stream begins with the matching `.authorizing` event | Foreground claim / `.authorizing` tests in CI #187 | Existing automated unit |
+| Hot handoff | Matching injected acknowledgement cancels its 1.2-second timer; timeout stages an undiscoverable replacement, durably cancels the old UUID with replacement identity, then promotes; no false readiness is exposed | Hot fallback and handoff tests in CI #187 | Existing automated unit |
+| Held result safety | Manual/recreated/empty/destructive results remain held; auto-insert requires matching in-place context in the same extension instance; explicit plain insert requires token, no selection, non-empty text and matching consumed preview; confirmed replace/delete also require context, fingerprint and selection; copy compares consumed payload with its frozen preview, while discard validates the held token's peek before consuming; neither requires editor-context matching | Recovery, legacy decode and losing-consumer tests in CI #187 | Existing automated unit |
+| 20-round pressure | Twenty sequential settings/live/result/consume cycles leave no stale state | `testTwentySequentialSessionRoundTripsLeaveNoStaleState` (1.764 seconds) in CI #187 | Existing automated unit |
+| Editor recovery | Auto-insert requires an in-place same-instance insert, no selected text, and fresh matching non-empty context evidence; mismatch/empty editor denies | `KeyboardSessionRecoveryTests.swift` in CI #187 | Existing automated unit |
+| Voice launch state | Fresh standby is hot; unresponsive hot path goes cold and every route ends with manual recovery | `DictationLaunchPolicyTests.swift` in CI #187 | Existing automated unit |
 | Pinyin quality | Common phrases rank Top-1, learning is bounded/persistent/resettable, fabricated candidates denied | `PinyinInputEngineTests.swift` | Existing automated unit |
 | Pinyin latency | Warm-query p95 stays below 40 ms in the test environment | `testBundledLexiconWarmQueryP95IsUnderFortyMilliseconds` | Existing automated performance gate |
-| Text processing | Delete is a dedicated result, empty results fail, per-session language/translation settings are honored | `TextProcessorTests.swift` | Existing automated unit |
+| Text processing | Delete is a dedicated result, empty results fail, per-session language/translation settings are honored; cleanup regression passed in 0.104 seconds | `TextProcessorTests.swift` in CI #187 | Existing automated unit |
 | Host disclosures | Standby shows mic-off state, Pinyin reset is discoverable, and Speech copy distinguishes device processing from Apple service fallback | `VoTypeUITests.swift` | Existing simulator UI smoke |
 | App Store Info.plist | Unknown `UIBackgroundModes` values fail before build/upload | `scripts/tests/test_validate_distribution_info.py`, workflow step 6 | Existing automated CI gate |
-| Device package | Main app and extension compile for generic iphoneos; an IPA and `.xcarchive` containing both bundles are produced | Main Build #134 steps 16-19 | Existing automated build/archive gate |
+| Device package | Main app and extension compile for generic iphoneos; an IPA and `.xcarchive` containing both bundles are produced | Build IPA #187 | Existing automated build/archive gate |
 | Distribution signature | Team, Bundle IDs, App Group, signer SHA and profile UUID match | Historical Build #146 steps 20-23 for 1.0 (146) | Historical guarded live gate passed; not Slice A distribution evidence |
 
 The workflow runs on every pull request and `main` push. Repository branch
