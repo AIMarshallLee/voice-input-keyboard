@@ -16,6 +16,11 @@ on:
         required: true
         default: false
         type: boolean
+      store_screenshots:
+        description: Capture App Store screenshots of the real app UI on simulators
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -28,6 +33,7 @@ env:
 
 jobs:
   build:
+    if: github.event_name != 'workflow_dispatch' || inputs.store_screenshots != true
     runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
@@ -810,3 +816,73 @@ jobs:
           if [ -n "${ASC_API_KEY_PATH:-}" ]; then
             rm -f "$ASC_API_KEY_PATH"
           fi
+
+  store-screenshots:
+    if: github.event_name == 'workflow_dispatch' && inputs.store_screenshots == true
+    runs-on: macos-26
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - family: iphone_6.9
+            match: "iPhone 17 Pro Max|iPhone 16 Pro Max|iPhone 16 Plus"
+          - family: ipad_13
+            match: "iPad Pro 13-inch|iPad Air 13-inch"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select latest Xcode
+        run: |
+          sudo xcode-select -s "$(ls -d /Applications/Xcode*.app | sort -V | tail -1)"
+          xcodebuild -version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode Project
+        run: xcodegen generate
+
+      - name: Pick and boot simulator
+        env:
+          MATCH: ${{ matrix.match }}
+        run: |
+          SIM_ID=$(xcrun simctl list devices available -j | python3 -c "
+          import json, os, re, sys
+          pat = re.compile(os.environ['MATCH'])
+          devs = [d for rt, ds in json.load(sys.stdin)['devices'].items() if 'iOS' in rt for d in ds]
+          for d in devs:
+              if pat.search(d['name']):
+                  print(d['udid']); break
+          ")
+          if [ -z "$SIM_ID" ]; then echo "No matching simulator"; xcrun simctl list devices available; exit 1; fi
+          echo "SIM_ID=$SIM_ID" >> "$GITHUB_ENV"
+          xcrun simctl boot "$SIM_ID"
+          xcrun simctl bootstatus "$SIM_ID" -b
+          xcrun simctl status_bar "$SIM_ID" override --time "9:41" --dataNetwork wifi --wifiMode active --wifiBars 3 --cellularMode active --cellularBars 4 --batteryState charged --batteryLevel 100
+          xcrun simctl spawn "$SIM_ID" defaults write -g AppleLanguages -array zh-Hans
+          xcrun simctl spawn "$SIM_ID" defaults write -g AppleLocale zh_CN
+
+      - name: Capture screenshots
+        env:
+          TEST_RUNNER_VOTYPE_STORE_SCREENSHOTS: "1"
+        run: |
+          set -o pipefail
+          xcodebuild test \
+            -project VoType.xcodeproj \
+            -scheme VoTypeUITests \
+            -destination "platform=iOS Simulator,id=$SIM_ID" \
+            -only-testing:VoTypeUITests/StoreScreenshotTests \
+            -resultBundlePath "shots.xcresult" \
+            CODE_SIGNING_ALLOWED=NO | tail -40
+
+      - name: Export attachments
+        run: |
+          mkdir -p out
+          xcrun xcresulttool export attachments --path shots.xcresult --output-path out
+          ls -la out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: store-screenshots-${{ matrix.family }}
+          path: out
+          retention-days: 14
