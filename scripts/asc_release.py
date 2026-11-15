@@ -220,6 +220,28 @@ def set_territories(app):
     print(f"AVAILABILITY created for {len(territories) - len(EXCLUDED_TERRITORIES)} territories; excluded {sorted(EXCLUDED_TERRITORIES)}")
 
 
+REVIEW_NOTES = (
+    "VoType has no account or login. To test: 1) Open VoType. 2) Settings > General > Keyboard > "
+    "Keyboards > Add New Keyboard > 声入, then enable Allow Full Access (needed only to exchange the "
+    "current dictation session with the containing app through the App Group on device). 3) Grant "
+    "Microphone and Speech Recognition in VoType. 4) In Notes, switch to the 声入 keyboard and tap the "
+    "microphone; speak, tap again to stop, and the text is inserted. Optional: enable In-place Voice in "
+    "VoType to show a Picture-in-Picture standby window that keeps the microphone off until the user "
+    "taps the keyboard microphone. Speech is recognized by Apple's Speech framework; we run no servers."
+)
+
+
+def update_review_detail(version):
+    detail = call("GET", f"/v1/appStoreVersions/{version['id']}/appStoreReviewDetail").get("data")
+    if not detail:
+        raise RuntimeError("Review contact details are missing")
+    call("PATCH", f"/v1/appStoreReviewDetails/{detail['id']}", {"data": {
+        "type": "appStoreReviewDetails", "id": detail["id"],
+        "attributes": {"demoAccountRequired": False, "notes": REVIEW_NOTES},
+    }})
+    print("REVIEW_DETAIL demo account not required; reviewer notes set")
+
+
 def prepare(app):
     build = testflight(app)
     version = editable_version(app["id"])
@@ -227,6 +249,7 @@ def prepare(app):
         raise RuntimeError("No editable App Store version; create 1.0 first (deliver does this)")
     call("PATCH", f"/v1/appStoreVersions/{version['id']}/relationships/build", {"data": {"type": "builds", "id": build["id"]}})
     print(f"VERSION {version['attributes']['versionString']} uses build {build['attributes']['version']}")
+    update_review_detail(version)
     set_free_price(app)
     set_territories(app)
     return version
