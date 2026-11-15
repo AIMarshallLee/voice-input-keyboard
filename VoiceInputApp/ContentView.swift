@@ -110,7 +110,7 @@ struct ContentView: View {
                             .clipShape(RoundedRectangle(cornerRadius: 12))
                             .accessibilityLabel("VoType 免切换语音状态画面")
 
-                        Text("开启后可回到微信、备忘录或浏览器，键盘上的实心麦克风可原地开始。待命时不录音；只有你点键盘麦克风后才会使用麦克风。")
+                        Text("开启后可回到备忘录、短信或浏览器，键盘上的实心麦克风可原地开始。待命时不录音；只有你点键盘麦克风后才会使用麦克风。")
                             .font(.caption)
                             .foregroundColor(.secondary)
 
