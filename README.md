@@ -1,5 +1,7 @@
 # VoType · 声入
 
+> **2026-11-16 暂停开发。** iPhone 版不再继续，未提交 App Store 审核；`release/1.0-app-store` 分支与 TestFlight 1.0 (190) 保留备查。
+
 VoType 是一个 iOS 语音转文字键盘原型，由宿主 App 负责录音与文字处理，键盘扩展负责发起会话和插入结果。
 
 当前仓库的目标是得到一个可重复构建、可审计、可真机验收的 1.0 商用候选。源码、CI、签名、隐私、支持和发布材料与最终真机/App Review 门禁严格分开，详见 [发布验收清单](docs/release-checklist.md) 和 [交付架构](documentation/architecture.md)。
