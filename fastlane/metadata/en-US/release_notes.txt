@@ -1,4 +1,4 @@
-Version 1.0 candidate:
+First release:
 • Adds user-initiated in-place voice standby that clearly keeps the microphone off while waiting
 • Adds local Chinese Pinyin candidates, English QWERTY, numbers, and symbols
 • Shows connecting, listening, live text, and processing in the keyboard; tap again to stop
