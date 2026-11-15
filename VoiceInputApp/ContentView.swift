@@ -64,7 +64,7 @@ struct ContentView: View {
                         StepRow(
                             number: 1,
                             title: "添加键盘",
-                            description: "设置 → 通用 → 键盘 → 键盘 → 添加新键盘 → 选择「语音输入」",
+                            description: "设置 → 通用 → 键盘 → 键盘 → 添加新键盘 → 选择「声入」",
                             isDone: keyboardSetup.status.keyboardObserved,
                             action: openKeyboardSettings
                         )
@@ -72,7 +72,7 @@ struct ContentView: View {
                         StepRow(
                             number: 2,
                             title: "允许完全访问",
-                            description: "在键盘列表中点击「语音输入」→ 开启「允许完全访问」\n完成后在任意输入框切换到 VoType 一次，状态会自动确认",
+                            description: "在键盘列表中点击「声入」→ 开启「允许完全访问」\n完成后在任意输入框切换到声入键盘一次，状态会自动确认",
                             isDone: keyboardSetup.status.fullAccessObserved,
                             action: openKeyboardSettings
                         )

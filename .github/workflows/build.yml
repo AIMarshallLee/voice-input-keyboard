@@ -868,15 +868,40 @@ jobs:
           xcrun simctl spawn "$SIM_ID" defaults write -g AppleLanguages -array zh-Hans
           xcrun simctl spawn "$SIM_ID" defaults write -g AppleLocale zh_CN
 
+      - name: Build for testing
+        run: |
+          set -o pipefail
+          defaults write com.apple.iphonesimulator ConnectHardwareKeyboard -bool false
+          xcodebuild build-for-testing \
+            -project VoType.xcodeproj \
+            -scheme VoTypeUITests \
+            -destination "platform=iOS Simulator,id=$SIM_ID" \
+            -derivedDataPath dd \
+            CODE_SIGNING_ALLOWED=NO | tail -5
+
+      - name: Install app and enable the VoType keyboard
+        run: |
+          APP=$(find dd/Build/Products -maxdepth 2 -name "VoiceInputApp.app" -path "*iphonesimulator*" | head -1)
+          echo "App: $APP"
+          xcrun simctl install "$SIM_ID" "$APP"
+          xcrun simctl spawn "$SIM_ID" defaults write -g AppleKeyboards -array "com.daseanle.votype.keyboard" "zh_Hans-Pinyin@sw=Pinyin10;hw=Automatic" "en_US@sw=QWERTY;hw=Automatic" || true
+          xcrun simctl spawn "$SIM_ID" defaults write -g AppleKeyboardsExpanded -int 1 || true
+          xcrun simctl shutdown "$SIM_ID"
+          xcrun simctl boot "$SIM_ID"
+          xcrun simctl bootstatus "$SIM_ID" -b
+          xcrun simctl status_bar "$SIM_ID" override --time "9:41" --dataNetwork wifi --wifiMode active --wifiBars 3 --cellularMode active --cellularBars 4 --batteryState charged --batteryLevel 100
+          xcrun simctl spawn "$SIM_ID" defaults read -g AppleKeyboards || true
+
       - name: Capture screenshots
         env:
           TEST_RUNNER_VOTYPE_STORE_SCREENSHOTS: "1"
         run: |
           set -o pipefail
-          xcodebuild test \
+          xcodebuild test-without-building \
             -project VoType.xcodeproj \
             -scheme VoTypeUITests \
             -destination "platform=iOS Simulator,id=$SIM_ID" \
+            -derivedDataPath dd \
             -only-testing:VoTypeUITests/StoreScreenshotTests \
             -resultBundlePath "shots.xcresult" \
             CODE_SIGNING_ALLOWED=NO | tail -40
