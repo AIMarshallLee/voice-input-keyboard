@@ -21,6 +21,12 @@ on:
         required: false
         default: false
         type: boolean
+      asc_action:
+        description: App Store Connect step (inspect, testflight, prepare, submit)
+        required: false
+        default: none
+        type: choice
+        options: [none, inspect, testflight, prepare, submit]
 
 permissions:
   contents: read
@@ -33,7 +39,7 @@ env:
 
 jobs:
   build:
-    if: github.event_name != 'workflow_dispatch' || inputs.store_screenshots != true
+    if: github.event_name != 'workflow_dispatch' || (inputs.store_screenshots != true && (inputs.asc_action == '' || inputs.asc_action == 'none'))
     runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
@@ -886,3 +892,17 @@ jobs:
           name: store-screenshots-${{ matrix.family }}
           path: out
           retention-days: 14
+
+  app-store-connect:
+    if: github.event_name == 'workflow_dispatch' && inputs.asc_action != '' && inputs.asc_action != 'none'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: python3 -m pip install --quiet "pyjwt[crypto]==2.10.1"
+      - name: Run App Store Connect step
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_CONTENT: ${{ secrets.ASC_KEY_CONTENT }}
+        run: python3 scripts/asc_release.py "${{ inputs.asc_action }}"
